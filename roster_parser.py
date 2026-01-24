@@ -167,67 +167,139 @@ class PDFRosterParser:
     
     def _parse_crewlink_format(self, text: str) -> List[Duty]:
         """
-        Parse Qatar Airways CrewLink PDF format
-        
-        Example format:
-        Date       Flight  Dep   Arr   STD     STA     Report  Release
-        15-JAN-24  QR001   DOH   LHR   07:30   13:15   06:00   14:30
+        Parse Qatar Airways CrewLink Crew Schedule Report PDF
+        Handles the tabular grid format with flight segments
         """
         duties = []
         lines = text.split('\n')
         
-        current_duty_flights = []
-        current_date = None
-        report_time = None
+        # Extract month/year from header
+        month_year = (2026, 1)  # Default
+        for line in lines[:20]:  # Check first 20 lines
+            date_match = re.search(r'(\d{1,2})-([A-Za-z]+)-(\d{4})', line)
+            if date_match:
+                day, month_name, year = date_match.groups()
+                month_map = {
+                    'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+                    'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
+                }
+                month_num = month_map.get(month_name[:3], 1)
+                month_year = (int(year), month_num)
+                break
         
-        for line in lines:
-            # Skip header/empty lines
-            if not line.strip() or 'Flight' in line or '---' in line:
-                continue
+        year, month = month_year
+        
+        # Look for flight segments in the document
+        all_segments = []
+        for line_idx, line in enumerate(lines):
+            segments = self._extract_flight_segments_from_line(line, year, month)
+            if segments:
+                all_segments.extend(segments)
+        
+        # If we found segments, group them into duties by date
+        if all_segments:
+            # Sort by departure time
+            all_segments.sort(key=lambda x: x.scheduled_departure_utc)
             
-            # Extract duty data
-            match = self._extract_duty_line_crewlink(line)
-            if not match:
-                continue
+            # Group by date
+            duties_dict = {}
+            for segment in all_segments:
+                date_key = segment.scheduled_departure_utc.date()
+                if date_key not in duties_dict:
+                    duties_dict[date_key] = []
+                duties_dict[date_key].append(segment)
             
-            date, flight_num, dep, arr, std, sta, rep, rel = match
-            
-            # New duty starts (different report time or date change)
-            if report_time and rep != report_time:
-                # Save previous duty
-                if current_duty_flights:
-                    duty = self._build_duty_from_flights(
-                        current_duty_flights,
-                        current_date,
-                        report_time,
-                        release_time
-                    )
-                    duties.append(duty)
+            # Create duty objects
+            for date_key in sorted(duties_dict.keys()):
+                segments = duties_dict[date_key]
+                duty = Duty(
+                    duty_id=f"D_{len(duties)+1}",
+                    date=datetime.combine(date_key, datetime.min.time()),
+                    flight_segments=segments,
+                    home_base_timezone=self.home_timezone
+                )
+                duties.append(duty)
+        
+        # Fallback if format not recognized
+        return duties if duties else self._parse_generic_format(text)
+    
+    def _extract_flight_segments_from_line(self, line: str, year: int, month: int) -> List[FlightSegment]:
+        """Extract flight segments from a roster line"""
+        segments = []
+        
+        # Pattern: Airport codes (3 uppercase letters) followed by times
+        # Looking for patterns like: DOH 07:30 LHR 13:15 or DOH 1286 LHR 1286
+        pattern = r'([A-Z]{3})\s+(\d{2}):(\d{2})|([A-Z]{3})\s+(\d{4})'
+        
+        matches = list(re.finditer(pattern, line))
+        
+        # Process pairs of airports as departure/arrival
+        i = 0
+        while i < len(matches) - 1:
+            try:
+                match_dep = matches[i]
                 
-                # Reset for new duty
-                current_duty_flights = []
-            
-            # Parse flight segment
-            segment = self._parse_flight_segment(
-                flight_num, dep, arr, date, std, sta
-            )
-            
-            current_duty_flights.append(segment)
-            current_date = date
-            report_time = rep
-            release_time = rel
+                # Check if it's an airport code match
+                if match_dep.group(1):  # Has time format
+                    dep_code = match_dep.group(1)
+                    dep_h = int(match_dep.group(2))
+                    dep_m = int(match_dep.group(3))
+                else:  # Has numeric format (flight number probably)
+                    i += 1
+                    continue
+                
+                # Look for next airport
+                match_arr = None
+                for j in range(i + 1, len(matches)):
+                    if matches[j].group(1):  # Airport with time
+                        match_arr = matches[j]
+                        break
+                
+                if not match_arr or not match_arr.group(1):
+                    i += 1
+                    continue
+                
+                arr_code = match_arr.group(1)
+                arr_h = int(match_arr.group(2))
+                arr_m = int(match_arr.group(3))
+                
+                # Skip if codes are the same or invalid
+                if dep_code == arr_code or not (dep_code.isalpha() and arr_code.isalpha()):
+                    i += 1
+                    continue
+                
+                # Create times (use day 1 by default, will be updated if date found)
+                dep_time = datetime(year, month, 1, dep_h, dep_m, tzinfo=pytz.utc)
+                arr_time = datetime(year, month, 1, arr_h, arr_m, tzinfo=pytz.utc)
+                
+                # If arrival is before departure, assume next day
+                if arr_time <= dep_time:
+                    arr_time = arr_time + timedelta(days=1)
+                
+                # Get airport objects
+                try:
+                    dep_airport = self.airport_db.get_airport(dep_code)
+                    arr_airport = self.airport_db.get_airport(arr_code)
+                except ValueError:
+                    # Skip if airport not in database
+                    i += 1
+                    continue
+                
+                segment = FlightSegment(
+                    flight_number=f"QR{len(segments)+1:03d}",
+                    departure_airport=dep_airport,
+                    arrival_airport=arr_airport,
+                    scheduled_departure_utc=dep_time,
+                    scheduled_arrival_utc=arr_time
+                )
+                segments.append(segment)
+                i += 2  # Skip both airports
+                
+            except (ValueError, IndexError, AttributeError, TypeError):
+                i += 1
+                continue
         
-        # Don't forget last duty
-        if current_duty_flights:
-            duty = self._build_duty_from_flights(
-                current_duty_flights,
-                current_date,
-                report_time,
-                release_time
-            )
-            duties.append(duty)
-        
-        return duties
+        return segments
     
     def _extract_duty_line_crewlink(self, line: str) -> Optional[Tuple]:
         """Extract data from single CrewLink roster line"""
