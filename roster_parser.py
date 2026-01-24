@@ -57,6 +57,12 @@ class AirportDatabase:
         'BCN': {'name': 'Barcelona', 'timezone': 'Europe/Madrid', 'lat': 41.30, 'lon': 2.08},
         'FCO': {'name': 'Rome', 'timezone': 'Europe/Rome', 'lat': 41.80, 'lon': 12.25},
         'ATH': {'name': 'Athens', 'timezone': 'Europe/Athens', 'lat': 37.94, 'lon': 23.95},
+        # Qatar Airways additional airports
+        'TRV': {'name': 'Thiruvananthapuram', 'timezone': 'Asia/Kolkata', 'lat': 8.48, 'lon': 76.92},
+        'LCA': {'name': 'Larnaca', 'timezone': 'Europe/Nicosia', 'lat': 34.88, 'lon': 33.62},
+        'ALP': {'name': 'Aleppo', 'timezone': 'Asia/Damascus', 'lat': 36.20, 'lon': 37.28},
+        'DMM': {'name': 'Dammam', 'timezone': 'Asia/Riyadh', 'lat': 26.47, 'lon': 50.18},
+        'TBS': {'name': 'Tbilisi', 'timezone': 'Asia/Tbilisi', 'lat': 41.72, 'lon': 44.95},
     }
     
     @classmethod
@@ -217,15 +223,14 @@ class PDFRosterParser:
     
     def _parse_crewlink_format(self, text: str) -> List[Duty]:
         """
-        Parse Qatar Airways CrewLink Crew Schedule Report PDF
-        Extracts flight pairs from grid/table format
+        Parse Qatar Airways CrewLink Crew Schedule Report
+        Uses date-based segmentation to handle grid layout
         """
         duties = []
-        lines = text.split('\n')
         
         # Extract month/year from header
-        month_year = (2026, 1)  # Default
-        for line in lines[:20]:
+        month_year = (2026, 1)
+        for line in text.split('\n')[:20]:
             date_match = re.search(r'(\d{1,2})-([A-Za-z]+)-(\d{4})', line)
             if date_match:
                 day, month_name, year = date_match.groups()
@@ -239,83 +244,117 @@ class PDFRosterParser:
         
         year, month = month_year
         
-        # Extract all airport codes and times from the document
-        all_segments = []
+        # Date pattern: "DDMM" (e.g., "01Feb", "02Feb") or "DD-MMM"
+        date_pattern = r'(\d{1,2})[A-Za-z]{0,3}\s*(Mon|Tue|Wed|Thu|Fri|Sat|Sun)?'
         
-        # Simple pattern: Look for airport pairs with times
-        # Example from PDF: "DOH ALP" on one line, then "1286" or similar
-        airport_pattern = r'([A-Z]{3})\s+([A-Z]{3})'
-        time_pattern = r'(\d{2}):(\d{2})'
+        # Split text into sections by date markers
+        sections = re.split(r'(\d{1,2}(?:Feb|Jan|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)?(?:\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))?)', text)
         
-        # Extract all airports and times
-        airports = []
-        times = []
-        
-        for line in lines:
-            # Find airport pairs
-            for match in re.finditer(airport_pattern, line):
-                dep, arr = match.groups()
-                if dep != arr and len(dep) == 3 and len(arr) == 3:
-                    airports.append((dep, arr))
+        current_date = None
+        for i in range(0, len(sections) - 1, 2):
+            date_str = sections[i].strip()
+            content = sections[i + 1] if i + 1 < len(sections) else ""
             
-            # Find times
-            for match in re.finditer(time_pattern, line):
-                h, m = match.groups()
-                times.append((int(h), int(m)))
-        
-        # If we found airports and times, create segments
-        if airports and len(times) >= 2:
-            for i, (dep_code, arr_code) in enumerate(airports[:10]):  # Limit to 10 flights
-                try:
-                    # Get departure and arrival times (cycle through available times)
-                    dep_h, dep_m = times[i * 2] if i * 2 < len(times) else (9, 0)
-                    arr_h, arr_m = times[i * 2 + 1] if i * 2 + 1 < len(times) else (17, 0)
-                    
-                    # Create times
-                    dep_time = datetime(year, month, 1, dep_h, dep_m, tzinfo=pytz.utc)
-                    arr_time = datetime(year, month, 1, arr_h, arr_m, tzinfo=pytz.utc)
-                    
-                    if arr_time <= dep_time:
-                        arr_time = arr_time + timedelta(days=1)
-                    
-                    # Get airport objects
-                    try:
-                        dep_airport = self.airport_db.get_airport(dep_code)
-                        arr_airport = self.airport_db.get_airport(arr_code)
-                    except ValueError:
-                        continue
-                    
-                    segment = FlightSegment(
-                        flight_number=f"QR{i+1:03d}",
-                        departure_airport=dep_airport,
-                        arrival_airport=arr_airport,
-                        scheduled_departure_utc=dep_time,
-                        scheduled_arrival_utc=arr_time
-                    )
-                    all_segments.append(segment)
-                except Exception:
-                    continue
-        
-        # Group segments into duties by date
-        if all_segments:
-            all_segments.sort(key=lambda x: x.scheduled_departure_utc)
-            duties_dict = {}
-            for segment in all_segments:
-                date_key = segment.scheduled_departure_utc.date()
-                if date_key not in duties_dict:
-                    duties_dict[date_key] = []
-                duties_dict[date_key].append(segment)
+            # Parse date
+            date_match = re.search(r'(\d{1,2})', date_str)
+            if not date_match:
+                continue
             
-            for date_key in sorted(duties_dict.keys()):
+            day = int(date_match.group(1))
+            try:
+                current_date = datetime(year, month, day)
+            except ValueError:
+                continue
+            
+            # Extract flight segments from this day's content
+            segments = self._extract_segments_from_content(content, current_date, year, month)
+            
+            if segments:
                 duty = Duty(
                     duty_id=f"D_{len(duties)+1}",
-                    date=datetime.combine(date_key, datetime.min.time()),
-                    flight_segments=duties_dict[date_key],
+                    date=current_date,
+                    flight_segments=segments,
                     home_base_timezone=self.home_timezone
                 )
                 duties.append(duty)
         
         return duties if duties else self._parse_generic_format(text)
+    
+    def _extract_segments_from_content(self, content: str, date: datetime, year: int, month: int) -> List[FlightSegment]:
+        """Extract flight segments from a day's worth of roster content"""
+        segments = []
+        
+        # Look for airport code pairs: XXX (departure) ... XXX (arrival)
+        # Also try to extract times: HH:MM
+        
+        # Find all airport codes in this content
+        airport_pattern = r'\b([A-Z]{3})\b'
+        airports = []
+        
+        for word in content.split():
+            match = re.search(airport_pattern, word)
+            if match:
+                code = match.group(1)
+                try:
+                    self.airport_db.get_airport(code)
+                    airports.append(code)
+                except ValueError:
+                    pass
+        
+        # Find all times: HH:MM
+        time_pattern = r'(\d{2}):(\d{2})'
+        times = []
+        for match in re.finditer(time_pattern, content):
+            h, m = match.groups()
+            times.append((int(h), int(m)))
+        
+        # Create segments from consecutive airport pairs
+        i = 0
+        time_idx = 0
+        while i < len(airports) - 1:
+            dep_code = airports[i]
+            arr_code = airports[i + 1]
+            
+            if dep_code != arr_code:
+                try:
+                    dep_airport = self.airport_db.get_airport(dep_code)
+                    arr_airport = self.airport_db.get_airport(arr_code)
+                    
+                    # Get times if available
+                    if time_idx < len(times):
+                        dep_h, dep_m = times[time_idx]
+                        time_idx += 1
+                    else:
+                        dep_h, dep_m = 9, 0
+                    
+                    if time_idx < len(times):
+                        arr_h, arr_m = times[time_idx]
+                        time_idx += 1
+                    else:
+                        arr_h, arr_m = 17, 0
+                    
+                    # Create times
+                    dep_time = datetime(year, month, date.day, dep_h, dep_m, tzinfo=pytz.utc)
+                    arr_time = datetime(year, month, date.day, arr_h, arr_m, tzinfo=pytz.utc)
+                    
+                    # Handle next-day arrivals
+                    if arr_time <= dep_time:
+                        arr_time = arr_time + timedelta(days=1)
+                    
+                    segment = FlightSegment(
+                        flight_number=f"QR{len(segments)+1:03d}",
+                        departure_airport=dep_airport,
+                        arrival_airport=arr_airport,
+                        scheduled_departure_utc=dep_time,
+                        scheduled_arrival_utc=arr_time
+                    )
+                    segments.append(segment)
+                except ValueError:
+                    pass
+            
+            i += 2
+        
+        return segments
     
     def _extract_flight_segments_from_line(self, line: str, year: int, month: int) -> List[FlightSegment]:
         """Extract flight segments from a roster line"""
