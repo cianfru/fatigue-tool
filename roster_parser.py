@@ -198,7 +198,9 @@ class PDFRosterParser:
         duty = Duty(
             duty_id="D_1",
             date=datetime(2026, 1, 15),
-            flight_segments=[segment],
+            segments=[segment],
+            report_time_utc=datetime(2026, 1, 15, 1, 30, tzinfo=pytz.utc),
+            release_time_utc=datetime(2026, 1, 15, 10, 0, tzinfo=pytz.utc),
             home_base_timezone=self.home_timezone
         )
         duties.append(duty)
@@ -270,10 +272,16 @@ class PDFRosterParser:
             segments = self._extract_segments_from_content(content, current_date, year, month)
             
             if segments:
+                # Calculate report and release times
+                report_time = segments[0].scheduled_departure_utc - timedelta(hours=1)
+                release_time = segments[-1].scheduled_arrival_utc + timedelta(hours=0.5)
+                
                 duty = Duty(
                     duty_id=f"D_{len(duties)+1}",
                     date=current_date,
-                    flight_segments=segments,
+                    segments=segments,
+                    report_time_utc=report_time,
+                    release_time_utc=release_time,
                     home_base_timezone=self.home_timezone
                 )
                 duties.append(duty)
@@ -620,10 +628,15 @@ class PDFRosterParser:
         # Create duties from segments
         if segments:
             for i, segment in enumerate(segments):
+                report_time = segment.scheduled_departure_utc - timedelta(hours=1)
+                release_time = segment.scheduled_arrival_utc + timedelta(hours=0.5)
+                
                 duty = Duty(
                     duty_id=f"D_{i+1}",
                     date=datetime(year, month, 1),
-                    flight_segments=[segment],
+                    segments=[segment],
+                    report_time_utc=report_time,
+                    release_time_utc=release_time,
                     home_base_timezone=self.home_timezone
                 )
                 duties.append(duty)
