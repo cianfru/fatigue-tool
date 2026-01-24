@@ -344,11 +344,60 @@ class PDFRosterParser:
         )
     
     def _parse_generic_format(self, text: str) -> List[Duty]:
-        """Fallback generic parser"""
-        raise NotImplementedError(
-            "Generic parser not yet implemented. "
-            "Provide sample PDF for customization."
-        )
+        """Fallback generic parser for common formats"""
+        duties = []
+        lines = text.split('\n')
+        
+        # Simple parser: look for patterns like "DOH-LHR 02:30-09:00"
+        import re
+        pattern = r'([A-Z]{3})-([A-Z]{3})\s+(\d{2}):(\d{2})-(\d{2}):(\d{2})'
+        
+        for line in lines:
+            matches = re.findall(pattern, line)
+            if not matches:
+                continue
+                
+            for match in matches:
+                dep_code, arr_code, dep_h, dep_m, arr_h, arr_m = match
+                try:
+                    # Default to simple times
+                    dep_time = datetime(2024, 1, 1, int(dep_h), int(dep_m), tzinfo=pytz.utc)
+                    arr_time = datetime(2024, 1, 1, int(arr_h), int(arr_m), tzinfo=pytz.utc)
+                    
+                    # If arrival is earlier, assume next day
+                    if arr_time < dep_time:
+                        arr_time = arr_time + timedelta(days=1)
+                    
+                    dep_airport = self.airport_db.get_airport(dep_code)
+                    arr_airport = self.airport_db.get_airport(arr_code)
+                    
+                    segment = FlightSegment(
+                        flight_number="X000",
+                        departure_airport=dep_airport,
+                        arrival_airport=arr_airport,
+                        scheduled_departure_utc=dep_time,
+                        scheduled_arrival_utc=arr_time
+                    )
+                    
+                    duty = Duty(
+                        duty_id=f"D_{len(duties)+1}",
+                        date=datetime(2024, 1, 1),
+                        flight_segments=[segment],
+                        home_base_timezone=self.home_timezone
+                    )
+                    duties.append(duty)
+                except Exception as e:
+                    print(f"⚠️  Skipped malformed line: {line}")
+                    continue
+        
+        if not duties:
+            raise ValueError(
+                "Could not parse PDF roster. "
+                "Please use Qatar Airways CrewLink format or CSV with headers: "
+                "Date,Departure,Arrival,DepTime,ArrTime"
+            )
+        
+        return duties
 
 # ============================================================================
 # CSV PARSER
