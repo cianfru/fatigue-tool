@@ -197,9 +197,23 @@ class FatigueVisualizer:
         fig = go.Figure()
         
         trace_count = 0
-        for duty in analysis.duty_timelines:
+        
+        # Map duty_id to duty_timeline for performance lookup
+        timeline_map = {dt.duty_id: dt for dt in analysis.duty_timelines}
+        
+        # Get segments from the roster duties
+        if not hasattr(analysis, 'roster') or not analysis.roster:
+            return fig  # Return empty figure if no roster
+        
+        for duty in analysis.roster.duties:
+            duty_timeline = timeline_map.get(duty.duty_id)
+            if not duty_timeline:
+                continue
+            
             is_selected = (duty.duty_id == selected_id)
             opacity = 0.8 if is_selected else 0.2
+            landing_perf = getattr(duty_timeline, 'landing_performance', 100)
+            risk_color = self._get_risk_color(landing_perf)
             
             for seg in getattr(duty, 'segments', []):
                 # Access airport coordinates safely
@@ -218,7 +232,6 @@ class FatigueVisualizer:
                 if dep_lon is None or dep_lat is None or arr_lon is None or arr_lat is None:
                     continue
                 
-                risk_color = self._get_risk_color(getattr(duty, 'landing_performance', 100))
                 flight_no = getattr(seg, 'flight_number', 'N/A')
                 
                 fig.add_trace(go.Scattergeo(
@@ -228,7 +241,7 @@ class FatigueVisualizer:
                     line=dict(width=2 if is_selected else 1.5, color=risk_color),
                     opacity=opacity,
                     hoverinfo="text",
-                    text=f"Flight {flight_no} | Perf: {getattr(duty, 'landing_performance', 100):.0f}%",
+                    text=f"Flight {flight_no} | Perf: {landing_perf:.0f}%",
                     showlegend=False
                 ))
                 trace_count += 1
