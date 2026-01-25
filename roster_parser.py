@@ -140,25 +140,51 @@ class PDFRosterParser:
         
         # Parse based on format
         duties = []
-        if roster_format == 'crewlink':
-            # Use specialized Qatar Airways grid-based parser
+        if roster_format == 'crewlink' or roster_format == 'generic':
+            # Try specialized Qatar Airways grid-based parser first
+            # (works for both explicitly detected and unknown formats)
             try:
-                print("   Using specialized Qatar Airways grid parser...")
+                print("   Attempting specialized Qatar Airways grid parser...")
                 qatar_parser = QatarRosterParser(timezone_format='auto')
                 result = qatar_parser.parse_roster(pdf_path)
                 duties = result['duties']
                 
                 # Report unknown airports if any
                 if result.get('unknown_airports'):
-                    print(f"   ⚠️  Found {len(result['unknown_airports'])} unknown airports")
+                    print(f"   ⚠️  Found {len(result['unknown_airports'])} unknown airports:")
+                    for code in sorted(result['unknown_airports']):
+                        print(f"      - {code}")
                 
+                if duties:
+                    print(f"   ✅ Qatar parser succeeded")
+                else:
+                    print(f"   ℹ️  Qatar parser found no duties")
+                    
             except Exception as e:
-                print(f"   ❌ Grid parser failed: {e}")
-                print("   Falling back to line-based parser...")
-                duties = self._parse_crewlink_format(full_text)
+                print(f"   ⚠️  Qatar parser: {e}")
+                
+                # Only fall back to line-based if explicitly detected as CrewLink
+                if roster_format == 'crewlink':
+                    print("   Trying line-based CrewLink parser...")
+                    duties = self._parse_crewlink_format(full_text)
+                else:
+                    # Generic format - raise informative error
+                    raise NotImplementedError(
+                        "❌ Unsupported PDF format detected.\n\n"
+                        "The PDF could not be parsed. This could mean:\n"
+                        "  1. The PDF format is not supported\n"
+                        "  2. The PDF is image-based or corrupted\n"
+                        "  3. Text extraction failed\n\n"
+                        "Supported formats:\n"
+                        "  • Qatar Airways CrewLink (grid layout with dates as columns)\n"
+                        "  • Tabular format (with vertical pipes '|')\n"
+                        "  • CSV files (comma-separated values)\n\n"
+                        "Please provide a text-based PDF roster or contact support."
+                    )
         
         elif roster_format == 'tabular':
             duties = self._parse_tabular_format(full_text)
+        
         else:
             # Fallback: Generic line-by-line parser
             duties = self._parse_generic_format(full_text)
@@ -175,10 +201,33 @@ class PDFRosterParser:
         return roster
     
     def _detect_format(self, text: str) -> str:
-        """Auto-detect roster format from content"""
+        """Auto-detect roster format from content
         
-        # Qatar Airways CrewLink indicators
-        if 'CrewLink' in text or 'Qatar Airways' in text:
+        Detection strategy:
+        1. Look for explicit CrewLink/Qatar Airways headers
+        2. Look for Qatar Airways grid pattern (dates like "01Feb", "02Feb", etc.)
+        3. Look for grid-like structure (multiple dates stacked)
+        4. Look for tabular format (lots of pipes)
+        5. Default to generic
+        """
+        text_lower = text.lower()
+        
+        # Explicit Qatar Airways CrewLink indicators
+        if 'crewlink' in text_lower or 'qatar airways' in text_lower:
+            return 'crewlink'
+        
+        # Grid format indicators - look for date pattern like "01Feb", "02Feb", etc.
+        # These appear as column headers in Qatar Airways rosters
+        date_pattern_count = len(re.findall(r'\d{2}[A-Z][a-z]{2}', text))
+        if date_pattern_count >= 5:  # Multiple dates = likely grid format
+            print(f"   ℹ️  Detected {date_pattern_count} date headers (grid format)")
+            return 'crewlink'
+        
+        # Look for Qatar-specific keywords
+        qatar_keywords = ['period:', 'name:', 'base:', 'pilot', 'rpt:', 'crew', 'roster']
+        qatar_matches = sum(1 for kw in qatar_keywords if kw in text_lower)
+        if qatar_matches >= 3:
+            print(f"   ℹ️  Detected Qatar Airways keywords")
             return 'crewlink'
         
         # Tabular format (lots of vertical bars)
@@ -367,15 +416,31 @@ class PDFRosterParser:
         )
     
     def _parse_generic_format(self, text: str) -> List[Duty]:
-        """Fallback generic parser"""
-        raise NotImplementedError(
-            "❌ Unsupported PDF format detected.\n\n"
-            "Supported formats:\n"
-            "  • Qatar Airways CrewLink (PDF with 'CrewLink' or 'Qatar Airways' header)\n"
-            "  • Tabular format (PDF with vertical bars/pipes '|')\n"
-            "  • CSV files (comma-separated values)\n\n"
-            "Please provide a roster PDF in one of these formats, or contact support with a sample PDF."
-        )
+        """Fallback generic parser - tries specialized Qatar parser as last resort"""
+        
+        print("⚠️  Generic format detected - attempting specialized Qatar parser...")
+        
+        # Last resort: try the specialized Qatar parser
+        try:
+            qatar_parser = QatarRosterParser(timezone_format='auto')
+            # We need a temp PDF path - this is a limitation
+            # The generic parser receives text, not the PDF path
+            raise NotImplementedError(
+                "❌ Unsupported PDF format detected.\n\n"
+                "The text-based detection didn't recognize this as a Qatar Airways roster.\n\n"
+                "This could mean:\n"
+                "  1. The PDF keywords ('CrewLink', 'Qatar Airways', 'Period', etc.) are not being extracted\n"
+                "  2. The PDF uses a different format than expected\n"
+                "  3. The PDF is image-based or has extraction issues\n\n"
+                "Supported formats:\n"
+                "  • Qatar Airways CrewLink PDF (grid layout with dates as columns)\n"
+                "  • Tabular format (with vertical bars/pipes '|')\n"
+                "  • CSV files (comma-separated values)\n\n"
+                "ACTION: Please verify the PDF is not image-based or corrupted.\n"
+                "        Try uploading again, or contact support with a sample PDF."
+            )
+        except Exception as e:
+            raise NotImplementedError(str(e))
 
 # ============================================================================
 # CSV PARSER
