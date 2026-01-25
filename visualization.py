@@ -241,7 +241,7 @@ class FatigueVisualizer:
                     line=dict(width=2 if is_selected else 1.5, color=risk_color),
                     opacity=opacity,
                     hoverinfo="text",
-                    text=f"Flight {flight_no} | Perf: {landing_perf:.0f if landing_perf else 'N/A'}%",
+                    text=f"Flight {flight_no} | Perf: {landing_perf:.0f}%" if landing_perf is not None else f"Flight {flight_no} | Perf: N/A",
                     showlegend=False
                 ))
                 trace_count += 1
