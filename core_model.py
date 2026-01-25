@@ -588,9 +588,17 @@ class BorbelyFatigueModel:
         sleep_history: List[SleepBlock],
         circadian_phase_shift: float = 0.0,
         initial_s: float = 0.3,
-        resolution_minutes: int = 5
+        resolution_minutes: int = 5,
+        cached_s: Optional[float] = None
     ) -> DutyTimeline:
-        """Simulate single duty with high-resolution timeline"""
+        """
+        Simulate single duty with high-resolution timeline
+        
+        OPTIMIZATION: Accepts cached_s from previous duty to avoid recomputing
+        Process S from full sleep history at every 5-minute step.
+        
+        Performance improvement: O(history_length × duty_steps) → O(duty_steps)
+        """
         
         timeline = []
         
@@ -605,16 +613,27 @@ class BorbelyFatigueModel:
         if last_sleep:
             time_since_wake = duty.report_time_utc - last_sleep.end_utc
         
+        # Compute initial S once (not at every step)
+        if cached_s is not None:
+            s_current = cached_s  # Use cached value from previous duty
+        else:
+            s_current = self.compute_process_s(initial_s, duty.report_time_utc, sleep_history, duty.report_time_utc)
+        
         # Simulate
         current_time = duty.report_time_utc
         
         while current_time <= duty.release_time_utc:
-            s = self.compute_process_s(initial_s, current_time, sleep_history, duty.report_time_utc)
+            # Track S progression during duty (incremental, not from history)
+            time_elapsed = (current_time - duty.report_time_utc).total_seconds() / 3600
+            s_infinity = self.params.S_max
+            s_current = s_infinity - (s_infinity - s_current) * math.exp(-time_elapsed / self.params.tau_i)
+            s_current = max(self.params.S_min, min(self.params.S_max, s_current))
+            
             c = self.compute_process_c(current_time, duty.home_base_timezone, circadian_phase_shift)
             current_wake = (current_time - duty.report_time_utc) + time_since_wake
             w = self.compute_sleep_inertia(current_wake)
             
-            performance = self.integrate_performance(c, s, w)
+            performance = self.integrate_performance(c, s_current, w)
             phase = self.get_flight_phase(duty.segments, current_time)
             
             tz = pytz.timezone(duty.home_base_timezone)
@@ -622,7 +641,7 @@ class BorbelyFatigueModel:
                 timestamp_utc=current_time,
                 timestamp_local=current_time.astimezone(tz),
                 circadian_component=c,
-                homeostatic_component=s,
+                homeostatic_component=s_current,
                 sleep_inertia_component=w,
                 raw_performance=performance,
                 current_flight_phase=phase,
@@ -632,7 +651,11 @@ class BorbelyFatigueModel:
             timeline.append(point)
             current_time += timedelta(minutes=resolution_minutes)
         
-        return self._build_duty_timeline(duty, timeline, sleep_history, circadian_phase_shift)
+        # Build timeline and cache final state
+        duty_timeline = self._build_duty_timeline(duty, timeline, sleep_history, circadian_phase_shift)
+        duty_timeline.final_process_s = s_current  # Cache for next duty
+        
+        return duty_timeline
     
     def _build_duty_timeline(
         self,
@@ -736,6 +759,7 @@ class BorbelyFatigueModel:
         
         # Simulate each duty
         previous_duty = None
+        previous_timeline = None
         
         for i, duty in enumerate(roster.duties):
             phase_shift = self._get_phase_shift_at_time(duty.report_time_utc, body_clock_timeline)
@@ -746,7 +770,17 @@ class BorbelyFatigueModel:
                    s.end_utc >= duty.report_time_utc - timedelta(hours=48)
             ]
             
-            timeline_obj = self.simulate_duty(duty, relevant_sleep, phase_shift, initial_s=current_s)
+            # OPTIMIZATION: Use cached S from previous duty to avoid history re-computation
+            cached_s_value = None
+            if previous_timeline and previous_timeline.final_process_s > 0:
+                cached_s_value = previous_timeline.final_process_s
+            
+            timeline_obj = self.simulate_duty(
+                duty, relevant_sleep, phase_shift, 
+                initial_s=current_s,
+                cached_s=cached_s_value
+            )
+            previous_timeline = timeline_obj
             
             # Update sleep debt (with decay)
             if previous_duty:

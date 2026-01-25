@@ -557,6 +557,10 @@ class DutyTimeline:
     # NEW in V2
     pinch_events: List[PinchEvent] = field(default_factory=list)
     circadian_phase_shift: float = 0.0
+    
+    # OPTIMIZATION: Cache final state to avoid recomputation in next duty
+    final_circadian_state: Optional['CircadianState'] = None
+    final_process_s: float = 0.0
 
 
 @dataclass
