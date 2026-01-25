@@ -30,8 +30,6 @@ from data_models import (
     PerformancePoint, PinchEvent, DutyTimeline, MonthlyAnalysis, FlightPhase
 )
 from easa_utils import BiomathematicalSleepEstimator, EASAComplianceValidator
-from time_on_task import TimeOnTaskModel
-from sleep_debt import SleepDebtModel, SleepHistory
 
 
 class BorbelyFatigueModel:
@@ -63,10 +61,6 @@ class BorbelyFatigueModel:
             self.config.sleep_quality_params
         )
         self.validator = EASAComplianceValidator(self.config.easa_framework)
-        
-        # Advanced fatigue models
-        self.tot_model = TimeOnTaskModel()
-        self.debt_model = SleepDebtModel()
         
         # Borbély parameters (can be overridden)
         self.s_upper = 1.0
@@ -260,7 +254,7 @@ class BorbelyFatigueModel:
     def initialize_s_from_history_corrected(
         self, 
         report_time_utc: datetime, 
-        history: SleepHistory
+        history: List[SleepBlock]
     ) -> float:
         """
         CORRECTED S_0 initialization with tiered fallback
