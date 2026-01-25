@@ -33,6 +33,7 @@ class FlightPhase(Enum):
     APPROACH = "approach"
     LANDING = "landing"
     TAXI_IN = "taxi_in"
+    GROUND_TURNAROUND = "ground_turnaround"
 
 
 # ============================================================================
