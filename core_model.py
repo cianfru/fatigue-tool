@@ -429,46 +429,60 @@ class BorbelyFatigueModel:
         c: float
     ) -> float:
         """
-        CORRECTED Integration: Multiplicative (non-linear)
+        CORRECTED Integration: Weighted average (not multiplication)
+        Based on Boeing BAM method
         
-        Formula: Alertness = (1 - S) × (1 + A×C) / (1 + A)
-        where A = circadian amplitude
+        Formula: Alertness = (1-S)*0.6 + normalize(C)*0.4
+        where:
+          - (1-S) is homeostatic alertness (0-1)
+          - normalize(C) converts circadian from [-1,+1] to [0,1]
         """
+        # Homeostatic alertness: High S = tired, so invert
         s_alertness = 1.0 - s
-        c_alertness = (1.0 + self.c_amplitude * c) / (1.0 + self.c_amplitude)
-        return s_alertness * c_alertness
+        
+        # Circadian alertness: Normalize from [-1, +1] to [0, 1]
+        # c = +1 (peak) → 1.0 alertness
+        # c = -1 (trough) → 0.0 alertness
+        c_alertness = (c + 1.0) / 2.0
+        
+        # Weighted average (NOT multiplication)
+        # Homeostatic is primary driver (60%), circadian modulates (40%)
+        base_alertness = s_alertness * 0.6 + c_alertness * 0.4
+        
+        return base_alertness
     
     def integrate_performance(self, c: float, s: float, w: float) -> float:
         """
-        Integrate three processes into performance
+        CORRECTED: Integrate three processes into performance (0-100 scale)
         
-        V2: MULTIPLICATIVE INTEGRATION
-        Captures interaction (high S during low C = multiplicatively worse)
+        Uses weighted average of S and C, then applies time-on-task penalty.
+        Based on Boeing BAM (Biomathematical Alertness Model).
+        
+        Returns score 0-100 where:
+        - 85-100: Optimal (well-rested, good circadian alignment)
+        - 70-85: Good (slight fatigue)
+        - 55-70: Moderate fatigue
+        - 40-55: High fatigue
+        - <40: Critical fatigue
         """
         # Validation
         assert 0 <= c <= 1, f"C out of range: {c}"
         assert 0 <= s <= 1, f"S out of range: {s}"
         assert 0 <= w <= 1, f"W out of range: {w}"
         
-        # Convert S to alertness
-        h_alertness = (self.params.S_max - s) / (self.params.S_max - self.params.S_min)
+        # STEP 1: Get weighted average of S and C (converts C from [0,1] to [-1,+1] range)
+        # Note: c is already in [0,1], convert to [-1,+1] for proper circadian phase
+        c_phase = (c * 2.0) - 1.0  # Convert [0,1] to [-1,+1]
+        base_alertness = self.integrate_s_and_c_multiplicative(s, c_phase)
         
-        # Weighted combination
-        weighted_sum = (
-            c * self.params.weight_circadian +
-            h_alertness * self.params.weight_homeostatic
-        )
+        # STEP 2: Apply time-on-task impairment (multiplicative penalty)
+        alertness_with_tot = base_alertness * (1.0 - w)
         
-        # Apply interaction exponent
-        if self.params.interaction_exponent != 1.0:
-            weighted_sum = weighted_sum ** self.params.interaction_exponent
+        # STEP 3: Scale to 0-100
+        performance = alertness_with_tot * 100
         
-        # Multiplicative penalty for inertia
-        combined = weighted_sum * (1.0 - w)
-        
-        # Scale to 0-100
-        performance = combined * 100
-        
+        # Validation
+        performance = max(0.0, min(100.0, performance))
         assert 0 <= performance <= 100, f"Performance out of range: {performance}"
         
         return performance
