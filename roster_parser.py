@@ -20,6 +20,7 @@ from typing import List, Dict, Optional, Tuple
 import pytz
 
 from data_models import Airport, FlightSegment, Duty, Roster
+from qatar_roster_parser import QatarRosterParser
 
 # ============================================================================
 # AIRPORT DATABASE
@@ -139,19 +140,53 @@ class PDFRosterParser:
         
         # Parse based on format
         duties = []
-        if roster_format == 'crewlink':
-            # CrewLink format detected - try line-based parser
-            print("   Trying CrewLink parser...")
-            duties = self._parse_crewlink_format(full_text)
-            
+        if roster_format == 'crewlink' or roster_format == 'generic':
+            # Try specialized Qatar Airways grid-based parser first
+            # (works for both explicitly detected and unknown formats)
+            try:
+                print("   Attempting specialized Qatar Airways grid parser...")
+                qatar_parser = QatarRosterParser(timezone_format='auto')
+                result = qatar_parser.parse_roster(pdf_path)
+                duties = result['duties']
+                
+                # Report unknown airports if any
+                if result.get('unknown_airports'):
+                    print(f"   ⚠️  Found {len(result['unknown_airports'])} unknown airports:")
+                    for code in sorted(result['unknown_airports']):
+                        print(f"      - {code}")
+                
+                if duties:
+                    print(f"   ✅ Qatar parser succeeded")
+                else:
+                    print(f"   ℹ️  Qatar parser found no duties")
+                    
+            except Exception as e:
+                print(f"   ⚠️  Qatar parser: {e}")
+                
+                # Only fall back to line-based if explicitly detected as CrewLink
+                if roster_format == 'crewlink':
+                    print("   Trying line-based CrewLink parser...")
+                    duties = self._parse_crewlink_format(full_text)
+                else:
+                    # Generic format - raise informative error
+                    raise NotImplementedError(
+                        "❌ Unsupported PDF format detected.\n\n"
+                        "The PDF could not be parsed. This could mean:\n"
+                        "  1. The PDF format is not supported\n"
+                        "  2. The PDF is image-based or corrupted\n"
+                        "  3. Text extraction failed\n\n"
+                        "Supported formats:\n"
+                        "  • Qatar Airways CrewLink (grid layout with dates as columns)\n"
+                        "  • Tabular format (with vertical pipes '|')\n"
+                        "  • CSV files (comma-separated values)\n\n"
+                        "Please provide a text-based PDF roster or contact support."
+                    )
+        
         elif roster_format == 'tabular':
-            # Tabular format with pipes
-            print("   Trying tabular parser...")
             duties = self._parse_tabular_format(full_text)
         
         else:
-            # Generic or unknown format - try generic parser
-            print("   Trying generic parser...")
+            # Fallback: Generic line-by-line parser
             duties = self._parse_generic_format(full_text)
         
         roster = Roster(
@@ -215,7 +250,6 @@ class PDFRosterParser:
         current_duty_flights = []
         current_date = None
         report_time = None
-        match_count = 0
         
         for line in lines:
             # Skip header/empty lines
@@ -226,8 +260,6 @@ class PDFRosterParser:
             match = self._extract_duty_line_crewlink(line)
             if not match:
                 continue
-            
-            match_count += 1
             
             date, flight_num, dep, arr, std, sta, rep, rel = match
             
@@ -266,27 +298,12 @@ class PDFRosterParser:
             )
             duties.append(duty)
         
-        if match_count == 0:
-            print(f"   ⚠️  No CrewLink pattern matches found (checked {len(lines)} lines)")
-        else:
-            print(f"   ✓ Found {match_count} matching lines → {len(duties)} duties extracted")
-        
         return duties
     
     def _extract_duty_line_crewlink(self, line: str) -> Optional[Tuple]:
         """Extract data from single CrewLink roster line"""
-        # Try multiple regex patterns for flexibility
-        patterns = [
-            # Pattern 1: Standard format with optional +1/-1 on times
-            r'(\d{1,2}-[A-Z]{3}-\d{2,4})\s+([A-Z]{2}\d{1,4})\s+([A-Z]{3})\s+([A-Z]{3})\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2}(?:[+-]\d)?)\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2}(?:[+-]\d)?)',
-            # Pattern 2: Alternative with case-insensitive month
-            r'(\d{1,2}-[A-Z][a-z]{2}-\d{2,4})\s+([A-Z]{2}\d{1,4})\s+([A-Z]{3})\s+([A-Z]{3})\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2}(?:[+-]\d)?)\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2}(?:[+-]\d)?)',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, line)
-            if match:
-                return match.groups()
+        # Regex pattern for CrewLink format
+        pattern = r'(\d{2}-[A-Z]{3}-\d{2,4})\s+([A-Z]{2}\d{1,4})\s+([A-Z]{3})\s+([A-Z]{3})\s+(\d{2}:\d{2})\s+(\d{2}:\d{2}(?:\+\d)?)\s+(\d{2}:\d{2})\s+(\d{2}:\d{2}(?:\+\d)?)'
         
         match = re.search(pattern, line)
         if match:
@@ -399,36 +416,31 @@ class PDFRosterParser:
         )
     
     def _parse_generic_format(self, text: str) -> List[Duty]:
-        """Fallback generic parser - tries CrewLink pattern matching"""
+        """Fallback generic parser - tries specialized Qatar parser as last resort"""
         
-        print("⚠️  Generic/unknown format detected - attempting pattern matching...")
+        print("⚠️  Generic format detected - attempting specialized Qatar parser...")
         
-        # Try CrewLink-style pattern matching first
+        # Last resort: try the specialized Qatar parser
         try:
-            duties = self._parse_crewlink_format(text)
-            if duties:
-                print(f"   ✓ Pattern matching succeeded: {len(duties)} duties found")
-                return duties
-            else:
-                print("   ℹ️  Pattern matching found no duties")
+            qatar_parser = QatarRosterParser(timezone_format='auto')
+            # We need a temp PDF path - this is a limitation
+            # The generic parser receives text, not the PDF path
+            raise NotImplementedError(
+                "❌ Unsupported PDF format detected.\n\n"
+                "The text-based detection didn't recognize this as a Qatar Airways roster.\n\n"
+                "This could mean:\n"
+                "  1. The PDF keywords ('CrewLink', 'Qatar Airways', 'Period', etc.) are not being extracted\n"
+                "  2. The PDF uses a different format than expected\n"
+                "  3. The PDF is image-based or has extraction issues\n\n"
+                "Supported formats:\n"
+                "  • Qatar Airways CrewLink PDF (grid layout with dates as columns)\n"
+                "  • Tabular format (with vertical bars/pipes '|')\n"
+                "  • CSV files (comma-separated values)\n\n"
+                "ACTION: Please verify the PDF is not image-based or corrupted.\n"
+                "        Try uploading again, or contact support with a sample PDF."
+            )
         except Exception as e:
-            print(f"   ⚠️  Pattern matching failed: {e}")
-        
-        # If nothing worked, raise informative error
-        raise NotImplementedError(
-            "❌ Unsupported PDF format detected.\n\n"
-            "The parser tried multiple strategies but could not extract duty information.\n\n"
-            "This could mean:\n"
-            "  1. The PDF format is not supported\n"
-            "  2. The PDF is image-based or corrupted\n"
-            "  3. Text extraction failed\n\n"
-            "Supported formats:\n"
-            "  • Qatar Airways CrewLink PDF (grid layout with dates as columns)\n"
-            "  • Tabular format (with vertical pipes '|')\n"
-            "  • CSV files (comma-separated values)\n\n"
-            "ACTION: Please verify the PDF is not image-based or corrupted.\n"
-            "        Try uploading again, or contact support with a sample PDF."
-        )
+            raise NotImplementedError(str(e))
 
 # ============================================================================
 # CSV PARSER
