@@ -17,6 +17,8 @@ from datetime import datetime, timedelta, time
 from typing import Optional, List, Dict
 import pandas as pd
 import calendar
+import folium
+from folium import plugins
 
 from data_models import DutyTimeline, MonthlyAnalysis, FlightPhase
 from config import ModelConfig
@@ -262,6 +264,153 @@ class FatigueVisualizer:
         )
         
         return fig
+    
+    def create_route_map_folium(self, monthly_analysis: MonthlyAnalysis):
+        """
+        Creates an interactive Folium map with flight routes color-coded by risk level
+        
+        Features:
+        - Beautiful OpenStreetMap/satellite base layer
+        - Flight routes with risk-based coloring
+        - Airport markers with custom icons
+        - Hover tooltips with flight and performance info
+        - Responsive and zoomable
+        """
+        # Calculate center point of all flights
+        all_lats = []
+        all_lons = []
+        
+        for duty in monthly_analysis.analysis.roster.duties:
+            for segment in duty.segments:
+                if hasattr(segment.departure_airport, 'latitude') and segment.departure_airport.latitude:
+                    all_lats.append(segment.departure_airport.latitude)
+                    all_lons.append(segment.departure_airport.longitude)
+                if hasattr(segment.arrival_airport, 'latitude') and segment.arrival_airport.latitude:
+                    all_lats.append(segment.arrival_airport.latitude)
+                    all_lons.append(segment.arrival_airport.longitude)
+        
+        if not all_lats:
+            return None
+        
+        center_lat = sum(all_lats) / len(all_lats)
+        center_lon = sum(all_lons) / len(all_lons)
+        
+        # Create Folium map
+        m = folium.Map(
+            location=[center_lat, center_lon],
+            zoom_start=4,
+            tiles='OpenStreetMap'  # Can also use 'Satellite', 'Terrain', 'CartoDB positron'
+        )
+        
+        # Create lookup of duty_timelines by duty_id
+        timeline_map = {dt.duty_id: dt for dt in monthly_analysis.duty_timelines}
+        
+        # Add flight routes
+        for duty in monthly_analysis.analysis.roster.duties:
+            duty_timeline = timeline_map.get(duty.duty_id)
+            
+            for segment in duty.segments:
+                # Get coordinates
+                dep_lat = getattr(segment.departure_airport, 'latitude', None)
+                dep_lon = getattr(segment.departure_airport, 'longitude', None)
+                arr_lat = getattr(segment.arrival_airport, 'latitude', None)
+                arr_lon = getattr(segment.arrival_airport, 'longitude', None)
+                
+                # Skip if missing coordinates
+                if dep_lat is None or dep_lon is None or arr_lat is None or arr_lon is None:
+                    continue
+                
+                # Get landing performance for coloring
+                landing_perf = None
+                if duty_timeline and hasattr(segment, 'landing_performance'):
+                    landing_perf = segment.landing_performance
+                
+                risk_color = self._get_risk_color_html(landing_perf)
+                
+                # Create flight path with risk-based color
+                flight_no = getattr(segment, 'flight_number', 'N/A')
+                dep_code = segment.departure_airport.code
+                arr_code = segment.arrival_airport.code
+                
+                hover_text = f"<b>{flight_no}</b><br>{dep_code} → {arr_code}<br>"
+                if landing_perf is not None:
+                    hover_text += f"Perf: {landing_perf:.0f}/100"
+                else:
+                    hover_text += "Perf: N/A"
+                
+                # Draw the route line
+                folium.PolyLine(
+                    locations=[[dep_lat, dep_lon], [arr_lat, arr_lon]],
+                    color=risk_color,
+                    weight=3,
+                    opacity=0.8,
+                    popup=folium.Popup(hover_text, max_width=250)
+                ).add_to(m)
+                
+                # Add departure airport marker
+                folium.CircleMarker(
+                    location=[dep_lat, dep_lon],
+                    radius=6,
+                    popup=f"<b>{dep_code}</b><br>Departure",
+                    color=risk_color,
+                    fill=True,
+                    fillColor=risk_color,
+                    fillOpacity=0.7,
+                    weight=2
+                ).add_to(m)
+        
+        # Add arrival airports as markers
+        visited_airports = set()
+        for duty in monthly_analysis.analysis.roster.duties:
+            for segment in duty.segments:
+                arr_lat = getattr(segment.arrival_airport, 'latitude', None)
+                arr_lon = getattr(segment.arrival_airport, 'longitude', None)
+                arr_code = segment.arrival_airport.code
+                
+                if arr_lat and arr_lon and arr_code not in visited_airports:
+                    visited_airports.add(arr_code)
+                    folium.CircleMarker(
+                        location=[arr_lat, arr_lon],
+                        radius=6,
+                        popup=f"<b>{arr_code}</b><br>Arrival",
+                        color='#2ECC71',
+                        fill=True,
+                        fillColor='#2ECC71',
+                        fillOpacity=0.7,
+                        weight=2
+                    ).add_to(m)
+        
+        # Add legend
+        legend_html = '''
+        <div style="position: fixed; 
+                    bottom: 50px; right: 50px; width: 200px; height: 200px; 
+                    background-color: white; border:2px solid grey; z-index:9999; 
+                    font-size:14px; padding: 10px; border-radius: 5px;">
+            <p style="margin:5px 0;"><b>Risk Levels</b></p>
+            <p style="margin:5px 0;"><span style="color:#D55E00;">●</span> Critical (&lt;60)</p>
+            <p style="margin:5px 0;"><span style="color:#E69F00;">●</span> High (60-74)</p>
+            <p style="margin:5px 0;"><span style="color:#F0E442;">●</span> Moderate (75-84)</p>
+            <p style="margin:5px 0;"><span style="color:#009E73;">●</span> Low (85+)</p>
+            <hr style="margin:5px 0;">
+            <p style="margin:5px 0;"><span style="color:#2ECC71;">●</span> Home Base</p>
+        </div>
+        '''
+        m.get_root().html.add_child(folium.Element(legend_html))
+        
+        return m
+    
+    def _get_risk_color_html(self, performance: Optional[float]) -> str:
+        """Map performance score to HTML color hex code for Folium"""
+        if performance is None:
+            return '#009E73'  # Default to low risk - green
+        if performance < 60:
+            return '#D55E00'  # Critical - red-orange
+        elif performance < 75:
+            return '#E69F00'  # High - orange
+        elif performance < 85:
+            return '#F0E442'  # Moderate - yellow
+        else:
+            return '#009E73'  # Low - green
     
     def _get_risk_color(self, performance: Optional[float]) -> str:
         """Map performance score to risk color"""

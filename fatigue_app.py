@@ -19,6 +19,7 @@ from pathlib import Path
 import tempfile
 from datetime import datetime
 import traceback
+from streamlit_folium import st_folium
 
 # Add current directory to path
 sys.path.append(str(Path(__file__).parent))
@@ -541,11 +542,15 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     st.subheader("🌍 Route Network Analysis")
     
     try:
-        route_fig = viz.create_route_map(monthly_analysis)
-        if route_fig:
-            st.plotly_chart(route_fig, use_container_width=True)
+        route_map = viz.create_route_map_folium(monthly_analysis)
+        if route_map:
+            st_folium(route_map, width=1400, height=600)
+        else:
+            st.warning("No flight routes available to display")
     except Exception as e:
         st.warning(f"Route map not available: {str(e)}")
+        with st.expander("🔍 Technical Details"):
+            st.code(traceback.format_exc())
     
     # ========================================================================
     # STEP 4: DOWNLOAD REPORTS
