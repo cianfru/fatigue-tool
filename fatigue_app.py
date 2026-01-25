@@ -121,6 +121,17 @@ else:  # Date Range
 
 st.sidebar.markdown("---")
 
+# Theme Toggle
+st.sidebar.subheader("🎨 Appearance")
+theme = st.sidebar.radio(
+    "Theme:",
+    ["🌙 Dark", "☀️ Light"],
+    help="Choose your preferred theme"
+)
+selected_theme = "dark" if "Dark" in theme else "light"
+
+st.sidebar.markdown("---")
+
 # Model Configuration
 st.sidebar.subheader("🔬 Model Configuration")
 
@@ -286,7 +297,7 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     roster = st.session_state.roster
     
     # Initialize visualizer once for all charts
-    viz = FatigueVisualizer(config, theme="dark")
+    viz = FatigueVisualizer(config, theme=selected_theme)
     
     st.markdown("---")
     st.header("📊 Step 3: Results")
