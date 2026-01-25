@@ -262,8 +262,10 @@ class FatigueVisualizer:
         
         return fig
     
-    def _get_risk_color(self, performance: float) -> str:
+    def _get_risk_color(self, performance: Optional[float]) -> str:
         """Map performance score to risk color"""
+        if performance is None:
+            return RISK_PALETTE['low']  # Default to low risk if no performance data
         if performance < 60:
             return RISK_PALETTE['critical']
         elif performance < 75:
