@@ -659,19 +659,28 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
         
         viz.plot_monthly_summary(monthly_analysis, save_path=tmp_perf.name)
         
-        # Check if PNG was created, or if HTML was created instead (Chrome not available)
-        perf_file = tmp_perf.name
-        if not os.path.exists(perf_file):
-            # Try HTML version
-            perf_file = tmp_perf.name.replace('.png', '.html')
+        # Determine which file format was created
+        perf_file = None
         
-        if os.path.exists(perf_file):
-            # Display the chart (image or interactive HTML)
-            if perf_file.endswith('.png'):
-                st.image(perf_file, use_container_width=True)
-            else:
-                # HTML file - use plotly_chart or display with components
-                st.markdown("*Interactive chart (requires Plotly)*")
+        # Check if PNG was successfully created (file size > 1KB)
+        if os.path.exists(tmp_perf.name) and os.path.getsize(tmp_perf.name) > 1024:
+            perf_file = tmp_perf.name
+        else:
+            # Try HTML version (Chrome not available on Streamlit Cloud)
+            html_path = tmp_perf.name.replace('.png', '.html')
+            if os.path.exists(html_path):
+                perf_file = html_path
+        
+        if perf_file:
+            # Display the chart
+            try:
+                if perf_file.endswith('.png'):
+                    st.image(perf_file, use_container_width=True)
+                else:
+                    # HTML file - show note that it's available for download
+                    st.info("📊 Chart generated as interactive HTML (Chrome not available on this server)")
+            except Exception as e:
+                st.warning(f"Could not display chart: {str(e)}")
             
             # Generate chronogram
             tmp_chrono = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
@@ -689,7 +698,7 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
             col1, col2, col3 = st.columns([1, 1, 2])
             
             with col1:
-                if os.path.exists(perf_file):
+                if perf_file and os.path.exists(perf_file):
                     with open(perf_file, 'rb') as f:
                         file_ext = 'png' if perf_file.endswith('.png') else 'html'
                         st.download_button(
