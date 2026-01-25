@@ -619,6 +619,8 @@ class BorbelyFatigueModel:
         # STEP 2: Simulate duty timeline
         # ====================================================================
         
+        # Initialize s_current before loop (in case loop doesn't execute)
+        s_current = s_at_wake
         current_time = duty.report_time_utc
         
         while current_time <= duty.release_time_utc:
