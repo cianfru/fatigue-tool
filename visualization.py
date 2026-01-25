@@ -280,7 +280,7 @@ class FatigueVisualizer:
         all_lats = []
         all_lons = []
         
-        for duty in monthly_analysis.analysis.roster.duties:
+        for duty in monthly_analysis.roster.duties:
             for segment in duty.segments:
                 if hasattr(segment.departure_airport, 'latitude') and segment.departure_airport.latitude:
                     all_lats.append(segment.departure_airport.latitude)
@@ -306,7 +306,7 @@ class FatigueVisualizer:
         timeline_map = {dt.duty_id: dt for dt in monthly_analysis.duty_timelines}
         
         # Add flight routes
-        for duty in monthly_analysis.analysis.roster.duties:
+        for duty in monthly_analysis.roster.duties:
             duty_timeline = timeline_map.get(duty.duty_id)
             
             for segment in duty.segments:
@@ -361,7 +361,7 @@ class FatigueVisualizer:
         
         # Add arrival airports as markers
         visited_airports = set()
-        for duty in monthly_analysis.analysis.roster.duties:
+        for duty in monthly_analysis.roster.duties:
             for segment in duty.segments:
                 arr_lat = getattr(segment.arrival_airport, 'latitude', None)
                 arr_lon = getattr(segment.arrival_airport, 'longitude', None)
