@@ -86,12 +86,38 @@ selected_base = st.sidebar.selectbox(
 )
 home_base_code, home_timezone = home_base_options[selected_base]
 
-# Month
-month = st.sidebar.text_input(
-    "Month",
-    value=datetime.now().strftime("%Y-%m"),
-    help="Format: YYYY-MM (e.g., 2024-01)"
+# Calendar Date Selection
+st.sidebar.subheader("📅 Analysis Period")
+
+date_selection_method = st.sidebar.radio(
+    "Select period:",
+    ["Single Month", "Date Range"],
+    help="Choose how to select your analysis period"
 )
+
+if date_selection_method == "Single Month":
+    selected_date = st.sidebar.date_input(
+        "Select Month",
+        value=datetime.now().date(),
+        help="Select any day in the month you want to analyze"
+    )
+    month = selected_date.strftime("%Y-%m")
+else:  # Date Range
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        start_date = st.date_input(
+            "Start Date",
+            value=datetime.now().replace(day=1).date(),
+            help="First day of analysis period"
+        )
+    with col2:
+        end_date = st.date_input(
+            "End Date",
+            value=datetime.now().date(),
+            help="Last day of analysis period"
+        )
+    # For multi-month analysis, use start month for parsing
+    month = start_date.strftime("%Y-%m")
 
 st.sidebar.markdown("---")
 
