@@ -1,19 +1,26 @@
 """
-core_model.py - Biomathematical Fatigue Model Engine
-=====================================================
+core_model.py - Biomathematical Fatigue Model Engine (UNIFIED)
+==============================================================
 
-Two-process model with circadian rhythm + sleep inertia
+Advanced Two-Process Borbély Model with Corrections
 
-VERSION 2 FEATURES:
-- Dynamic circadian adaptation
-- Multiplicative performance integration
-- Roster-level cumulative analysis
-- Automatic sleep extraction
-- Segment-based flight phases
+VERSION 3 FEATURES (UNIFIED):
+✅ Corrected Process S (distinct sleep/wake dynamics)
+✅ Tiered wake time fallback (actual → config → default)
+✅ Timezone-aware circadian rhythm calculation
+✅ Multiplicative performance integration (non-linear)
+✅ Sleep debt vulnerability amplification
+✅ TOD surge masking (critical phases)
+✅ Inflight rest support
+✅ Solar-based light phase shift calculation
+✅ Dynamic circadian adaptation
+✅ Roster-level cumulative analysis
+✅ Segment-based flight phases
+✅ 15-minute time step simulation
 """
 
 from datetime import datetime, timedelta
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Dict
 import math
 import pytz
 
@@ -23,13 +30,27 @@ from data_models import (
     PerformancePoint, PinchEvent, DutyTimeline, MonthlyAnalysis, FlightPhase
 )
 from easa_utils import BiomathematicalSleepEstimator, EASAComplianceValidator
+from time_on_task import TimeOnTaskModel
+from sleep_debt import SleepDebtModel, SleepHistory
 
 
 class BorbelyFatigueModel:
     """
-    Core biomathematical fatigue prediction engine
+    Unified Biomathematical Fatigue Prediction Engine
     
-    Based on Borbély two-process model + circadian rhythm
+    Combines:
+    - Borbély two-process model (homeostatic + circadian)
+    - Time-on-task vigilance decrement
+    - Sleep debt vulnerability amplification
+    - TOD surge masking (adrenaline)
+    - Solar-based light phase shift
+    - Dynamic circadian adaptation
+    
+    Key improvements from integration:
+    - Process S properly separates sleep recovery vs wake accumulation
+    - Tiered fallback for wake time (actual → config → default)
+    - Timezone-aware circadian calculation with solar position
+    - Multiplicative integration for non-linear effects
     """
     
     def __init__(self, config: ModelConfig = None):
@@ -39,9 +60,31 @@ class BorbelyFatigueModel:
         self.sleep_estimator = BiomathematicalSleepEstimator(
             self.config.easa_framework,
             self.params,
-            self.config.sleep_quality_params  # NEW in V2.1
+            self.config.sleep_quality_params
         )
         self.validator = EASAComplianceValidator(self.config.easa_framework)
+        
+        # Advanced fatigue models
+        self.tot_model = TimeOnTaskModel()
+        self.debt_model = SleepDebtModel()
+        
+        # Borbély parameters (can be overridden)
+        self.s_upper = 1.0
+        self.s_lower = 0.1
+        self.tau_i = 18.2  # Hours - wake accumulation
+        self.tau_d = 4.2   # Hours - sleep recovery
+        
+        # Circadian parameters
+        self.c_amplitude = 0.3       # Increased from 0.1
+        self.c_peak_hour = 16.0      # Local time of peak alertness
+        
+        # Operational parameters
+        self.tod_surge_val = 0.05    # 5% performance boost
+        self.light_shift_rate = 0.5  # Hours/hour of bright light
+        
+        # Fallback defaults
+        self.default_wake_hour = 8   # If not specified
+        self.default_initial_s = 0.3 # If no history
     
     # ========================================================================
     # CIRCADIAN ADAPTATION
@@ -184,6 +227,222 @@ class BorbelyFatigueModel:
         )
         
         return inertia
+    
+    # ========================================================================
+    # AEROWAKE ENHANCEMENTS (Integrated from aerowake_engine.py)
+    # ========================================================================
+    
+    def update_s_process_corrected(
+        self, 
+        s_current: float, 
+        delta_t: float, 
+        is_sleeping: bool
+    ) -> float:
+        """
+        CORRECTED Process S: Properly handles sleep vs wake states
+        
+        Formula (wake):   S(t) = S_upper - (S_upper - S_0) * exp(-t/τ_i)
+        Formula (sleep):  S(t) = S_lower + (S_0 - S_lower) * exp(-t/τ_d)
+        
+        This is more accurate than the original linear interpolation.
+        """
+        if is_sleeping:
+            # During sleep: S decays toward lower asymptote
+            s_target = self.s_lower
+            tau = self.tau_d
+            return s_target + (s_current - s_target) * math.exp(-delta_t / tau)
+        else:
+            # During wake: S rises toward upper asymptote
+            s_target = self.s_upper
+            tau = self.tau_i
+            return s_target - (s_target - s_current) * math.exp(-delta_t / tau)
+    
+    def initialize_s_from_history_corrected(
+        self, 
+        report_time_utc: datetime, 
+        history: SleepHistory
+    ) -> float:
+        """
+        CORRECTED S_0 initialization with tiered fallback
+        
+        Priority:
+        1. Actual wake time from sleep data
+        2. Configured default hour
+        3. Engine default (8 AM)
+        """
+        if not history.daily_sleep:
+            return self.default_initial_s
+
+        last_sleep = history.daily_sleep[-1]
+        
+        # Tier 1: Actual wake time
+        if hasattr(last_sleep, 'wake_time_utc') and last_sleep.wake_time_utc:
+            wake_time = last_sleep.wake_time_utc
+        else:
+            # Tier 2 & 3: Configured or default hour
+            hour = getattr(self, 'default_wake_hour', 8)
+            wake_time = datetime.combine(
+                last_sleep.date, 
+                datetime.min.time()
+            ).replace(hour=hour, tzinfo=pytz.utc)
+
+        # Calculate time elapsed
+        hours_awake = (report_time_utc - wake_time).total_seconds() / 3600
+        
+        # Edge case: report before wake (night shift)
+        if hours_awake < 0:
+            return self.s_lower
+
+        # Evolve S from wake to report
+        s_at_wake = self.s_lower
+        s_at_report = self.update_s_process_corrected(
+            s_at_wake, hours_awake, is_sleeping=False
+        )
+        
+        return s_at_report
+    
+    def calculate_light_phase_shift(
+        self, 
+        current_time: datetime, 
+        duty: Duty, 
+        delta_t: float
+    ) -> float:
+        """
+        ENHANCED Light phase shift from solar position
+        
+        Implements proper solar elevation calculation and phase response curve.
+        Supports eastbound (advance) and westbound (delay) flight dynamics.
+        """
+        
+        if not duty.segments:
+            return 0.0
+        
+        # Find current segment
+        current_segment = None
+        for segment in duty.segments:
+            if segment.scheduled_departure_utc <= current_time <= segment.scheduled_arrival_utc:
+                current_segment = segment
+                break
+        
+        if not current_segment:
+            return 0.0
+        
+        # ====================================================================
+        # SOLAR POSITION CALCULATION
+        # ====================================================================
+        
+        try:
+            dep_lat = current_segment.departure_airport.latitude
+            dep_lon = current_segment.departure_airport.longitude
+            arr_lat = current_segment.arrival_airport.latitude
+            arr_lon = current_segment.arrival_airport.longitude
+            
+            lon_delta = arr_lon - dep_lon
+            
+            # Interpolate current position
+            segment_duration = (
+                current_segment.scheduled_arrival_utc - 
+                current_segment.scheduled_departure_utc
+            ).total_seconds() / 3600
+            
+            if segment_duration <= 0:
+                return 0.0
+            
+            time_into_segment = (
+                current_time - current_segment.scheduled_departure_utc
+            ).total_seconds() / 3600
+            
+            progress = min(1.0, max(0.0, time_into_segment / segment_duration))
+            
+            current_lat = dep_lat + (arr_lat - dep_lat) * progress
+            current_lon = dep_lon + (lon_delta) * progress
+            
+        except (AttributeError, TypeError):
+            return 0.0
+        
+        # ====================================================================
+        # SOLAR ELEVATION (simplified algorithm)
+        # ====================================================================
+        
+        day_of_year = current_time.timetuple().tm_yday
+        solar_declination = 23.44 * math.sin(
+            2 * math.pi * (day_of_year - 81) / 365.25
+        ) * math.pi / 180
+        
+        hour_angle = (current_time.hour + current_time.minute / 60.0) - 12.0
+        hour_angle = hour_angle * 15 * math.pi / 180
+        
+        lat_rad = current_lat * math.pi / 180
+        
+        sin_elevation = (
+            math.sin(lat_rad) * math.sin(solar_declination) +
+            math.cos(lat_rad) * math.cos(solar_declination) * math.cos(hour_angle)
+        )
+        
+        sin_elevation = max(-1.0, min(1.0, sin_elevation))
+        elevation_deg = math.asin(sin_elevation) * 180 / math.pi
+        
+        # ====================================================================
+        # LIGHT INTENSITY
+        # ====================================================================
+        
+        if elevation_deg < 0:
+            light_intensity = max(0.0, (elevation_deg + 6) / 6) * 0.2
+        else:
+            light_intensity = min(1.0, (elevation_deg / 30))
+        
+        # ====================================================================
+        # FLIGHT DIRECTION
+        # ====================================================================
+        
+        flight_direction = 1.0 if lon_delta > 0 else -1.0  # 1=East, -1=West
+        
+        # ====================================================================
+        # PHASE RESPONSE CURVE
+        # ====================================================================
+        
+        local_hour = current_time.hour + (current_lon / 15)
+        local_hour = local_hour % 24
+        
+        melatonin_onset_local = 21.0
+        phase = (local_hour - melatonin_onset_local) % 24
+        
+        if 3 <= phase < 9:      # Advance zone
+            prc_amplitude = 1.5
+        elif 9 <= phase < 15:   # Weaker advance
+            prc_amplitude = 0.5
+        elif 15 <= phase < 21:  # No shift zone
+            prc_amplitude = 0.0
+        else:                    # Delay zone
+            prc_amplitude = 1.0
+        
+        # ====================================================================
+        # CALCULATE PHASE SHIFT
+        # ====================================================================
+        
+        phase_shift = (
+            light_intensity *
+            prc_amplitude *
+            flight_direction *
+            delta_t
+        )
+        
+        return phase_shift
+    
+    def integrate_s_and_c_multiplicative(
+        self, 
+        s: float, 
+        c: float
+    ) -> float:
+        """
+        CORRECTED Integration: Multiplicative (non-linear)
+        
+        Formula: Alertness = (1 - S) × (1 + A×C) / (1 + A)
+        where A = circadian amplitude
+        """
+        s_alertness = 1.0 - s
+        c_alertness = (1.0 + self.c_amplitude * c) / (1.0 + self.c_amplitude)
+        return s_alertness * c_alertness
     
     def integrate_performance(self, c: float, s: float, w: float) -> float:
         """
