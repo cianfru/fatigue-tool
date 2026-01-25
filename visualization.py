@@ -196,26 +196,45 @@ class FatigueVisualizer:
         """
         fig = go.Figure()
         
+        trace_count = 0
         for duty in analysis.duty_timelines:
             is_selected = (duty.duty_id == selected_id)
             opacity = 0.8 if is_selected else 0.2
             
             for seg in getattr(duty, 'segments', []):
+                # Access airport coordinates safely
+                dep_airport = getattr(seg, 'departure_airport', None)
+                arr_airport = getattr(seg, 'arrival_airport', None)
+                
+                if not dep_airport or not arr_airport:
+                    continue
+                
+                dep_lon = getattr(dep_airport, 'longitude', None)
+                dep_lat = getattr(dep_airport, 'latitude', None)
+                arr_lon = getattr(arr_airport, 'longitude', None)
+                arr_lat = getattr(arr_airport, 'latitude', None)
+                
+                # Skip if coordinates are missing or invalid
+                if not all([dep_lon, dep_lat, arr_lon, arr_lat]):
+                    continue
+                
                 risk_color = self._get_risk_color(getattr(duty, 'landing_performance', 100))
+                flight_no = getattr(seg, 'flight_number', 'N/A')
                 
                 fig.add_trace(go.Scattergeo(
-                    lon=[seg.dep_lon, seg.arr_lon],
-                    lat=[seg.dep_lat, seg.arr_lat],
+                    lon=[dep_lon, arr_lon],
+                    lat=[dep_lat, arr_lat],
                     mode='lines+markers',
                     line=dict(width=2 if is_selected else 1.5, color=risk_color),
                     opacity=opacity,
                     hoverinfo="text",
-                    text=f"Flight {getattr(seg, 'flight_no', 'N/A')} | Perf: {getattr(duty, 'landing_performance', 100):.0f}%",
+                    text=f"Flight {flight_no} | Perf: {getattr(duty, 'landing_performance', 100):.0f}%",
                     showlegend=False
                 ))
+                trace_count += 1
         
         fig.update_layout(
-            title=f"Route Heatmap ({getattr(analysis.roster, 'roster_id', 'Roster') if hasattr(analysis, 'roster') else 'Roster'})",
+            title=f"Route Heatmap ({getattr(analysis.roster, 'roster_id', 'Roster') if hasattr(analysis, 'roster') else 'Roster'}) - {trace_count} routes",
             geo=dict(
                 projection_type='natural earth',
                 showland=True,
