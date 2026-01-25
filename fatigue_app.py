@@ -35,6 +35,7 @@ from core_model import BorbelyFatigueModel
 from roster_parser import PDFRosterParser, CSVRosterParser, AirportDatabase
 from easa_utils import FatigueRiskScorer
 from visualization import FatigueVisualizer
+from aviation_calendar import AviationCalendar
 from config import ModelConfig
 
 # ============================================================================
@@ -309,18 +310,24 @@ if uploaded_file:
                     tmp.write(uploaded_file.read())
                     tmp_path = tmp.name
                 
+                st.write(f"DEBUG: File saved to {tmp_path}, file type: {Path(uploaded_file.name).suffix}")
+                
                 if uploaded_file.name.endswith('.pdf'):
+                    st.write("DEBUG: Using PDF parser")
                     parser = PDFRosterParser(
                         home_base=home_base_code,
                         home_timezone=home_timezone
                     )
                     roster = parser.parse_pdf(tmp_path, pilot_id, month)
                 else:  # CSV
+                    st.write("DEBUG: Using CSV parser")
                     parser = CSVRosterParser(
                         home_base=home_base_code,
                         home_timezone=home_timezone
                     )
                     roster = parser.parse_csv(tmp_path, pilot_id, month)
+                
+                st.write(f"DEBUG: Parsed successfully - duties: {roster.total_duties}, sectors: {roster.total_sectors}")
             
             st.success(f"✅ Parsed {roster.total_duties} duties, {roster.total_sectors} sectors")
             
@@ -329,8 +336,10 @@ if uploaded_file:
             
             # Run fatigue analysis
             with st.spinner("🧠 Running biomathematical analysis..."):
+                st.write("DEBUG: Starting analysis...")
                 model = BorbelyFatigueModel(config)
                 monthly_analysis = model.simulate_roster(roster)
+                st.write(f"DEBUG: Analysis complete - {len(monthly_analysis.duty_timelines)} duty timelines")
             
             st.success("✅ Analysis complete!")
             
@@ -338,13 +347,14 @@ if uploaded_file:
             st.session_state.monthly_analysis = monthly_analysis
             st.session_state.analysis_complete = True
             
+            st.write("DEBUG: About to rerun...")
             # Force rerun to show results
             st.rerun()
             
         except Exception as e:
-            st.error(f"❌ Error during analysis: {str(e)}")
-            with st.expander("🔍 Technical Details"):
-                st.code(traceback.format_exc())
+            st.error(f"❌ **ERROR during analysis:** {str(e)}")
+            st.write("**Full Error Trace:**")
+            st.code(traceback.format_exc(), language="python")
             st.info("💡 **Troubleshooting:**\n- Check if all airports are in the database\n- Verify date format matches expected format\n- Ensure roster file is not corrupted")
 
 else:
@@ -572,18 +582,41 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        try:
-            fig = viz.plot_monthly_summary(monthly_analysis)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-        except Exception as e:
-            st.error(f"Error generating chart: {str(e)}")
+        st.subheader("📅 Aviation Calendar")
+        st.write("Multi-day duty calendar with risk levels")
+        if st.button("📥 Download Calendar PNG", use_container_width=True):
+            try:
+                # Generate calendar
+                cal = AviationCalendar(theme=selected_theme)
+                
+                # Save to temporary file
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
+                    cal.plot_monthly_roster(monthly_analysis, save_path=tmp.name, show_performance=True)
+                    
+                    # Read the file back and display download button
+                    with open(tmp.name, 'rb') as f:
+                        calendar_data = f.read()
+                    
+                    st.download_button(
+                        label="💾 Save Calendar PNG",
+                        data=calendar_data,
+                        file_name=f"aviation_calendar_{roster.pilot_id}_{roster.month}.png",
+                        mime="image/png",
+                        use_container_width=True
+                    )
+                    st.success("✅ Calendar generated successfully!")
+            except Exception as e:
+                st.error(f"❌ Error generating calendar: {str(e)}")
+                with st.expander("🔍 Technical Details"):
+                    st.code(traceback.format_exc())
     
     with col2:
+        st.subheader("📄 PDF Report")
         st.button("📄 Generate PDF Report", use_container_width=True, disabled=True)
         st.caption("PDF generation coming soon")
     
     with col3:
+        st.subheader("📊 Excel Export")
         st.button("📊 Export to Excel", use_container_width=True, disabled=True)
         st.caption("Excel export coming soon")
 
