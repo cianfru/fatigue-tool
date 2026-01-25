@@ -19,7 +19,13 @@ from pathlib import Path
 import tempfile
 from datetime import datetime
 import traceback
-from streamlit_folium import st_folium
+
+# Try importing folium with error handling
+try:
+    from streamlit_folium import st_folium
+    HAS_FOLIUM = True
+except ImportError:
+    HAS_FOLIUM = False
 
 # Add current directory to path
 sys.path.append(str(Path(__file__).parent))
@@ -541,16 +547,20 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     st.markdown("---")
     st.subheader("🌍 Route Network Analysis")
     
-    try:
-        route_map = viz.create_route_map_folium(monthly_analysis)
-        if route_map:
-            st_folium(route_map, width=1400, height=600)
-        else:
-            st.warning("No flight routes available to display")
-    except Exception as e:
-        st.warning(f"Route map not available: {str(e)}")
-        with st.expander("🔍 Technical Details"):
-            st.code(traceback.format_exc())
+    if not HAS_FOLIUM:
+        st.warning("📦 Folium dependency not yet installed. Please wait for Streamlit Cloud to rebuild, or redeploy the app.")
+        st.info("Dependencies are being installed from requirements.txt. This typically takes 1-2 minutes.")
+    else:
+        try:
+            route_map = viz.create_route_map_folium(monthly_analysis)
+            if route_map:
+                st_folium(route_map, width=1400, height=600)
+            else:
+                st.warning("No flight routes available to display")
+        except Exception as e:
+            st.warning(f"Route map not available: {str(e)}")
+            with st.expander("🔍 Technical Details"):
+                st.code(traceback.format_exc())
     
     # ========================================================================
     # STEP 4: DOWNLOAD REPORTS
