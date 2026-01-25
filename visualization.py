@@ -214,8 +214,8 @@ class FatigueVisualizer:
                 arr_lon = getattr(arr_airport, 'longitude', None)
                 arr_lat = getattr(arr_airport, 'latitude', None)
                 
-                # Skip if coordinates are missing or invalid
-                if not all([dep_lon, dep_lat, arr_lon, arr_lat]):
+                # Skip only if coordinates are None (missing), not if they're 0
+                if dep_lon is None or dep_lat is None or arr_lon is None or arr_lat is None:
                     continue
                 
                 risk_color = self._get_risk_color(getattr(duty, 'landing_performance', 100))
