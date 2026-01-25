@@ -104,20 +104,39 @@ class RestPeriod:
     @property
     def local_night_count(self) -> int:
         """
-        Count local nights (22:00-08:00 periods) in this rest
-        Required for recurrent rest (ORO.FTL.235(e))
+        Count local nights (for display purposes)
+        Uses 22:00-08:00 window in rest location timezone
+        
+        Note: For EASA compliance, different windows are used:
+        - Minimum rest: 22:00-08:00 (reference/home base time)
+        - Recurrent rest: 00:00-05:00 (reference/home base time)
         """
         count = 0
-        current = self.start_local.replace(hour=22, minute=0, second=0)
+        tz = pytz.timezone(self.location_timezone)
         
-        while current < self.end_local:
-            night_end = current + timedelta(hours=10)  # 22:00 to 08:00
+        rest_start_local = self.start_utc.astimezone(tz)
+        rest_end_local = self.end_utc.astimezone(tz)
+        
+        current_day = rest_start_local.date()
+        end_day = rest_end_local.date()
+        
+        while current_day <= end_day:
+            # Night: 22:00 today to 08:00 tomorrow
+            night_start = tz.localize(datetime(
+                current_day.year, current_day.month, current_day.day,
+                22, 0, 0
+            ))
+            next_day = current_day + timedelta(days=1)
+            night_end = tz.localize(datetime(
+                next_day.year, next_day.month, next_day.day,
+                8, 0, 0
+            ))
             
-            # Does this night overlap with rest period?
-            if current >= self.start_local and night_end <= self.end_local:
+            # Does rest fully contain this night?
+            if rest_start_local <= night_start and rest_end_local >= night_end:
                 count += 1
             
-            current += timedelta(days=1)
+            current_day += timedelta(days=1)
         
         return count
 
@@ -178,9 +197,22 @@ class RestPeriodAnalyzer:
     
     def __init__(self):
         # EASA limits (ORO.FTL.235)
-        self.minimum_rest_hours = 12.0
+        self.minimum_rest_hours_home = 12.0      # Home base: max(duty, 12h)
+        self.minimum_rest_hours_away = 10.0      # Away from base: max(duty, 10h)
         self.recurrent_rest_hours = 36.0
-        self.recurrent_rest_local_nights = 2
+        self.recurrent_rest_frequency_hours = 168.0  # Within 7 days
+        
+        # Local night definitions (ORO.FTL.105)
+        # For minimum rest: 22:00-08:00 (reference/home base time)
+        self.local_night_start = 22
+        self.local_night_end = 8
+        
+        # For recurrent rest: 2 local nights between 00:00-05:00 (ORO.FTL.235(e))
+        self.recurrent_night_start = 0
+        self.recurrent_night_end = 5
+        
+        # Sleep opportunity requirement (away from base)
+        self.minimum_sleep_opportunity_hours = 8.0
         
         # Practical thresholds
         self.quick_turn_threshold = 18.0  # <18h = tight turn
@@ -206,6 +238,11 @@ class RestPeriodAnalyzer:
         location_airport = previous_duty.segments[-1].arrival_airport
         is_home_base = (location_airport.timezone == previous_duty.home_base_timezone)
         
+        # Calculate previous duty duration for minimum rest calculation
+        previous_duty_duration = (
+            previous_duty.release_time_utc - previous_duty.report_time_utc
+        ).total_seconds() / 3600
+        
         rest = RestPeriod(
             rest_id=f"{previous_duty.duty_id}_to_{next_duty.duty_id}",
             previous_duty_id=previous_duty.duty_id,
@@ -218,8 +255,8 @@ class RestPeriodAnalyzer:
             requires_hotel=not is_home_base
         )
         
-        # 1. EASA compliance check
-        self._check_easa_compliance(rest)
+        # 1. EASA compliance check (pass previous duty duration and home base timezone)
+        self._check_easa_compliance(rest, previous_duty_duration, previous_duty.home_base_timezone)
         
         # 2. Sleep disruption analysis
         self._analyze_sleep_disruptions(rest, previous_duty, next_duty)
@@ -232,24 +269,78 @@ class RestPeriodAnalyzer:
         
         return rest
     
-    def _check_easa_compliance(self, rest: RestPeriod):
+    def _check_easa_compliance(self, rest: RestPeriod, previous_duty_duration: float, home_base_timezone: str):
         """
         Check against EASA ORO.FTL.235 rest requirements
+        
+        Key requirements:
+        - Home base: max(previous duty, 12h) + must include local night (22:00-08:00)
+        - Away from base: max(previous duty, 10h) + must include 8h sleep opportunity
+        - Recurrent: 36h + 2 local nights (00:00-05:00) within 168h
         """
         duration = rest.duration_hours
-        local_nights = rest.local_night_count
         
-        # Check minimum rest (ORO.FTL.235(c))
-        if duration < self.minimum_rest_hours:
+        # Determine minimum rest requirement (ORO.FTL.235(c))
+        if rest.is_home_base:
+            # Home base: as long as preceding duty OR 12h, whichever is GREATER
+            required_minimum = max(previous_duty_duration, self.minimum_rest_hours_home)
+            must_have_local_night = True
+            must_have_sleep_opp = False
+        else:
+            # Away from base: as long as preceding duty OR 10h, whichever is GREATER
+            required_minimum = max(previous_duty_duration, self.minimum_rest_hours_away)
+            must_have_local_night = False
+            must_have_sleep_opp = True
+        
+        # Check minimum duration
+        if duration < required_minimum:
             rest.is_easa_compliant = False
             rest.rest_type = RestPeriodType.ILLEGAL
+            location = "home base" if rest.is_home_base else "away from base"
             rest.easa_violations.append(
-                f"ORO.FTL.235(c): Rest {duration:.1f}h < minimum {self.minimum_rest_hours}h"
+                f"ORO.FTL.235(c): Rest {duration:.1f}h < minimum {required_minimum:.1f}h "
+                f"(previous duty {previous_duty_duration:.1f}h, {location})"
             )
             return
         
+        # Check local night requirement (home base only)
+        if must_have_local_night:
+            has_local_night = self._check_local_night_requirement(
+                rest, home_base_timezone, 
+                self.local_night_start, self.local_night_end
+            )
+            if not has_local_night:
+                rest.is_easa_compliant = False
+                rest.rest_type = RestPeriodType.ILLEGAL
+                rest.easa_violations.append(
+                    f"ORO.FTL.235(c): Home base rest must include local night "
+                    f"(22:00-08:00 {home_base_timezone})"
+                )
+                return
+        
+        # Check 8h sleep opportunity (away from base only)
+        if must_have_sleep_opp:
+            # Simple check: rest must be long enough to allow 8h sleep after transit
+            # (1h to hotel, 2h prep before next duty = 3h overhead)
+            available_sleep_time = duration - 3.0
+            if available_sleep_time < self.minimum_sleep_opportunity_hours:
+                rest.is_easa_compliant = False
+                rest.rest_type = RestPeriodType.ILLEGAL
+                rest.easa_violations.append(
+                    f"ORO.FTL.235(c): Away from base rest must provide 8h sleep opportunity "
+                    f"(only {available_sleep_time:.1f}h available after transit/prep)"
+                )
+                return
+        
+        # Check recurrent rest (ORO.FTL.235(e))
+        # Count local nights between 00:00-05:00 (for recurrent rest classification)
+        recurrent_nights = self._count_local_nights(
+            rest, home_base_timezone,
+            self.recurrent_night_start, self.recurrent_night_end
+        )
+        
         # Classify rest type
-        if duration >= self.recurrent_rest_hours and local_nights >= self.recurrent_rest_local_nights:
+        if duration >= self.recurrent_rest_hours and recurrent_nights >= 2:
             rest.rest_type = RestPeriodType.RECURRENT
         elif duration >= 72:  # 3+ days
             rest.rest_type = RestPeriodType.EXTENDED
@@ -259,6 +350,119 @@ class RestPeriodAnalyzer:
             rest.rest_type = RestPeriodType.MINIMUM
         
         rest.is_easa_compliant = True
+    
+    def _check_local_night_requirement(
+        self, 
+        rest: RestPeriod, 
+        reference_timezone: str,
+        night_start_hour: int,
+        night_end_hour: int
+    ) -> bool:
+        """
+        Check if rest period includes a local night
+        
+        Args:
+            reference_timezone: Home base timezone (for acclimatized crew)
+            night_start_hour: Start of night period (e.g., 22 for 22:00)
+            night_end_hour: End of night period (e.g., 8 for 08:00)
+        
+        Returns:
+            True if rest includes the required night period
+        """
+        tz = pytz.timezone(reference_timezone)
+        
+        # Convert rest period to reference timezone
+        rest_start_ref = rest.start_utc.astimezone(tz)
+        rest_end_ref = rest.end_utc.astimezone(tz)
+        
+        # Check each day in the rest period
+        current_day = rest_start_ref.date()
+        end_day = rest_end_ref.date()
+        
+        while current_day <= end_day:
+            # Night period for this day
+            # Handle wraparound (22:00 today to 08:00 tomorrow)
+            if night_start_hour > night_end_hour:
+                # e.g., 22:00-08:00
+                night_start = tz.localize(datetime(
+                    current_day.year, current_day.month, current_day.day,
+                    night_start_hour, 0, 0
+                ))
+                next_day = current_day + timedelta(days=1)
+                night_end = tz.localize(datetime(
+                    next_day.year, next_day.month, next_day.day,
+                    night_end_hour, 0, 0
+                ))
+            else:
+                # e.g., 00:00-05:00 (same day)
+                night_start = tz.localize(datetime(
+                    current_day.year, current_day.month, current_day.day,
+                    night_start_hour, 0, 0
+                ))
+                night_end = tz.localize(datetime(
+                    current_day.year, current_day.month, current_day.day,
+                    night_end_hour, 0, 0
+                ))
+            
+            # Does rest period fully contain this night?
+            if rest_start_ref <= night_start and rest_end_ref >= night_end:
+                return True
+            
+            current_day += timedelta(days=1)
+        
+        return False
+    
+    def _count_local_nights(
+        self,
+        rest: RestPeriod,
+        reference_timezone: str,
+        night_start_hour: int,
+        night_end_hour: int
+    ) -> int:
+        """
+        Count number of complete local nights in rest period
+        
+        For recurrent rest: 2 nights between 00:00-05:00
+        """
+        count = 0
+        tz = pytz.timezone(reference_timezone)
+        
+        rest_start_ref = rest.start_utc.astimezone(tz)
+        rest_end_ref = rest.end_utc.astimezone(tz)
+        
+        current_day = rest_start_ref.date()
+        end_day = rest_end_ref.date()
+        
+        while current_day <= end_day:
+            if night_start_hour > night_end_hour:
+                # Wraparound case
+                night_start = tz.localize(datetime(
+                    current_day.year, current_day.month, current_day.day,
+                    night_start_hour, 0, 0
+                ))
+                next_day = current_day + timedelta(days=1)
+                night_end = tz.localize(datetime(
+                    next_day.year, next_day.month, next_day.day,
+                    night_end_hour, 0, 0
+                ))
+            else:
+                # Same day
+                night_start = tz.localize(datetime(
+                    current_day.year, current_day.month, current_day.day,
+                    night_start_hour, 0, 0
+                ))
+                night_end = tz.localize(datetime(
+                    current_day.year, current_day.month, current_day.day,
+                    night_end_hour, 0, 0
+                ))
+            
+            # Fully contained?
+            if rest_start_ref <= night_start and rest_end_ref >= night_end:
+                count += 1
+            
+            current_day += timedelta(days=1)
+        
+        return count
     
     def _analyze_sleep_disruptions(
         self,
@@ -486,6 +690,8 @@ class RestPeriodAnalyzer:
         
         # EASA Compliance
         lines.append("EASA COMPLIANCE:")
+        location_type = "Home base" if rest.is_home_base else "Away from base"
+        lines.append(f"  Location: {location_type}")
         lines.append(f"  Type: {rest.rest_type.value.upper()}")
         if rest.is_easa_compliant:
             lines.append(f"  Status: ✓ COMPLIANT")
@@ -493,7 +699,7 @@ class RestPeriodAnalyzer:
             lines.append(f"  Status: ✗ NON-COMPLIANT")
             for violation in rest.easa_violations:
                 lines.append(f"    - {violation}")
-        lines.append(f"  Local nights: {rest.local_night_count}")
+        lines.append(f"  Local nights (display): {rest.local_night_count}")
         lines.append("")
         
         # Sleep Disruptions
