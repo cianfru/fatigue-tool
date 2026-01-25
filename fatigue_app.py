@@ -285,6 +285,9 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     monthly_analysis = st.session_state.monthly_analysis
     roster = st.session_state.roster
     
+    # Initialize visualizer once for all charts
+    viz = FatigueVisualizer(config, theme="dark")
+    
     st.markdown("---")
     st.header("📊 Step 3: Results")
     
@@ -456,7 +459,6 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
             st.markdown("#### Performance Timeline")
             
             try:
-                viz = FatigueVisualizer(config, theme="dark")
                 fig = viz.create_unified_timeline(duty_timeline)
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
@@ -471,7 +473,6 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     st.subheader("🌍 Route Network Analysis")
     
     try:
-        viz = FatigueVisualizer(config, theme="dark")
         route_fig = viz.create_route_map(monthly_analysis)
         if route_fig:
             st.plotly_chart(route_fig, use_container_width=True)
@@ -489,7 +490,6 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     
     with col1:
         try:
-            viz = FatigueVisualizer(config, theme="dark")
             fig = viz.plot_monthly_summary(monthly_analysis)
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
