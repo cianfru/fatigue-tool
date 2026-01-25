@@ -139,42 +139,19 @@ class PDFRosterParser:
         
         # Parse based on format
         duties = []
-        if roster_format == 'crewlink' or roster_format == 'generic':
-            # Try specialized Qatar Airways grid-based parser first
-            # (works for both explicitly detected and unknown formats)
-            try:
-                print("   Attempting specialized Qatar Airways grid parser...")
-                # Note: Qatar parser was removed during cleanup
-                # Using fallback parsers for roster format detection
-                raise ImportError("Specialized Qatar parser not available")
-                
-            except Exception as e:
-                print(f"   ⚠️  Qatar parser: {e}")
-                
-                # Only fall back to line-based if explicitly detected as CrewLink
-                if roster_format == 'crewlink':
-                    print("   Trying line-based CrewLink parser...")
-                    duties = self._parse_crewlink_format(full_text)
-                else:
-                    # Generic format - raise informative error
-                    raise NotImplementedError(
-                        "❌ Unsupported PDF format detected.\n\n"
-                        "The PDF could not be parsed. This could mean:\n"
-                        "  1. The PDF format is not supported\n"
-                        "  2. The PDF is image-based or corrupted\n"
-                        "  3. Text extraction failed\n\n"
-                        "Supported formats:\n"
-                        "  • Qatar Airways CrewLink (grid layout with dates as columns)\n"
-                        "  • Tabular format (with vertical pipes '|')\n"
-                        "  • CSV files (comma-separated values)\n\n"
-                        "Please provide a text-based PDF roster or contact support."
-                    )
-        
+        if roster_format == 'crewlink':
+            # CrewLink format detected - try line-based parser
+            print("   Trying CrewLink parser...")
+            duties = self._parse_crewlink_format(full_text)
+            
         elif roster_format == 'tabular':
+            # Tabular format with pipes
+            print("   Trying tabular parser...")
             duties = self._parse_tabular_format(full_text)
         
         else:
-            # Fallback: Generic line-by-line parser
+            # Generic or unknown format - try generic parser
+            print("   Trying generic parser...")
             duties = self._parse_generic_format(full_text)
         
         roster = Roster(
@@ -404,22 +381,32 @@ class PDFRosterParser:
         )
     
     def _parse_generic_format(self, text: str) -> List[Duty]:
-        """Fallback generic parser"""
+        """Fallback generic parser - tries CrewLink pattern matching"""
         
-        print("⚠️  Generic format detected - attempting line-based parsing...")
+        print("⚠️  Generic/unknown format detected - attempting pattern matching...")
         
-        # The generic parser receives text, not the PDF path
-        # Try line-based parsing as fallback
+        # Try CrewLink-style pattern matching first
+        try:
+            duties = self._parse_crewlink_format(text)
+            if duties:
+                print(f"   ✓ Pattern matching succeeded: {len(duties)} duties found")
+                return duties
+            else:
+                print("   ℹ️  Pattern matching found no duties")
+        except Exception as e:
+            print(f"   ⚠️  Pattern matching failed: {e}")
+        
+        # If nothing worked, raise informative error
         raise NotImplementedError(
             "❌ Unsupported PDF format detected.\n\n"
-            "The text-based detection didn't recognize this as a Qatar Airways roster.\n\n"
+            "The parser tried multiple strategies but could not extract duty information.\n\n"
             "This could mean:\n"
-            "  1. The PDF keywords ('CrewLink', 'Qatar Airways', 'Period', etc.) are not being extracted\n"
-            "  2. The PDF uses a different format than expected\n"
-            "  3. The PDF is image-based or has extraction issues\n\n"
+            "  1. The PDF format is not supported\n"
+            "  2. The PDF is image-based or corrupted\n"
+            "  3. Text extraction failed\n\n"
             "Supported formats:\n"
             "  • Qatar Airways CrewLink PDF (grid layout with dates as columns)\n"
-            "  • Tabular format (with vertical bars/pipes '|')\n"
+            "  • Tabular format (with vertical pipes '|')\n"
             "  • CSV files (comma-separated values)\n\n"
             "ACTION: Please verify the PDF is not image-based or corrupted.\n"
             "        Try uploading again, or contact support with a sample PDF."
