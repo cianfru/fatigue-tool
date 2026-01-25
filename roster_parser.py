@@ -57,6 +57,11 @@ class AirportDatabase:
         'BCN': {'name': 'Barcelona', 'timezone': 'Europe/Madrid', 'lat': 41.30, 'lon': 2.08},
         'FCO': {'name': 'Rome', 'timezone': 'Europe/Rome', 'lat': 41.80, 'lon': 12.25},
         'ATH': {'name': 'Athens', 'timezone': 'Europe/Athens', 'lat': 37.94, 'lon': 23.95},
+        'TRV': {'name': 'Thiruvananthapuram', 'timezone': 'Asia/Kolkata', 'lat': 8.48, 'lon': 76.90},
+        'LCA': {'name': 'Larnaca', 'timezone': 'Asia/Nicosia', 'lat': 34.40, 'lon': 33.62},
+        'ALP': {'name': 'Aleppo', 'timezone': 'Asia/Damascus', 'lat': 36.18, 'lon': 37.22},
+        'DMM': {'name': 'Dammam', 'timezone': 'Asia/Riyadh', 'lat': 26.47, 'lon': 49.80},
+        'TBS': {'name': 'Tbilisi', 'timezone': 'Asia/Tbilisi', 'lat': 41.71, 'lon': 44.74},
     }
     
     @classmethod
@@ -133,8 +138,15 @@ class PDFRosterParser:
         print(f"   Detected format: {roster_format}")
         
         # Parse based on format
+        duties = []
         if roster_format == 'crewlink':
-            duties = self._parse_crewlink_format(full_text)
+            # Try grid-based parsing first for complex layouts
+            duties = self._parse_qatar_grid(pdf_path)
+            
+            # If grid parsing didn't yield results, fall back to line-based parsing
+            if not duties:
+                print("   ℹ️  Grid parsing found no duties, trying line-based parsing...")
+                duties = self._parse_crewlink_format(full_text)
         elif roster_format == 'tabular':
             duties = self._parse_tabular_format(full_text)
         else:
@@ -164,6 +176,175 @@ class PDFRosterParser:
             return 'tabular'
         
         return 'generic'
+    
+    def _parse_qatar_grid(self, pdf_path: str) -> List[Duty]:
+        """
+        Parse Qatar Airways grid-based PDF format using table extraction
+        
+        This handles complex layouts where dates are column headers and
+        duty details are stacked vertically in cells.
+        """
+        duties = []
+        
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                for page_num, page in enumerate(pdf.pages):
+                    # Extract table with specific settings for grid layout
+                    tables = page.extract_tables({
+                        "vertical_strategy": "lines",
+                        "horizontal_strategy": "lines",
+                        "snap_tolerance": 3,
+                    })
+                    
+                    if not tables or len(tables) == 0:
+                        print(f"   ⚠️  No table found on page {page_num + 1}")
+                        continue
+                    
+                    table = tables[0]  # Get first table
+                    
+                    if len(table) < 2:
+                        print(f"   ⚠️  Table too small on page {page_num + 1}")
+                        continue
+                    
+                    # First row contains dates as column headers
+                    dates_row = table[0]
+                    
+                    # Parse each column (except first which is usually day-of-week)
+                    for col_idx in range(1, len(dates_row)):
+                        date_cell = dates_row[col_idx]
+                        
+                        if not date_cell or not date_cell.strip():
+                            continue
+                        
+                        # Extract date from cell (e.g., "01Feb\nSun" -> "01Feb")
+                        date_str = date_cell.split('\n')[0].strip()
+                        
+                        # Skip if not a valid date format
+                        if not re.match(r'\d{2}[A-Z][a-z]{2}', date_str):
+                            continue
+                        
+                        # Add year (assuming current or next year)
+                        from datetime import date as date_obj
+                        current_year = date_obj.today().year
+                        date_str_full = f"{date_str}{current_year}"
+                        
+                        # Collect all non-empty cells in this column (except header)
+                        column_data = []
+                        for row_idx in range(1, len(table)):
+                            cell = table[row_idx][col_idx]
+                            if cell and cell.strip():
+                                column_data.append(cell.strip())
+                        
+                        # Parse this column's duty if it has data
+                        if column_data:
+                            try:
+                                duty = self._parse_grid_column(date_str_full, column_data)
+                                if duty:
+                                    duties.append(duty)
+                            except Exception as e:
+                                print(f"   ⚠️  Error parsing column {col_idx}: {e}")
+                                continue
+        
+        except Exception as e:
+            print(f"   ❌ Error extracting grid: {e}")
+            return []
+        
+        return duties
+    
+    def _parse_grid_column(self, date_str: str, column_data: List[str]) -> Optional[Duty]:
+        """
+        Parse a single column of grid data representing one duty day
+        
+        Expected patterns:
+        - RPT:HH:MM
+        - Flight number (e.g., QR1226)
+        - Departure airport
+        - Time (departure/arrival)
+        - Destination airport
+        - (repeated for multi-sector duties)
+        """
+        
+        if not column_data:
+            return None
+        
+        flights = []
+        rpt_time = None
+        release_time = None
+        
+        i = 0
+        while i < len(column_data):
+            cell = column_data[i]
+            
+            # Extract reporting time
+            if 'RPT' in cell:
+                match = re.search(r'RPT[:\s]+(\d{2}):?(\d{2})', cell)
+                if match:
+                    rpt_time = f"{match.group(1)}:{match.group(2)}"
+                i += 1
+                continue
+            
+            # Extract flight number
+            if re.match(r'[A-Z]{2}\d{1,4}', cell):
+                flight_num = cell
+                
+                # Next cells should be route/times
+                if i + 3 < len(column_data):
+                    dep_code = column_data[i + 1].strip()[:3]  # First 3 chars
+                    time_cell = column_data[i + 2].strip()
+                    arr_code = column_data[i + 3].strip()[:3]
+                    
+                    # Parse times (format: HH:MM or HH:MM+1)
+                    times = re.findall(r'(\d{2}):(\d{2})(?:\+(\d))?', time_cell)
+                    
+                    if len(times) >= 2 and dep_code.isalpha() and arr_code.isalpha():
+                        std = f"{times[0][0]}:{times[0][1]}"
+                        sta = f"{times[1][0]}:{times[1][1]}"
+                        
+                        try:
+                            segment = self._parse_flight_segment(
+                                flight_num, dep_code, arr_code,
+                                date_str, std, sta
+                            )
+                            flights.append(segment)
+                            i += 4
+                            continue
+                        except ValueError:
+                            # Airport not found, skip this segment
+                            pass
+                
+                i += 1
+                continue
+            
+            # Extract release time
+            if 'REL' in cell:
+                match = re.search(r'REL[:\s]+(\d{2}):?(\d{2})', cell)
+                if match:
+                    release_time = f"{match.group(1)}:{match.group(2)}"
+            
+            i += 1
+        
+        # Build duty if we have flights
+        if flights and rpt_time:
+            if not release_time:
+                release_time = (datetime.strptime(rpt_time, "%H:%M") + timedelta(hours=14)).strftime("%H:%M")
+            
+            duty = self._build_duty_from_flights(
+                flights,
+                self._parse_date_string(date_str),
+                rpt_time,
+                release_time
+            )
+            return duty
+        
+        return None
+    
+    def _parse_date_string(self, date_str: str) -> datetime:
+        """Parse date string like '01Feb2026' to datetime"""
+        try:
+            return datetime.strptime(date_str, "%d%b%Y")
+        except ValueError:
+            # Fallback: assume current date
+            return datetime.now()
     
     def _parse_crewlink_format(self, text: str) -> List[Duty]:
         """
