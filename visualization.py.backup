@@ -37,6 +37,7 @@ RISK_COLORS = {
 
 PHASE_COLORS = {
     FlightPhase.PREFLIGHT: '#E8E8E8',
+    FlightPhase.PREFLIGHT: '#F5F5F5',
     FlightPhase.TAXI_OUT: '#D0D0D0',
     FlightPhase.TAKEOFF: '#FF6B6B',
     FlightPhase.CLIMB: '#FFB366',
@@ -44,8 +45,7 @@ PHASE_COLORS = {
     FlightPhase.DESCENT: '#FFB366',
     FlightPhase.APPROACH: '#FF8C42',
     FlightPhase.LANDING: '#FF6B6B',
-    FlightPhase.TAXI_IN: '#D0D0D0',
-    FlightPhase.GROUND_TURNAROUND: '#F5F5F5'
+    FlightPhase.TAXI_IN: '#D0D0D0'
 }
 
 COMPONENT_COLORS = {

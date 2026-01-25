@@ -474,5 +474,4 @@ st.markdown("""
     <p>Scientific references: Borbély & Achermann (1999), Van Dongen et al. (2003), Dinges et al. (1997)</p>
 </div>
 """, unsafe_allow_html=True)
-```
 

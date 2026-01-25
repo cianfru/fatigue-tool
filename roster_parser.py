@@ -57,12 +57,6 @@ class AirportDatabase:
         'BCN': {'name': 'Barcelona', 'timezone': 'Europe/Madrid', 'lat': 41.30, 'lon': 2.08},
         'FCO': {'name': 'Rome', 'timezone': 'Europe/Rome', 'lat': 41.80, 'lon': 12.25},
         'ATH': {'name': 'Athens', 'timezone': 'Europe/Athens', 'lat': 37.94, 'lon': 23.95},
-        # Qatar Airways additional airports
-        'TRV': {'name': 'Thiruvananthapuram', 'timezone': 'Asia/Kolkata', 'lat': 8.48, 'lon': 76.92},
-        'LCA': {'name': 'Larnaca', 'timezone': 'Europe/Nicosia', 'lat': 34.88, 'lon': 33.62},
-        'ALP': {'name': 'Aleppo', 'timezone': 'Asia/Damascus', 'lat': 36.20, 'lon': 37.28},
-        'DMM': {'name': 'Dammam', 'timezone': 'Asia/Riyadh', 'lat': 26.47, 'lon': 50.18},
-        'TBS': {'name': 'Tbilisi', 'timezone': 'Asia/Tbilisi', 'lat': 41.72, 'lon': 44.95},
     }
     
     @classmethod
@@ -129,44 +123,23 @@ class PDFRosterParser:
         print(f"📄 Parsing PDF roster: {pdf_path}")
         
         # Extract text from PDF
-        full_text = ""
-        try:
-            with pdfplumber.open(pdf_path) as pdf:
-                print(f"   PDF has {len(pdf.pages)} pages")
-                for i, page in enumerate(pdf.pages):
-                    text = page.extract_text() or ""
-                    print(f"   Page {i+1}: {len(text)} characters extracted")
-                    full_text += text + "\n"
-        except Exception as e:
-            print(f"   ⚠️  Error extracting PDF: {e}")
+        with pdfplumber.open(pdf_path) as pdf:
             full_text = ""
-        
-        print(f"   Total text extracted: {len(full_text)} characters")
+            for page in pdf.pages:
+                full_text += page.extract_text() + "\n"
         
         # Detect roster format
         roster_format = self._detect_format(full_text)
         print(f"   Detected format: {roster_format}")
         
         # Parse based on format
-        duties = []
-        try:
-            if roster_format == 'crewlink':
-                duties = self._parse_crewlink_format(full_text)
-            elif roster_format == 'tabular':
-                duties = self._parse_tabular_format(full_text)
-            else:
-                # Fallback: Generic line-by-line parser
-                duties = self._parse_generic_format(full_text)
-        except ValueError as e:
-            print(f"   ⚠️  Parser error: {e}")
-            # Create sample duty as fallback
-            duties = self._create_sample_duties()
-            print(f"   Using sample duties for testing")
-        
-        if not duties:
-            # Absolute fallback
-            duties = self._create_sample_duties()
-            print(f"   No duties found, using sample data")
+        if roster_format == 'crewlink':
+            duties = self._parse_crewlink_format(full_text)
+        elif roster_format == 'tabular':
+            duties = self._parse_tabular_format(full_text)
+        else:
+            # Fallback: Generic line-by-line parser
+            duties = self._parse_generic_format(full_text)
         
         roster = Roster(
             roster_id=f"R_{pilot_id}_{month}",
@@ -175,37 +148,6 @@ class PDFRosterParser:
             duties=duties,
             home_base_timezone=self.home_timezone
         )
-        
-        print(f"   ✓ Extracted {len(duties)} duties from roster")
-        return roster
-    
-    def _create_sample_duties(self) -> List[Duty]:
-        """Create sample duties for testing when PDF parsing fails"""
-        duties = []
-        
-        # Sample duty: DOH to LHR
-        doh = self.airport_db.get_airport('DOH')
-        lhr = self.airport_db.get_airport('LHR')
-        
-        segment = FlightSegment(
-            flight_number="QR001",
-            departure_airport=doh,
-            arrival_airport=lhr,
-            scheduled_departure_utc=datetime(2026, 1, 15, 2, 30, tzinfo=pytz.utc),
-            scheduled_arrival_utc=datetime(2026, 1, 15, 9, 0, tzinfo=pytz.utc)
-        )
-        
-        duty = Duty(
-            duty_id="D_1",
-            date=datetime(2026, 1, 15),
-            segments=[segment],
-            report_time_utc=datetime(2026, 1, 15, 1, 30, tzinfo=pytz.utc),
-            release_time_utc=datetime(2026, 1, 15, 10, 0, tzinfo=pytz.utc),
-            home_base_timezone=self.home_timezone
-        )
-        duties.append(duty)
-        
-        return duties
         
         print(f"✓ Parsed {len(duties)} duties, {roster.total_sectors} sectors")
         return roster
@@ -225,222 +167,67 @@ class PDFRosterParser:
     
     def _parse_crewlink_format(self, text: str) -> List[Duty]:
         """
-        Parse Qatar Airways CrewLink Crew Schedule Report
-        Uses date-based segmentation to handle grid layout
+        Parse Qatar Airways CrewLink PDF format
+        
+        Example format:
+        Date       Flight  Dep   Arr   STD     STA     Report  Release
+        15-JAN-24  QR001   DOH   LHR   07:30   13:15   06:00   14:30
         """
         duties = []
+        lines = text.split('\n')
         
-        # Extract month/year from header
-        month_year = (2026, 1)
-        for line in text.split('\n')[:20]:
-            date_match = re.search(r'(\d{1,2})-([A-Za-z]+)-(\d{4})', line)
-            if date_match:
-                day, month_name, year = date_match.groups()
-                month_map = {
-                    'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
-                    'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
-                }
-                month_num = month_map.get(month_name[:3], 1)
-                month_year = (int(year), month_num)
-                break
-        
-        year, month = month_year
-        
-        # Date pattern: "DDMM" (e.g., "01Feb", "02Feb") or "DD-MMM"
-        date_pattern = r'(\d{1,2})[A-Za-z]{0,3}\s*(Mon|Tue|Wed|Thu|Fri|Sat|Sun)?'
-        
-        # Split text into sections by date markers
-        sections = re.split(r'(\d{1,2}(?:Feb|Jan|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)?(?:\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun))?)', text)
-        
+        current_duty_flights = []
         current_date = None
-        for i in range(0, len(sections) - 1, 2):
-            date_str = sections[i].strip()
-            content = sections[i + 1] if i + 1 < len(sections) else ""
-            
-            # Parse date
-            date_match = re.search(r'(\d{1,2})', date_str)
-            if not date_match:
+        report_time = None
+        
+        for line in lines:
+            # Skip header/empty lines
+            if not line.strip() or 'Flight' in line or '---' in line:
                 continue
             
-            day = int(date_match.group(1))
-            try:
-                current_date = datetime(year, month, day)
-            except ValueError:
+            # Extract duty data
+            match = self._extract_duty_line_crewlink(line)
+            if not match:
                 continue
             
-            # Extract flight segments from this day's content
-            segments = self._extract_segments_from_content(content, current_date, year, month)
+            date, flight_num, dep, arr, std, sta, rep, rel = match
             
-            if segments:
-                # Calculate report and release times
-                report_time = segments[0].scheduled_departure_utc - timedelta(hours=1)
-                release_time = segments[-1].scheduled_arrival_utc + timedelta(hours=0.5)
-                
-                duty = Duty(
-                    duty_id=f"D_{len(duties)+1}",
-                    date=current_date,
-                    segments=segments,
-                    report_time_utc=report_time,
-                    release_time_utc=release_time,
-                    home_base_timezone=self.home_timezone
-                )
-                duties.append(duty)
-        
-        return duties if duties else self._parse_generic_format(text)
-    
-    def _extract_segments_from_content(self, content: str, date: datetime, year: int, month: int) -> List[FlightSegment]:
-        """Extract flight segments from a day's worth of roster content"""
-        segments = []
-        
-        # Look for airport code pairs: XXX (departure) ... XXX (arrival)
-        # Also try to extract times: HH:MM
-        
-        # Find all airport codes in this content
-        airport_pattern = r'\b([A-Z]{3})\b'
-        airports = []
-        
-        for word in content.split():
-            match = re.search(airport_pattern, word)
-            if match:
-                code = match.group(1)
-                try:
-                    self.airport_db.get_airport(code)
-                    airports.append(code)
-                except ValueError:
-                    pass
-        
-        # Find all times: HH:MM
-        time_pattern = r'(\d{2}):(\d{2})'
-        times = []
-        for match in re.finditer(time_pattern, content):
-            h, m = match.groups()
-            times.append((int(h), int(m)))
-        
-        # Create segments from consecutive airport pairs
-        i = 0
-        time_idx = 0
-        while i < len(airports) - 1:
-            dep_code = airports[i]
-            arr_code = airports[i + 1]
-            
-            if dep_code != arr_code:
-                try:
-                    dep_airport = self.airport_db.get_airport(dep_code)
-                    arr_airport = self.airport_db.get_airport(arr_code)
-                    
-                    # Get times if available
-                    if time_idx < len(times):
-                        dep_h, dep_m = times[time_idx]
-                        time_idx += 1
-                    else:
-                        dep_h, dep_m = 9, 0
-                    
-                    if time_idx < len(times):
-                        arr_h, arr_m = times[time_idx]
-                        time_idx += 1
-                    else:
-                        arr_h, arr_m = 17, 0
-                    
-                    # Create times
-                    dep_time = datetime(year, month, date.day, dep_h, dep_m, tzinfo=pytz.utc)
-                    arr_time = datetime(year, month, date.day, arr_h, arr_m, tzinfo=pytz.utc)
-                    
-                    # Handle next-day arrivals
-                    if arr_time <= dep_time:
-                        arr_time = arr_time + timedelta(days=1)
-                    
-                    segment = FlightSegment(
-                        flight_number=f"QR{len(segments)+1:03d}",
-                        departure_airport=dep_airport,
-                        arrival_airport=arr_airport,
-                        scheduled_departure_utc=dep_time,
-                        scheduled_arrival_utc=arr_time
+            # New duty starts (different report time or date change)
+            if report_time and rep != report_time:
+                # Save previous duty
+                if current_duty_flights:
+                    duty = self._build_duty_from_flights(
+                        current_duty_flights,
+                        current_date,
+                        report_time,
+                        release_time
                     )
-                    segments.append(segment)
-                except ValueError:
-                    pass
+                    duties.append(duty)
+                
+                # Reset for new duty
+                current_duty_flights = []
             
-            i += 2
+            # Parse flight segment
+            segment = self._parse_flight_segment(
+                flight_num, dep, arr, date, std, sta
+            )
+            
+            current_duty_flights.append(segment)
+            current_date = date
+            report_time = rep
+            release_time = rel
         
-        return segments
-    
-    def _extract_flight_segments_from_line(self, line: str, year: int, month: int) -> List[FlightSegment]:
-        """Extract flight segments from a roster line"""
-        segments = []
+        # Don't forget last duty
+        if current_duty_flights:
+            duty = self._build_duty_from_flights(
+                current_duty_flights,
+                current_date,
+                report_time,
+                release_time
+            )
+            duties.append(duty)
         
-        # Pattern: Airport codes (3 uppercase letters) followed by times
-        # Looking for patterns like: DOH 07:30 LHR 13:15 or DOH 1286 LHR 1286
-        pattern = r'([A-Z]{3})\s+(\d{2}):(\d{2})|([A-Z]{3})\s+(\d{4})'
-        
-        matches = list(re.finditer(pattern, line))
-        
-        # Process pairs of airports as departure/arrival
-        i = 0
-        while i < len(matches) - 1:
-            try:
-                match_dep = matches[i]
-                
-                # Check if it's an airport code match
-                if match_dep.group(1):  # Has time format
-                    dep_code = match_dep.group(1)
-                    dep_h = int(match_dep.group(2))
-                    dep_m = int(match_dep.group(3))
-                else:  # Has numeric format (flight number probably)
-                    i += 1
-                    continue
-                
-                # Look for next airport
-                match_arr = None
-                for j in range(i + 1, len(matches)):
-                    if matches[j].group(1):  # Airport with time
-                        match_arr = matches[j]
-                        break
-                
-                if not match_arr or not match_arr.group(1):
-                    i += 1
-                    continue
-                
-                arr_code = match_arr.group(1)
-                arr_h = int(match_arr.group(2))
-                arr_m = int(match_arr.group(3))
-                
-                # Skip if codes are the same or invalid
-                if dep_code == arr_code or not (dep_code.isalpha() and arr_code.isalpha()):
-                    i += 1
-                    continue
-                
-                # Create times (use day 1 by default, will be updated if date found)
-                dep_time = datetime(year, month, 1, dep_h, dep_m, tzinfo=pytz.utc)
-                arr_time = datetime(year, month, 1, arr_h, arr_m, tzinfo=pytz.utc)
-                
-                # If arrival is before departure, assume next day
-                if arr_time <= dep_time:
-                    arr_time = arr_time + timedelta(days=1)
-                
-                # Get airport objects
-                try:
-                    dep_airport = self.airport_db.get_airport(dep_code)
-                    arr_airport = self.airport_db.get_airport(arr_code)
-                except ValueError:
-                    # Skip if airport not in database
-                    i += 1
-                    continue
-                
-                segment = FlightSegment(
-                    flight_number=f"QR{len(segments)+1:03d}",
-                    departure_airport=dep_airport,
-                    arrival_airport=arr_airport,
-                    scheduled_departure_utc=dep_time,
-                    scheduled_arrival_utc=arr_time
-                )
-                segments.append(segment)
-                i += 2  # Skip both airports
-                
-            except (ValueError, IndexError, AttributeError, TypeError):
-                i += 1
-                continue
-        
-        return segments
+        return duties
     
     def _extract_duty_line_crewlink(self, line: str) -> Optional[Tuple]:
         """Extract data from single CrewLink roster line"""
@@ -557,95 +344,10 @@ class PDFRosterParser:
         )
     
     def _parse_generic_format(self, text: str) -> List[Duty]:
-        """Fallback generic parser - finds all airport pairs and times"""
-        duties = []
-        lines = text.split('\n')
-        
-        # Extract month/year
-        month_year = (2026, 1)
-        for line in lines[:20]:
-            date_match = re.search(r'(\d{1,2})-([A-Za-z]+)-(\d{4})', line)
-            if date_match:
-                day, month_name, year = date_match.groups()
-                month_map = {
-                    'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
-                    'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
-                }
-                month_num = month_map.get(month_name[:3], 1)
-                month_year = (int(year), month_num)
-                break
-        
-        year, month = month_year
-        
-        # Look for patterns: "XXX" (airport code)
-        # Extract all 3-letter airport codes from entire document
-        airport_pattern = r'\b([A-Z]{3})\b'
-        all_codes = []
-        
-        for line in lines:
-            # Skip header lines
-            if any(x in line.lower() for x in ['block', 'duty', 'activity', 'description', 'name', 'id']):
-                continue
-            
-            matches = re.findall(airport_pattern, line)
-            for code in matches:
-                try:
-                    # Try to get airport - if it works, it's a valid code
-                    self.airport_db.get_airport(code)
-                    all_codes.append(code)
-                except ValueError:
-                    pass
-        
-        # Group consecutive airport pairs
-        segments = []
-        i = 0
-        while i < len(all_codes) - 1:
-            dep_code = all_codes[i]
-            arr_code = all_codes[i + 1]
-            
-            if dep_code != arr_code:
-                try:
-                    dep_airport = self.airport_db.get_airport(dep_code)
-                    arr_airport = self.airport_db.get_airport(arr_code)
-                    
-                    # Default times
-                    dep_time = datetime(year, month, 1, 9, 0, tzinfo=pytz.utc)
-                    arr_time = datetime(year, month, 1, 17, 0, tzinfo=pytz.utc)
-                    
-                    segment = FlightSegment(
-                        flight_number=f"QR{len(segments)+1:03d}",
-                        departure_airport=dep_airport,
-                        arrival_airport=arr_airport,
-                        scheduled_departure_utc=dep_time,
-                        scheduled_arrival_utc=arr_time
-                    )
-                    segments.append(segment)
-                except ValueError:
-                    pass
-            
-            i += 2
-        
-        # Create duties from segments
-        if segments:
-            for i, segment in enumerate(segments):
-                report_time = segment.scheduled_departure_utc - timedelta(hours=1)
-                release_time = segment.scheduled_arrival_utc + timedelta(hours=0.5)
-                
-                duty = Duty(
-                    duty_id=f"D_{i+1}",
-                    date=datetime(year, month, 1),
-                    segments=[segment],
-                    report_time_utc=report_time,
-                    release_time_utc=release_time,
-                    home_base_timezone=self.home_timezone
-                )
-                duties.append(duty)
-            return duties
-        
-        # If still nothing, raise error (will be caught and sample data used)
-        raise ValueError(
-            "Could not extract flight information from PDF. "
-            "Using sample data for testing."
+        """Fallback generic parser"""
+        raise NotImplementedError(
+            "Generic parser not yet implemented. "
+            "Provide sample PDF for customization."
         )
 
 # ============================================================================
