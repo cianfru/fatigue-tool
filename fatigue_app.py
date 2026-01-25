@@ -632,7 +632,7 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     # ========================================================================
     
     st.markdown("---")
-    st.header("� Monthly Analysis")
+    st.header("📥 Step 4: Download Reports")
     
     # ========================================================================
     # ENHANCED BAR CHART WITH ANNOTATIONS
