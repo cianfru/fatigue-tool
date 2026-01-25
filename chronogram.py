@@ -27,37 +27,65 @@ from data_models import MonthlyAnalysis, DutyTimeline
 class FatigueChronogram:
     """
     High-resolution timeline showing entire month at 30-minute granularity
+    with professional "glass cockpit" aesthetic
     """
     
-    def __init__(self, theme='light'):
+    def __init__(self, theme='pro_dark'):
         self.theme = theme
         
-        if theme == 'dark':
+        if theme == 'pro_dark':
+            # Professional Glass Cockpit Palette
+            self.bg_color = '#0B0E14'          # Deep Navy/Black
+            self.surface_color = '#1C222D'     # Subtle dark grey (off-duty)
+            self.text_color = '#E0E0E0'        # Off-white for reduced glare
+            self.grid_color = '#2A2F3A'        # Subtle grid lines
+            self.wocl_color = '#9C27B0'        # Deep Bio-Purple
+            self.duty_base = '#00E5FF'         # Cyan (high legibility)
+            self.accent_color = '#76FF03'      # Lime (alternative)
+            
+            # Muted Risk Gradient for Dark Mode
+            self.risk_cmap = LinearSegmentedColormap.from_list(
+                'pro_fatigue',
+                ['#2E7D32', '#FBC02D', '#EF6C00', '#C62828'],  # Muted Green→Yellow→Orange→Red
+                N=100
+            )
+        elif theme == 'dark':
+            # Legacy dark theme
             self.bg_color = '#1e1e1e'
+            self.surface_color = '#2d2d2d'
             self.text_color = '#ffffff'
             self.grid_color = '#444444'
-            self.off_color = '#2d2d2d'
-            self.duty_base = '#1565C0'  # Dark blue
+            self.wocl_color = '#7B1FA2'
+            self.duty_base = '#1565C0'
+            self.accent_color = '#2196F3'
+            
+            self.risk_cmap = LinearSegmentedColormap.from_list(
+                'fatigue_risk',
+                ['#009E73', '#95C11F', '#F0E442', '#E69F00', '#D55E00', '#CC0000'],
+                N=100
+            )
         else:
+            # Light theme
             self.bg_color = '#ffffff'
+            self.surface_color = '#f8f8f8'
             self.text_color = '#000000'
             self.grid_color = '#cccccc'
-            self.off_color = '#f8f8f8'
-            self.duty_base = '#2196F3'  # Blue
-        
-        # Risk colormap (green → yellow → orange → red)
-        self.risk_cmap = LinearSegmentedColormap.from_list(
-            'fatigue_risk',
-            ['#009E73', '#95C11F', '#F0E442', '#E69F00', '#D55E00', '#CC0000'],
-            N=100
-        )
+            self.wocl_color = '#E91E63'
+            self.duty_base = '#2196F3'
+            self.accent_color = '#1976D2'
+            
+            self.risk_cmap = LinearSegmentedColormap.from_list(
+                'fatigue_risk',
+                ['#009E73', '#95C11F', '#F0E442', '#E69F00', '#D55E00', '#CC0000'],
+                N=100
+            )
         
         # State colors
         self.state_colors = {
-            'off': self.off_color,
+            'off': self.surface_color,
             'duty': self.duty_base,
-            'sleep': '#4A148C',  # Purple
-            'wocl': '#7B1FA2',   # Dark purple
+            'sleep': '#4A148C',
+            'wocl': self.wocl_color,
         }
     
     def plot_monthly_chronogram(
@@ -219,6 +247,19 @@ class FatigueChronogram:
         # AXES AND LABELS
         # ====================================================================
         
+        # Professional styling: Remove spines for clean "floating" look
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        
+        # Add circadian background (Sun/Moon cycle)
+        if self.theme == 'pro_dark':
+            # Night hours: 00:00-05:59 (Deep Indigo)
+            ax.axvspan(-0.5, 12, color='#1A237E', alpha=0.08, zorder=0)
+            # Day hours: 06:00-17:59 (Soft Amber)
+            ax.axvspan(12, 36, color='#FF6F00', alpha=0.05, zorder=0)
+            # Evening/Night: 18:00-23:59 (Deep Indigo)
+            ax.axvspan(36, 48, color='#1A237E', alpha=0.08, zorder=0)
+        
         # Y-axis: Days
         day_labels = []
         day_positions = []
@@ -234,33 +275,42 @@ class FatigueChronogram:
                 day_positions.append(day)
         
         ax.set_yticks(day_positions)
-        ax.set_yticklabels(day_labels, fontsize=10, color=self.text_color)
-        ax.set_ylabel('Day of Month', fontsize=12, color=self.text_color)
+        ax.set_yticklabels(day_labels, fontsize=10, color=self.text_color, family='monospace')
+        ax.set_ylabel('Day of Month', fontsize=12, color=self.text_color, weight='bold')
         
-        # X-axis: Hours
+        # X-axis: Hours (with circadian context)
         hour_labels = [f"{h:02d}:00" for h in range(0, 24, 3)]
         hour_positions = [h * 2 for h in range(0, 24, 3)]
         
         ax.set_xticks(hour_positions)
-        ax.set_xticklabels(hour_labels, fontsize=10, color=self.text_color)
-        ax.set_xlabel('Time of Day (Home Base)', fontsize=12, color=self.text_color)
+        ax.set_xticklabels(hour_labels, fontsize=10, color=self.text_color, family='monospace')
+        ax.set_xlabel('Time of Day (Home Base)', fontsize=12, color=self.text_color, weight='bold')
         
         # Add WOCL label on x-axis
         ax.text(
             8, -2.5,  # Middle of WOCL (slot 8 = 04:00)
-            'WOCL',
-            fontsize=9,
-            color='#7B1FA2',
+            '🌙 WOCL',
+            fontsize=10,
+            color=self.wocl_color,
             weight='bold',
             ha='center'
         )
         
-        # Grid lines
+        # Add sun/moon indicators for circadian context (if pro_dark theme)
+        if self.theme == 'pro_dark':
+            # Moon icon at start
+            ax.text(2, -3.2, '🌙', fontsize=11, ha='center', va='top')
+            # Sun icon at midday
+            ax.text(24, -3.2, '☀️', fontsize=11, ha='center', va='top')
+            # Moon icon at evening
+            ax.text(46, -3.2, '🌙', fontsize=11, ha='center', va='top')
+        
+        # Grid lines - more subtle for professional look
         ax.set_xticks(np.arange(-0.5, 48, 2), minor=True)
         ax.set_yticks(np.arange(-0.5, days_in_month, 1), minor=True)
-        ax.grid(which='minor', color=self.grid_color, linestyle='-', linewidth=0.5, alpha=0.3)
+        ax.grid(which='minor', color=self.grid_color, linestyle='-', linewidth=0.5, alpha=0.2)
         
-        # Title
+        # Title with professional formatting
         ax.set_title(
             f"{month_start.strftime('%B %Y')} - High-Resolution Duty Timeline\n"
             f"Pilot: {roster.pilot_id} | "
@@ -270,7 +320,8 @@ class FatigueChronogram:
             fontsize=14,
             fontweight='bold',
             color=self.text_color,
-            pad=20
+            pad=20,
+            family='monospace'
         )
         
         # Set limits

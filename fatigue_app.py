@@ -472,8 +472,8 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
         with col2:
             show_patterns = st.checkbox("Show Pattern Detection", value=True)
         
-        # Generate chronogram
-        chrono = FatigueChronogram(theme='light')
+        # Generate chronogram with professional dark theme
+        chrono = FatigueChronogram(theme='pro_dark')
         
         with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
             chrono.plot_monthly_chronogram(
@@ -686,7 +686,7 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
             tmp_chrono = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
             tmp_chrono.close()
             
-            chrono = FatigueChronogram(theme='light')
+            chrono = FatigueChronogram(theme='pro_dark')
             chrono.plot_monthly_chronogram(
                 monthly_analysis,
                 save_path=tmp_chrono.name,
