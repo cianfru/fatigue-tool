@@ -368,7 +368,7 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     st.subheader("Duty Analysis")
     
     # Create tabs for each duty with formatted dates
-    tab_labels = [f"{dt.duty_date.strftime('%a, %b %d')} • {dt.duty_id}" for dt in monthly_analysis.duty_timelines]
+    tab_labels = [f"{dt.duty_date.strftime('%a, %b %d')}" for dt in monthly_analysis.duty_timelines]
     duty_tabs = st.tabs(tab_labels)
     
     scorer = FatigueRiskScorer(config.risk_thresholds)
@@ -379,7 +379,7 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
             duty = roster.duties[i]
             
             # Duty header with date
-            st.markdown(f"### {duty_timeline.duty_id} • {duty_timeline.duty_date.strftime('%A, %B %d, %Y')}")
+            st.markdown(f"### {duty_timeline.duty_date.strftime('%A, %B %d, %Y')}")
             
             # Duty details
             col1, col2, col3 = st.columns(3)
