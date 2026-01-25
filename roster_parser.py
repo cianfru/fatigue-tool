@@ -339,15 +339,20 @@ class PDFRosterParser:
     def _parse_tabular_format(self, text: str) -> List[Duty]:
         """Parse generic tabular PDF format"""
         raise NotImplementedError(
-            "Tabular parser not yet implemented. "
-            "Provide sample PDF for customization."
+            "⚠️ Tabular PDF format detected but parser not yet implemented.\n\n"
+            "Please provide a sample of your PDF roster for customization.\n"
+            "Contact support with your roster PDF file."
         )
     
     def _parse_generic_format(self, text: str) -> List[Duty]:
         """Fallback generic parser"""
         raise NotImplementedError(
-            "Generic parser not yet implemented. "
-            "Provide sample PDF for customization."
+            "❌ Unsupported PDF format detected.\n\n"
+            "Supported formats:\n"
+            "  • Qatar Airways CrewLink (PDF with 'CrewLink' or 'Qatar Airways' header)\n"
+            "  • Tabular format (PDF with vertical bars/pipes '|')\n"
+            "  • CSV files (comma-separated values)\n\n"
+            "Please provide a roster PDF in one of these formats, or contact support with a sample PDF."
         )
 
 # ============================================================================
