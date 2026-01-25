@@ -44,6 +44,7 @@ import pandas as pd
 # ============================================================================
 # PAGE CONFIGURATION
 # ============================================================================
+# Updated: Ensure qatar_roster_parser is available
 
 st.set_page_config(
     page_title="Fatigue Analysis Tool",
