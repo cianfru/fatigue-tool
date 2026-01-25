@@ -738,6 +738,14 @@ class BorbelyFatigueModel:
         Process entire roster with cumulative tracking
         NEW in V2: State persists across duties
         """
+        # Validate roster has duties
+        if not roster.duties or len(roster.duties) == 0:
+            raise ValueError(
+                "Cannot simulate roster: No duties found. "
+                "The roster parser failed to extract any duty information. "
+                "Please verify the PDF/CSV format is correct and contains roster data."
+            )
+        
         duty_timelines = []
         
         current_s = roster.initial_sleep_pressure

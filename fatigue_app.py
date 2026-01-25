@@ -334,6 +334,16 @@ if uploaded_file:
             
             st.success(f"✅ Parsed {roster.total_duties} duties, {roster.total_sectors} sectors")
             
+            # Validate roster has duties
+            if roster.total_duties == 0:
+                st.error("❌ **No duties found in roster.** The parser could not extract any duty information.")
+                st.info("This can happen if:\n"
+                        "- The PDF/CSV format is not recognized\n"
+                        "- The file is corrupted or image-based\n"
+                        "- The file doesn't contain roster data\n\n"
+                        "Please verify your file and try again.")
+                st.stop()
+            
             # Store roster
             st.session_state.roster = roster
             
