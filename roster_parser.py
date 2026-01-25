@@ -215,6 +215,7 @@ class PDFRosterParser:
         current_duty_flights = []
         current_date = None
         report_time = None
+        match_count = 0
         
         for line in lines:
             # Skip header/empty lines
@@ -225,6 +226,8 @@ class PDFRosterParser:
             match = self._extract_duty_line_crewlink(line)
             if not match:
                 continue
+            
+            match_count += 1
             
             date, flight_num, dep, arr, std, sta, rep, rel = match
             
@@ -263,12 +266,27 @@ class PDFRosterParser:
             )
             duties.append(duty)
         
+        if match_count == 0:
+            print(f"   ⚠️  No CrewLink pattern matches found (checked {len(lines)} lines)")
+        else:
+            print(f"   ✓ Found {match_count} matching lines → {len(duties)} duties extracted")
+        
         return duties
     
     def _extract_duty_line_crewlink(self, line: str) -> Optional[Tuple]:
         """Extract data from single CrewLink roster line"""
-        # Regex pattern for CrewLink format
-        pattern = r'(\d{2}-[A-Z]{3}-\d{2,4})\s+([A-Z]{2}\d{1,4})\s+([A-Z]{3})\s+([A-Z]{3})\s+(\d{2}:\d{2})\s+(\d{2}:\d{2}(?:\+\d)?)\s+(\d{2}:\d{2})\s+(\d{2}:\d{2}(?:\+\d)?)'
+        # Try multiple regex patterns for flexibility
+        patterns = [
+            # Pattern 1: Standard format with optional +1/-1 on times
+            r'(\d{1,2}-[A-Z]{3}-\d{2,4})\s+([A-Z]{2}\d{1,4})\s+([A-Z]{3})\s+([A-Z]{3})\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2}(?:[+-]\d)?)\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2}(?:[+-]\d)?)',
+            # Pattern 2: Alternative with case-insensitive month
+            r'(\d{1,2}-[A-Z][a-z]{2}-\d{2,4})\s+([A-Z]{2}\d{1,4})\s+([A-Z]{3})\s+([A-Z]{3})\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2}(?:[+-]\d)?)\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2}(?:[+-]\d)?)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, line)
+            if match:
+                return match.groups()
         
         match = re.search(pattern, line)
         if match:
