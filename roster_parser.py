@@ -20,7 +20,6 @@ from typing import List, Dict, Optional, Tuple
 import pytz
 
 from data_models import Airport, FlightSegment, Duty, Roster
-from qatar_roster_parser import QatarRosterParser
 
 # ============================================================================
 # AIRPORT DATABASE
@@ -145,21 +144,10 @@ class PDFRosterParser:
             # (works for both explicitly detected and unknown formats)
             try:
                 print("   Attempting specialized Qatar Airways grid parser...")
-                qatar_parser = QatarRosterParser(timezone_format='auto')
-                result = qatar_parser.parse_roster(pdf_path)
-                duties = result['duties']
+                # Note: Qatar parser was removed during cleanup
+                # Using fallback parsers for roster format detection
+                raise ImportError("Specialized Qatar parser not available")
                 
-                # Report unknown airports if any
-                if result.get('unknown_airports'):
-                    print(f"   ⚠️  Found {len(result['unknown_airports'])} unknown airports:")
-                    for code in sorted(result['unknown_airports']):
-                        print(f"      - {code}")
-                
-                if duties:
-                    print(f"   ✅ Qatar parser succeeded")
-                else:
-                    print(f"   ℹ️  Qatar parser found no duties")
-                    
             except Exception as e:
                 print(f"   ⚠️  Qatar parser: {e}")
                 
@@ -416,31 +404,26 @@ class PDFRosterParser:
         )
     
     def _parse_generic_format(self, text: str) -> List[Duty]:
-        """Fallback generic parser - tries specialized Qatar parser as last resort"""
+        """Fallback generic parser"""
         
-        print("⚠️  Generic format detected - attempting specialized Qatar parser...")
+        print("⚠️  Generic format detected - attempting line-based parsing...")
         
-        # Last resort: try the specialized Qatar parser
-        try:
-            qatar_parser = QatarRosterParser(timezone_format='auto')
-            # We need a temp PDF path - this is a limitation
-            # The generic parser receives text, not the PDF path
-            raise NotImplementedError(
-                "❌ Unsupported PDF format detected.\n\n"
-                "The text-based detection didn't recognize this as a Qatar Airways roster.\n\n"
-                "This could mean:\n"
-                "  1. The PDF keywords ('CrewLink', 'Qatar Airways', 'Period', etc.) are not being extracted\n"
-                "  2. The PDF uses a different format than expected\n"
-                "  3. The PDF is image-based or has extraction issues\n\n"
-                "Supported formats:\n"
-                "  • Qatar Airways CrewLink PDF (grid layout with dates as columns)\n"
-                "  • Tabular format (with vertical bars/pipes '|')\n"
-                "  • CSV files (comma-separated values)\n\n"
-                "ACTION: Please verify the PDF is not image-based or corrupted.\n"
-                "        Try uploading again, or contact support with a sample PDF."
-            )
-        except Exception as e:
-            raise NotImplementedError(str(e))
+        # The generic parser receives text, not the PDF path
+        # Try line-based parsing as fallback
+        raise NotImplementedError(
+            "❌ Unsupported PDF format detected.\n\n"
+            "The text-based detection didn't recognize this as a Qatar Airways roster.\n\n"
+            "This could mean:\n"
+            "  1. The PDF keywords ('CrewLink', 'Qatar Airways', 'Period', etc.) are not being extracted\n"
+            "  2. The PDF uses a different format than expected\n"
+            "  3. The PDF is image-based or has extraction issues\n\n"
+            "Supported formats:\n"
+            "  • Qatar Airways CrewLink PDF (grid layout with dates as columns)\n"
+            "  • Tabular format (with vertical bars/pipes '|')\n"
+            "  • CSV files (comma-separated values)\n\n"
+            "ACTION: Please verify the PDF is not image-based or corrupted.\n"
+            "        Try uploading again, or contact support with a sample PDF."
+        )
 
 # ============================================================================
 # CSV PARSER
