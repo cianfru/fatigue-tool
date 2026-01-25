@@ -215,7 +215,7 @@ class FatigueVisualizer:
                 ))
         
         fig.update_layout(
-            title=f"Route Heatmap ({getattr(analysis, 'roster', {}).get('roster_id', 'Roster')})",
+            title=f"Route Heatmap ({getattr(analysis.roster, 'roster_id', 'Roster') if hasattr(analysis, 'roster') else 'Roster'})",
             geo=dict(
                 projection_type='natural earth',
                 showland=True,
