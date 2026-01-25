@@ -294,7 +294,7 @@ class FatigueVisualizer:
         fig.add_trace(go.Scatter(
             x=duty_ids, y=landing_perfs,
             mode='markers',
-            marker=dict(symbol='v', size=10, color='navy', line=dict(width=1, color='black')),
+            marker=dict(symbol='triangle-down', size=10, color='navy', line=dict(width=1, color='black')),
             name='Landing Performance'
         ))
         
