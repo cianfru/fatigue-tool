@@ -322,8 +322,10 @@ class FatigueVisualizer:
                     if date_obj in duty_by_date:
                         dt = duty_by_date[date_obj]
                         
-                        # Determine risk color
-                        avg_perf = sum(p.landing_performance for p in dt.timeline if p.landing_performance) / max(1, len([p for p in dt.timeline if p.landing_performance]))
+                        # Determine risk color - safely get landing_performance with None handling
+                        perfs = [getattr(p, 'landing_performance', None) for p in dt.timeline]
+                        valid_perfs = [p for p in perfs if p is not None]
+                        avg_perf = sum(valid_perfs) / max(1, len(valid_perfs)) if valid_perfs else 50.0
                         risk_color = self._get_risk_color(avg_perf)
                         day_colors.append(risk_color)
                         
@@ -361,7 +363,9 @@ class FatigueVisualizer:
                     date_obj = datetime(year, month, day).date()
                     if date_obj in duty_by_date:
                         dt = duty_by_date[date_obj]
-                        avg_perf = sum(p.landing_performance for p in dt.timeline if p.landing_performance) / max(1, len([p for p in dt.timeline if p.landing_performance]))
+                        perfs = [getattr(p, 'landing_performance', None) for p in dt.timeline]
+                        valid_perfs = [p for p in perfs if p is not None]
+                        avg_perf = sum(valid_perfs) / max(1, len(valid_perfs)) if valid_perfs else 50.0
                         week_values.append(avg_perf)
                         week_hovers.append(f"<b>{x_labels[day_idx]} {day}</b><br>{dt.duty_id}<br>Perf: {avg_perf:.0f}/100")
                     else:
