@@ -659,8 +659,19 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
         
         viz.plot_monthly_summary(monthly_analysis, save_path=tmp_perf.name)
         
-        if os.path.exists(tmp_perf.name):
-            st.image(tmp_perf.name, use_container_width=True)
+        # Check if PNG was created, or if HTML was created instead (Chrome not available)
+        perf_file = tmp_perf.name
+        if not os.path.exists(perf_file):
+            # Try HTML version
+            perf_file = tmp_perf.name.replace('.png', '.html')
+        
+        if os.path.exists(perf_file):
+            # Display the chart (image or interactive HTML)
+            if perf_file.endswith('.png'):
+                st.image(perf_file, use_container_width=True)
+            else:
+                # HTML file - use plotly_chart or display with components
+                st.markdown("*Interactive chart (requires Plotly)*")
             
             # Generate chronogram
             tmp_chrono = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
@@ -678,13 +689,14 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
             col1, col2, col3 = st.columns([1, 1, 2])
             
             with col1:
-                if os.path.exists(tmp_perf.name):
-                    with open(tmp_perf.name, 'rb') as f:
+                if os.path.exists(perf_file):
+                    with open(perf_file, 'rb') as f:
+                        file_ext = 'png' if perf_file.endswith('.png') else 'html'
                         st.download_button(
                             "📥 Download Chart",
                             data=f.read(),
-                            file_name=f"performance_summary_{month}.png",
-                            mime="image/png",
+                            file_name=f"performance_summary_{month}.{file_ext}",
+                            mime=f"image/png" if file_ext == 'png' else "text/html",
                             use_container_width=True
                         )
             
@@ -699,7 +711,7 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
                             use_container_width=True
                         )
         else:
-            st.error("Failed to generate performance chart image")
+            st.error("Failed to generate performance chart")
     
     except Exception as e:
         st.error(f"Error generating performance chart: {str(e)}")

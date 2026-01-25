@@ -631,11 +631,21 @@ class FatigueVisualizer:
         )
         
         if save_path:
-            if save_path.endswith('.png'):
-                fig.write_image(save_path, width=1200, height=500)
-            else:
-                fig.write_html(save_path)
-            print(f"✓ Monthly summary saved: {save_path}")
+            try:
+                if save_path.endswith('.png'):
+                    fig.write_image(save_path, width=1200, height=500)
+                else:
+                    fig.write_html(save_path)
+                print(f"✓ Monthly summary saved: {save_path}")
+            except RuntimeError as e:
+                # Chrome not available (e.g., on Streamlit Cloud)
+                # Fall back to HTML format
+                if 'Chrome' in str(e) or 'Chromium' in str(e):
+                    html_path = save_path.replace('.png', '.html')
+                    fig.write_html(html_path)
+                    print(f"⚠️  PNG export unavailable (Chrome not installed). Saved as HTML: {html_path}")
+                else:
+                    raise
         
         return fig
     
