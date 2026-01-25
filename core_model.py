@@ -138,48 +138,33 @@ class BorbelyFatigueModel:
     
     def compute_process_s(
         self,
-        initial_s: float,
         current_time: datetime,
-        sleep_history: List[SleepBlock],
-        reference_time: datetime
+        last_sleep_end: datetime,
+        s_at_wake: float = 0.1
     ) -> float:
         """
-        Process S: Homeostatic sleep pressure
-        Borbély & Achermann (1999) equations
+        SIMPLIFIED Process S: Just evolve from wake time
+        
+        Much simpler and more reliable than trying to rebuild entire history
+        
+        Args:
+            current_time: Current time point
+            last_sleep_end: When did pilot wake up
+            s_at_wake: S value at wake (typically 0.1 after good sleep)
+        
+        Returns:
+            Current S value (0-1 scale)
         """
-        s_current = initial_s
-        last_event_time = reference_time - timedelta(hours=48)
+        # Hours since wake
+        hours_awake = (current_time - last_sleep_end).total_seconds() / 3600
         
-        # Build sleep/wake timeline
-        events = []
-        for sleep in sleep_history:
-            if sleep.end_utc <= current_time:
-                events.append(('sleep', sleep.start_utc, sleep.end_utc, sleep.effective_sleep_hours))
+        if hours_awake < 0:
+            # Still sleeping? Shouldn't happen
+            return s_at_wake
         
-        events.sort(key=lambda x: x[1])
-        
-        # Process timeline
-        current_pos = last_event_time
-        
-        for event_type, start, end, duration in events:
-            # Wake period before sleep
-            if start > current_pos:
-                wake_duration = (start - current_pos).total_seconds() / 3600
-                s_infinity = self.params.S_max
-                s_current = s_infinity - (s_infinity - s_current) * \
-                           math.exp(-wake_duration / self.params.tau_i)
-                current_pos = start
-            
-            # Sleep period (decay)
-            s_current = s_current * math.exp(-duration / self.params.tau_d)
-            current_pos = end
-        
-        # Final wake period
-        if current_pos < current_time:
-            wake_duration = (current_time - current_pos).total_seconds() / 3600
-            s_infinity = self.params.S_max
-            s_current = s_infinity - (s_infinity - s_current) * \
-                       math.exp(-wake_duration / self.params.tau_i)
+        # S rises exponentially toward S_max during wake
+        s_current = self.params.S_max - (self.params.S_max - s_at_wake) * \
+                    math.exp(-hours_awake / self.params.tau_i)
         
         return max(self.params.S_min, min(self.params.S_max, s_current))
     
@@ -602,48 +587,62 @@ class BorbelyFatigueModel:
         """
         Simulate single duty with high-resolution timeline
         
-        OPTIMIZATION: Accepts cached_s from previous duty to avoid recomputing
-        Process S from full sleep history at every 5-minute step.
-        
-        Performance improvement: O(history_length × duty_steps) → O(duty_steps)
+        FIXED: Now properly uses sleep history to initialize S value
         """
         
         timeline = []
         
-        # Last sleep
+        # ====================================================================
+        # STEP 1: Find last sleep and calculate S_0
+        # ====================================================================
+        
         last_sleep = None
         for sleep in reversed(sleep_history):
             if sleep.end_utc <= duty.report_time_utc:
                 last_sleep = sleep
                 break
         
-        time_since_wake = timedelta(0)
         if last_sleep:
-            time_since_wake = duty.report_time_utc - last_sleep.end_utc
-        
-        # Compute initial S once (not at every step)
-        if cached_s is not None:
-            s_current = cached_s  # Use cached value from previous duty
+            # Calculate S at wake from sleep quality
+            # After perfect 8h sleep: S ≈ 0.1
+            # After poor 4h sleep: S ≈ 0.5
+            sleep_quality_ratio = last_sleep.effective_sleep_hours / 8.0
+            s_at_wake = max(0.1, 0.7 - (sleep_quality_ratio * 0.6))
+            
+            wake_time = last_sleep.end_utc
         else:
-            s_current = self.compute_process_s(initial_s, duty.report_time_utc, sleep_history, duty.report_time_utc)
+            # No sleep history - use default
+            s_at_wake = initial_s
+            wake_time = duty.report_time_utc - timedelta(hours=8)  # Assume woke 8h ago
         
-        # Simulate
+        # ====================================================================
+        # STEP 2: Simulate duty timeline
+        # ====================================================================
+        
         current_time = duty.report_time_utc
         
         while current_time <= duty.release_time_utc:
-            # Track S progression during duty (incremental, not from history)
-            time_elapsed = (current_time - duty.report_time_utc).total_seconds() / 3600
-            s_infinity = self.params.S_max
-            s_current = s_infinity - (s_infinity - s_current) * math.exp(-time_elapsed / self.params.tau_i)
+            
+            # Calculate S: simple evolution from wake time
+            hours_awake = (current_time - wake_time).total_seconds() / 3600
+            s_current = self.params.S_max - (self.params.S_max - s_at_wake) * \
+                        math.exp(-hours_awake / self.params.tau_i)
             s_current = max(self.params.S_min, min(self.params.S_max, s_current))
             
+            # Calculate C: circadian component
             c = self.compute_process_c(current_time, duty.home_base_timezone, circadian_phase_shift)
-            current_wake = (current_time - duty.report_time_utc) + time_since_wake
+            
+            # Calculate W: sleep inertia (time since wake)
+            current_wake = current_time - wake_time
             w = self.compute_sleep_inertia(current_wake)
             
+            # Integrate into performance (weighted average + time-on-task penalty)
             performance = self.integrate_performance(c, s_current, w)
+            
+            # Get flight phase
             phase = self.get_flight_phase(duty.segments, current_time)
             
+            # Create performance point
             tz = pytz.timezone(duty.home_base_timezone)
             point = PerformancePoint(
                 timestamp_utc=current_time,
