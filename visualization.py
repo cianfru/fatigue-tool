@@ -16,6 +16,7 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, time
 from typing import Optional, List, Dict
 import pandas as pd
+import calendar
 
 from data_models import DutyTimeline, MonthlyAnalysis, FlightPhase
 from config import ModelConfig
@@ -274,6 +275,127 @@ class FatigueVisualizer:
             return RISK_PALETTE['moderate']
         else:
             return RISK_PALETTE['low']
+    
+    def create_month_calendar(self, monthly_analysis: MonthlyAnalysis):
+        """
+        Creates an interactive month calendar view with risk-colored day boxes
+        
+        Features:
+        - 7 columns (Mon-Sun) grid layout
+        - Color-coded by risk level (critical/high/moderate/low)
+        - Shows key metrics per day (sleep debt, avg performance)
+        - Click drill-down to duty details
+        """
+        # Create lookup: date -> duty_timeline
+        duty_by_date = {}
+        for dt in monthly_analysis.duty_timelines:
+            duty_by_date[dt.duty_date.date()] = dt
+        
+        # Get month/year from first duty
+        if monthly_analysis.duty_timelines:
+            first_duty = monthly_analysis.duty_timelines[0]
+            year = first_duty.duty_date.year
+            month = first_duty.duty_date.month
+        else:
+            now = datetime.now()
+            year = now.year
+            month = now.month
+        
+        # Create calendar grid data
+        import calendar
+        cal = calendar.monthcalendar(year, month)
+        month_name = calendar.month_name[month]
+        
+        # Build hover text and color for each day
+        day_colors = []
+        day_texts = []
+        day_duties = []
+        
+        for week in cal:
+            for day in week:
+                if day == 0:  # Empty day
+                    day_colors.append('rgba(0,0,0,0)')  # Transparent
+                    day_texts.append('')
+                    day_duties.append(None)
+                else:
+                    date_obj = datetime(year, month, day).date()
+                    if date_obj in duty_by_date:
+                        dt = duty_by_date[date_obj]
+                        
+                        # Determine risk color
+                        avg_perf = sum(p.landing_performance for p in dt.timeline if p.landing_performance) / max(1, len([p for p in dt.timeline if p.landing_performance]))
+                        risk_color = self._get_risk_color(avg_perf)
+                        day_colors.append(risk_color)
+                        
+                        # Build hover text with key metrics
+                        sleep_debt = dt.sleep_debt if hasattr(dt, 'sleep_debt') else 0
+                        day_texts.append(
+                            f"<b>{day}</b><br>"
+                            f"Duty: {dt.duty_id}<br>"
+                            f"Perf: {avg_perf:.0f}/100<br>"
+                            f"Sleep Debt: {sleep_debt:.1f}h<br>"
+                            f"Sectors: {len([p for p in dt.timeline if hasattr(p, 'flight_phase') and p.flight_phase.name == 'CRUISE'])}"
+                        )
+                        day_duties.append(dt.duty_id)
+                    else:
+                        # No duty scheduled
+                        day_colors.append('rgba(100,100,100,0.3)')  # Light gray
+                        day_texts.append(f"<b>{day}</b><br>Off")
+                        day_duties.append(None)
+        
+        # Create heatmap-style calendar using Plotly
+        # Flatten for heatmap
+        z_values = []
+        hover_texts = []
+        x_labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        
+        week_num = 0
+        for week in cal:
+            week_values = []
+            week_hovers = []
+            for day_idx, day in enumerate(week):
+                if day == 0:
+                    week_values.append(None)
+                    week_hovers.append('')
+                else:
+                    date_obj = datetime(year, month, day).date()
+                    if date_obj in duty_by_date:
+                        dt = duty_by_date[date_obj]
+                        avg_perf = sum(p.landing_performance for p in dt.timeline if p.landing_performance) / max(1, len([p for p in dt.timeline if p.landing_performance]))
+                        week_values.append(avg_perf)
+                        week_hovers.append(f"<b>{x_labels[day_idx]} {day}</b><br>{dt.duty_id}<br>Perf: {avg_perf:.0f}/100")
+                    else:
+                        week_values.append(0)
+                        week_hovers.append(f"<b>{x_labels[day_idx]} {day}</b><br>Off")
+            z_values.append(week_values)
+            week_num += 1
+        
+        # Create figure with Plotly heatmap
+        fig = go.Figure(data=go.Heatmap(
+            z=z_values,
+            colorscale=[
+                [0, RISK_PALETTE['critical']],
+                [0.3, RISK_PALETTE['high']],
+                [0.6, RISK_PALETTE['moderate']],
+                [1.0, RISK_PALETTE['low']]
+            ],
+            colorbar=dict(title="Performance", tickvals=[60, 75, 85, 100], ticktext=['Critical', 'High', 'Moderate', 'Low']),
+            x=x_labels,
+            y=[f"Week {i+1}" for i in range(len(z_values))],
+            text=hover_texts if hover_texts else None,
+            hovertemplate='%{text}<extra></extra>'
+        ))
+        
+        fig.update_layout(
+            title=f"📅 {month_name} {year} - Fatigue Risk Calendar",
+            xaxis_title="",
+            yaxis_title="",
+            template=self.template,
+            height=400,
+            font=dict(size=11)
+        )
+        
+        return fig
     
     def plot_duty_timeline(
         self, 

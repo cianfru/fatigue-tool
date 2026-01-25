@@ -346,6 +346,18 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
         st.success("✅ No high-risk duties detected in this roster.")
     
     # ========================================================================
+    # MONTH CALENDAR VIEW
+    # ========================================================================
+    
+    st.markdown("---")
+    st.subheader("📅 Monthly Fatigue Calendar")
+    
+    month_calendar_fig = viz.create_month_calendar(monthly_analysis)
+    st.plotly_chart(month_calendar_fig, use_container_width=True)
+    
+    st.markdown("**Color Legend:** 🔴 Critical (<60) | 🟠 High (60-74) | 🟡 Moderate (75-84) | 🟢 Low (85+)")
+    
+    # ========================================================================
     # DUTY-BY-DUTY ANALYSIS
     # ========================================================================
     
