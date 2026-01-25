@@ -418,14 +418,27 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
             st.markdown("#### Performance Timeline")
             
             try:
-                viz = FatigueVisualizer(config)
-                
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_plot:
-                    viz.plot_duty_timeline(duty_timeline, save_path=tmp_plot.name)
-                    st.image(tmp_plot.name, use_container_width=True)
-                    
+                viz = FatigueVisualizer(config, theme="dark")
+                fig = viz.create_unified_timeline(duty_timeline)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
             except Exception as e:
                 st.error(f"Could not generate plot: {str(e)}")
+    
+    # ========================================================================
+    # ROUTE VISUALIZATION
+    # ========================================================================
+    
+    st.markdown("---")
+    st.subheader("🌍 Route Network Analysis")
+    
+    try:
+        viz = FatigueVisualizer(config, theme="dark")
+        route_fig = viz.create_route_map(monthly_analysis)
+        if route_fig:
+            st.plotly_chart(route_fig, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Route map not available: {str(e)}")
     
     # ========================================================================
     # STEP 4: DOWNLOAD REPORTS
@@ -437,22 +450,13 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("📊 Generate Monthly Summary", use_container_width=True):
-            try:
-                viz = FatigueVisualizer(config)
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
-                    viz.plot_monthly_summary(monthly_analysis, save_path=tmp.name)
-                    
-                    with open(tmp.name, 'rb') as f:
-                        st.download_button(
-                            label="📥 Download Monthly Chart",
-                            data=f,
-                            file_name=f"monthly_summary_{month}.png",
-                            mime="image/png",
-                            use_container_width=True
-                        )
-            except Exception as e:
-                st.error(f"Error generating chart: {str(e)}")
+        try:
+            viz = FatigueVisualizer(config, theme="dark")
+            fig = viz.plot_monthly_summary(monthly_analysis)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error generating chart: {str(e)}")
     
     with col2:
         st.button("📄 Generate PDF Report", use_container_width=True, disabled=True)
