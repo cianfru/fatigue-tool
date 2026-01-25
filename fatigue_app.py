@@ -130,6 +130,62 @@ theme = st.sidebar.radio(
 )
 selected_theme = "dark" if "Dark" in theme else "light"
 
+# Apply theme CSS
+if selected_theme == "dark":
+    st.markdown("""
+    <style>
+        :root {
+            --primary-color: #ffffff;
+            --background-color: #0e1117;
+            --secondary-background-color: #161b22;
+            --text-color: #c9d1d9;
+        }
+        body {
+            background-color: #0e1117;
+            color: #c9d1d9;
+        }
+        .stApp {
+            background-color: #0e1117;
+        }
+        .stMarkdown {
+            color: #c9d1d9;
+        }
+        [data-testid="stSidebar"] {
+            background-color: #161b22;
+        }
+        [data-testid="stMetricValue"] {
+            color: #ffffff;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown("""
+    <style>
+        :root {
+            --primary-color: #000000;
+            --background-color: #ffffff;
+            --secondary-background-color: #f1f3f5;
+            --text-color: #31333f;
+        }
+        body {
+            background-color: #ffffff;
+            color: #31333f;
+        }
+        .stApp {
+            background-color: #ffffff;
+        }
+        .stMarkdown {
+            color: #31333f;
+        }
+        [data-testid="stSidebar"] {
+            background-color: #f1f3f5;
+        }
+        [data-testid="stMetricValue"] {
+            color: #000000;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
 st.sidebar.markdown("---")
 
 # Model Configuration
