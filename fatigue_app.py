@@ -15,6 +15,7 @@ Usage:
 
 import streamlit as st
 import sys
+import os
 from pathlib import Path
 import tempfile
 from datetime import datetime
@@ -36,7 +37,9 @@ from roster_parser import PDFRosterParser, CSVRosterParser, AirportDatabase
 from easa_utils import FatigueRiskScorer
 from visualization import FatigueVisualizer
 from aviation_calendar import AviationCalendar
+from chronogram import FatigueChronogram
 from config import ModelConfig
+import pandas as pd
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -437,12 +440,64 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     # ========================================================================
     
     st.markdown("---")
-    st.subheader("📅 Monthly Fatigue Calendar")
+    st.subheader("� Monthly Chronogram - High-Resolution Timeline")
+    st.markdown("*30-minute resolution showing duty timing, WOCL exposure, and fatigue patterns*")
     
-    month_calendar_fig = viz.create_month_calendar(monthly_analysis)
-    st.plotly_chart(month_calendar_fig, use_container_width=True)
+    try:
+        # Mode selector
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            chrono_mode = st.radio(
+                "Display Mode",
+                ["risk", "state", "hybrid"],
+                format_func=lambda x: {
+                    "risk": "🎨 Performance Heatmap (shows fatigue levels)",
+                    "state": "📊 Duty/Rest Timeline (simple)",
+                    "hybrid": "🔄 Combined View"
+                }[x],
+                horizontal=True
+            )
+        
+        with col2:
+            show_patterns = st.checkbox("Show Pattern Detection", value=True)
+        
+        # Generate chronogram
+        chrono = FatigueChronogram(theme='light')
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
+            chrono.plot_monthly_chronogram(
+                monthly_analysis,
+                save_path=tmp.name,
+                mode=chrono_mode,
+                show_annotations=show_patterns
+            )
+            
+            st.image(tmp.name, use_container_width=True)
+        
+        # Explanation
+        with st.expander("ℹ️ How to Read This Chart"):
+            st.markdown("""
+            **What You're Seeing:**
+            - Each row = One day of the month
+            - Each column = 30-minute time slot
+            - Purple shading = WOCL (Window of Circadian Low, 02:00-06:00)
+            - Color intensity = Fatigue risk (green=good, red=high risk)
+            
+            **Key Insights:**
+            - **Vertical patterns** = Same time of day duties (circadian alignment)
+            - **Diagonal shifts** = "The Flip" (circadian disruption)
+            - **Horizontal bands** = Multi-day duty or ultra-long-haul
+            - **Purple overlap** = WOCL exposure (highest fatigue risk)
+            
+            **Pattern Warnings:**
+            - ⚠️ WOCL = Multiple consecutive night duties
+            - ⚠️ FLIP = Large circadian phase shift (>8h)
+            """)
     
-    st.markdown("**Color Legend:** 🔴 Critical (<60) | 🟠 High (60-74) | 🟡 Moderate (75-84) | 🟢 Low (85+)")
+    except Exception as e:
+        st.error(f"Error generating chronogram: {str(e)}")
+        with st.expander("🔍 Technical Details"):
+            st.code(traceback.format_exc())
     
     # ========================================================================
     # DUTY-BY-DUTY ANALYSIS
@@ -577,16 +632,149 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     # ========================================================================
     
     st.markdown("---")
-    st.header("📥 Step 4: Download Reports")
+    st.header("� Monthly Analysis")
     
-    # Monthly summary chart
-    st.subheader("📊 Monthly Performance Summary")
+    # ========================================================================
+    # ENHANCED BAR CHART WITH ANNOTATIONS
+    # ========================================================================
+    
+    st.subheader("📊 Duty Performance Summary")
+    st.markdown("*Performance scores for each duty with risk classification*")
+    
     try:
-        fig = viz.plot_monthly_summary(monthly_analysis)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
+            viz.plot_monthly_summary(monthly_analysis, save_path=tmp.name)
+            st.image(tmp.name, use_container_width=True)
+        
+        # Add download buttons
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        with col1:
+            if os.path.exists(tmp.name):
+                with open(tmp.name, 'rb') as f:
+                    st.download_button(
+                        "📥 Download Chart",
+                        data=f,
+                        file_name=f"performance_summary_{month}.png",
+                        mime="image/png",
+                        use_container_width=True
+                    )
+        
+        with col2:
+            # Generate chronogram for download
+            chrono = FatigueChronogram(theme='light')
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_chrono:
+                chrono.plot_monthly_chronogram(
+                    monthly_analysis,
+                    save_path=tmp_chrono.name,
+                    mode='risk',
+                    show_annotations=True
+                )
+                
+                if os.path.exists(tmp_chrono.name):
+                    with open(tmp_chrono.name, 'rb') as f:
+                        st.download_button(
+                            "📥 Download Chronogram",
+                            data=f,
+                            file_name=f"chronogram_{month}.png",
+                            mime="image/png",
+                            use_container_width=True
+                        )
+    
     except Exception as e:
-        st.error(f"Error generating chart: {str(e)}")
+        st.error(f"Error generating performance chart: {str(e)}")
+        with st.expander("🔍 Technical Details"):
+            st.code(traceback.format_exc())
+    
+    # ========================================================================
+    # PATTERN DETECTION TABLE
+    # ========================================================================
+    
+    st.markdown("---")
+    st.subheader("🔍 Detected Fatigue Patterns")
+    
+    # Build pattern summary
+    patterns_detected = []
+    
+    # Check for consecutive WOCL
+    wocl_count = sum(1 for dt in monthly_analysis.duty_timelines if dt.wocl_encroachment_hours > 0)
+    if wocl_count >= 3:
+        patterns_detected.append({
+            "Pattern": "Consecutive WOCL Duties",
+            "Count": f"{wocl_count} duties",
+            "Risk Level": "🔴 High",
+            "Recommendation": "Consider circadian re-alignment rest periods"
+        })
+    
+    # Check for quick turnarounds
+    quick_turns = 0
+    for i in range(len(roster.duties) - 1):
+        rest_hours = (roster.duties[i+1].report_time_utc - 
+                      roster.duties[i].release_time_utc).total_seconds() / 3600
+        if rest_hours < 15:
+            quick_turns += 1
+    
+    if quick_turns > 0:
+        patterns_detected.append({
+            "Pattern": "Quick Turnarounds",
+            "Count": f"{quick_turns} occurrences",
+            "Risk Level": "🟠 Moderate",
+            "Recommendation": "Monitor sleep quality and cumulative fatigue"
+        })
+    
+    # Check for high cumulative debt
+    if monthly_analysis.max_sleep_debt > 8:
+        patterns_detected.append({
+            "Pattern": "Excessive Sleep Debt",
+            "Count": f"{monthly_analysis.max_sleep_debt:.1f}h peak",
+            "Risk Level": "🔴 High",
+            "Recommendation": "Schedule extended rest period (48h+)"
+        })
+    
+    if patterns_detected:
+        df = pd.DataFrame(patterns_detected)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.success("✅ No concerning fatigue patterns detected in this roster")
+    
+    # ========================================================================
+    # WEEKLY BREAKDOWN
+    # ========================================================================
+    
+    with st.expander("📅 Weekly Breakdown"):
+        
+        # Group duties by week
+        weeks = {}
+        for duty_timeline in monthly_analysis.duty_timelines:
+            week_num = (duty_timeline.duty_date.day - 1) // 7 + 1
+            if week_num not in weeks:
+                weeks[week_num] = []
+            weeks[week_num].append(duty_timeline)
+        
+        for week_num, week_duties in sorted(weeks.items()):
+            st.markdown(f"**Week {week_num}**")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Duties", len(week_duties))
+            
+            with col2:
+                avg_perf = sum(d.average_performance for d in week_duties) / len(week_duties)
+                st.metric("Avg Performance", f"{avg_perf:.1f}")
+            
+            with col3:
+                wocl_duties = sum(1 for d in week_duties if d.wocl_encroachment_hours > 0)
+                st.metric("WOCL Duties", wocl_duties)
+            
+            with col4:
+                high_risk = sum(
+                    1 for d in week_duties 
+                    if d.landing_performance and d.landing_performance < 60
+                )
+                st.metric("High Risk", high_risk)
+            
+            st.markdown("---")
     
     st.markdown("---")
     
