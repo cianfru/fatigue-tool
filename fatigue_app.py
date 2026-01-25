@@ -579,11 +579,24 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     st.markdown("---")
     st.header("📥 Step 4: Download Reports")
     
+    # Monthly summary chart
+    st.subheader("📊 Monthly Performance Summary")
+    try:
+        fig = viz.plot_monthly_summary(monthly_analysis)
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.error(f"Error generating chart: {str(e)}")
+    
+    st.markdown("---")
+    
+    # Export options
+    st.subheader("💾 Export Options")
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.subheader("📅 Aviation Calendar")
-        st.write("Multi-day duty calendar with risk levels")
+        st.write("**📅 Aviation Calendar**")
+        st.caption("Multi-day duty calendar with risk levels")
         if st.button("📥 Download Calendar PNG", use_container_width=True):
             try:
                 # Generate calendar
@@ -611,14 +624,14 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
                     st.code(traceback.format_exc())
     
     with col2:
-        st.subheader("📄 PDF Report")
+        st.write("**📄 PDF Report**")
+        st.caption("Coming soon")
         st.button("📄 Generate PDF Report", use_container_width=True, disabled=True)
-        st.caption("PDF generation coming soon")
     
     with col3:
-        st.subheader("📊 Excel Export")
+        st.write("**📊 Excel Export**")
+        st.caption("Coming soon")
         st.button("📊 Export to Excel", use_container_width=True, disabled=True)
-        st.caption("Excel export coming soon")
 
 # ============================================================================
 # FOOTER
