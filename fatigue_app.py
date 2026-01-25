@@ -642,44 +642,53 @@ if st.session_state.analysis_complete and st.session_state.monthly_analysis:
     st.markdown("*Performance scores for each duty with risk classification*")
     
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
-            viz.plot_monthly_summary(monthly_analysis, save_path=tmp.name)
-            st.image(tmp.name, use_container_width=True)
+        # Generate performance chart
+        tmp_perf = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+        tmp_perf.close()
         
-        # Add download buttons
-        col1, col2, col3 = st.columns([1, 1, 2])
+        viz.plot_monthly_summary(monthly_analysis, save_path=tmp_perf.name)
         
-        with col1:
-            if os.path.exists(tmp.name):
-                with open(tmp.name, 'rb') as f:
-                    st.download_button(
-                        "📥 Download Chart",
-                        data=f,
-                        file_name=f"performance_summary_{month}.png",
-                        mime="image/png",
-                        use_container_width=True
-                    )
-        
-        with col2:
-            # Generate chronogram for download
+        if os.path.exists(tmp_perf.name):
+            st.image(tmp_perf.name, use_container_width=True)
+            
+            # Generate chronogram
+            tmp_chrono = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+            tmp_chrono.close()
+            
             chrono = FatigueChronogram(theme='light')
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_chrono:
-                chrono.plot_monthly_chronogram(
-                    monthly_analysis,
-                    save_path=tmp_chrono.name,
-                    mode='risk',
-                    show_annotations=True
-                )
-                
+            chrono.plot_monthly_chronogram(
+                monthly_analysis,
+                save_path=tmp_chrono.name,
+                mode='risk',
+                show_annotations=True
+            )
+            
+            # Download buttons
+            col1, col2, col3 = st.columns([1, 1, 2])
+            
+            with col1:
+                if os.path.exists(tmp_perf.name):
+                    with open(tmp_perf.name, 'rb') as f:
+                        st.download_button(
+                            "📥 Download Chart",
+                            data=f.read(),
+                            file_name=f"performance_summary_{month}.png",
+                            mime="image/png",
+                            use_container_width=True
+                        )
+            
+            with col2:
                 if os.path.exists(tmp_chrono.name):
                     with open(tmp_chrono.name, 'rb') as f:
                         st.download_button(
                             "📥 Download Chronogram",
-                            data=f,
+                            data=f.read(),
                             file_name=f"chronogram_{month}.png",
                             mime="image/png",
                             use_container_width=True
                         )
+        else:
+            st.error("Failed to generate performance chart image")
     
     except Exception as e:
         st.error(f"Error generating performance chart: {str(e)}")

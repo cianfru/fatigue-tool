@@ -631,7 +631,10 @@ class FatigueVisualizer:
         )
         
         if save_path:
-            fig.write_html(save_path)
+            if save_path.endswith('.png'):
+                fig.write_image(save_path, width=1200, height=500)
+            else:
+                fig.write_html(save_path)
             print(f"✓ Monthly summary saved: {save_path}")
         
         return fig
