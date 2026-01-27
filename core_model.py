@@ -627,6 +627,9 @@ class BorbelyFatigueModel:
         - 55-70: Moderate fatigue
         - 40-55: High fatigue
         - <40: Critical fatigue
+        
+        CALIBRATION: Minimum performance floor of 20% prevents complete cognitive collapse
+        (even severely fatigued pilots retain some basic function)
         """
         # Validation
         assert 0 <= c <= 1, f"C out of range: {c}"
@@ -641,12 +644,14 @@ class BorbelyFatigueModel:
         # STEP 2: Apply time-on-task impairment (multiplicative penalty)
         alertness_with_tot = base_alertness * (1.0 - w)
         
-        # STEP 3: Scale to 0-100
-        performance = alertness_with_tot * 100
+        # STEP 3: Scale to 0-100 with minimum floor
+        # Floor of 20% represents minimal residual cognitive function under extreme fatigue
+        MIN_PERFORMANCE_FLOOR = 20.0
+        performance = MIN_PERFORMANCE_FLOOR + (alertness_with_tot * (100.0 - MIN_PERFORMANCE_FLOOR))
         
         # Validation
-        performance = max(0.0, min(100.0, performance))
-        assert 0 <= performance <= 100, f"Performance out of range: {performance}"
+        performance = max(MIN_PERFORMANCE_FLOOR, min(100.0, performance))
+        assert MIN_PERFORMANCE_FLOOR <= performance <= 100, f"Performance out of range: {performance}"
         
         return performance
     
