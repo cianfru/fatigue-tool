@@ -182,6 +182,10 @@ class QatarRosterParser:
         """Extract pilot name, ID, base from header"""
         text = page.extract_text()
         
+        # Debug: Print first 500 chars of extracted text
+        print(f"\n   [DEBUG] First 500 chars of PDF text:")
+        print(f"   {repr(text[:500])}\n")
+        
         info = {
             'name': None,
             'id': None,
@@ -191,14 +195,21 @@ class QatarRosterParser:
             'month': None
         }
         
-        # Name: "Name : CIANFRUGLIA Andrea" or "Name: CIANFRUGLIA Andrea"
-        # Match pattern: Name followed by : then uppercase letters and spaces
-        name_match = re.search(r'Name\s*:\s*([A-Z][A-Z\s]+?)(?:\s*\n|ID)', text, re.IGNORECASE)
+        # Name: Multiple patterns to try
+        # Pattern 1: "Name : CIANFRUGLIA Andrea" (with space after colon)
+        name_match = re.search(r'Name\s*:\s*([A-Z][A-Za-z\s]+?)(?=\s*\n|ID)', text, re.IGNORECASE | re.DOTALL)
+        if not name_match:
+            # Pattern 2: Just grab everything after "Name:" until newline
+            name_match = re.search(r'Name\s*:\s*(.+?)(?=\n|$)', text, re.IGNORECASE)
+        
         if name_match:
             info['name'] = name_match.group(1).strip()
             print(f"   ✓ Extracted pilot name: {info['name']}")
         else:
             print(f"   ⚠️  Could not extract pilot name from PDF header")
+            # Show what we tried to match
+            name_section = text[:200]
+            print(f"   [DEBUG] Text around 'Name': {repr(name_section)}")
         
         # ID: "ID :134614 (DOH CP-A320)" or "ID:134614 (DOH CP-A320)"
         # Pattern: ID followed by digits, then optional (BASE CP-AIRCRAFT)
