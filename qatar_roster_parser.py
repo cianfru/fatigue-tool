@@ -160,18 +160,22 @@ class QatarRosterParser:
         text = page.extract_text().lower()
         
         # Check for explicit statements
-        if 'all times are in local' in text or 'times: local' in text:
+        if 'all times are in local' in text or 'times: local' in text or 'times local' in text:
+            print("✓ Detected timezone format: LOCAL (times shown in airport local time)")
             return 'local'
         
         if ('all times are in utc' in text or 
             'all times are in zulu' in text or
             'times: utc' in text or
-            'times: zulu' in text):
+            'times: zulu' in text or
+            'times utc' in text):
+            print("✓ Detected timezone format: ZULU/UTC (all times are UTC)")
             return 'zulu'
         
         # Default to local if not explicitly stated
         print("⚠️  Could not detect timezone format from PDF header")
-        print("    Defaulting to 'local' format")
+        print("    Defaulting to 'local' format (times in each airport's local timezone)")
+        print("    If times are showing incorrectly, the PDF may be using UTC format")
         return 'local'
     
     def _extract_pilot_info(self, page) -> Dict:
@@ -305,39 +309,51 @@ class QatarRosterParser:
         if 'PSBY' in first_item or 'STANDBY' in first_item:
             return None  # Standby, not a flying duty
         
-        # Extract report time
+        # Extract report time (RPT) and flight segments first
+        # We need to know the departure airport to properly localize report time
         report_time = None
+        report_hour = None
+        report_minute = None
+        
         for line in lines:
             rpt_match = re.match(r'RPT:(\d{2}):(\d{2})', line)
             if rpt_match:
-                hour = int(rpt_match.group(1))
-                minute = int(rpt_match.group(2))
-                
-                # Create datetime
-                report_time_naive = datetime(date.year, date.month, date.day, hour, minute)
-                
-                if self.timezone_format == 'local':
-                    # Report time is in home base timezone (DOH)
-                    doh_tz = pytz.timezone('Asia/Qatar')
-                    report_time = doh_tz.localize(report_time_naive)
-                else:  # zulu
-                    # Report time is already in UTC
-                    report_time = pytz.utc.localize(report_time_naive)
-                
+                report_hour = int(rpt_match.group(1))
+                report_minute = int(rpt_match.group(2))
                 break
         
-        if not report_time:
-            return None  # No valid duty
-        
-        # Extract flight segments
+        # Extract flight segments first to determine departure airport
         segments = self._extract_segments_from_lines(lines, date)
         
         if not segments:
             return None
         
-        # Calculate release time (last landing + 1 hour post-flight)
+        # Now create report time using the DEPARTURE AIRPORT timezone (not home base)
+        # This is critical for circadian alignment
+        if report_hour is not None:
+            report_time_naive = datetime(date.year, date.month, date.day, report_hour, report_minute)
+            
+            # Get timezone from departure airport (first segment's departure)
+            dep_airport = segments[0].departure_airport
+            
+            if self.timezone_format == 'local':
+                # Report time is in LOCAL timezone of departure airport
+                dep_tz = pytz.timezone(dep_airport.timezone)
+                report_time = dep_tz.localize(report_time_naive)
+            else:  # zulu
+                # Report time is already in UTC
+                report_time = pytz.utc.localize(report_time_naive)
+        else:
+            # Fallback: report time = departure time - 1 hour
+            report_time = segments[0].scheduled_departure_utc - timedelta(hours=1)
+        
+        if not report_time:
+            return None  # No valid duty
+        
+        # Calculate release time: last landing + 30 minutes post-flight duty per EASA FTL
+        # EASA defines FDP as report time to END OF LAST LANDING (not +1 hour)
         last_landing = segments[-1].scheduled_arrival_utc
-        release_time = last_landing + timedelta(hours=1)
+        release_time = last_landing + timedelta(minutes=30)
         
         # Create duty
         duty = Duty(
