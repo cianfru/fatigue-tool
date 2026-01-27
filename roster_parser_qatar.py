@@ -191,23 +191,38 @@ class QatarRosterParser:
             'month': None
         }
         
-        # Name: "Name : CIANFRUGLIA Andrea"
-        name_match = re.search(r'Name\s*:\s*([A-Z\s]+)', text)
+        # Name: "Name : CIANFRUGLIA Andrea" or "Name: CIANFRUGLIA Andrea"
+        # Match pattern: Name followed by : then uppercase letters and spaces
+        name_match = re.search(r'Name\s*:\s*([A-Z][A-Z\s]+?)(?:\s*\n|ID)', text, re.IGNORECASE)
         if name_match:
             info['name'] = name_match.group(1).strip()
+            print(f"   ✓ Extracted pilot name: {info['name']}")
+        else:
+            print(f"   ⚠️  Could not extract pilot name from PDF header")
         
-        # ID: "ID :134614 (DOH CP-A320)"
-        id_match = re.search(r'ID\s*:(\d+)\s*\(([A-Z]+)\s+CP-([A-Z0-9]+)\)', text)
+        # ID: "ID :134614 (DOH CP-A320)" or "ID:134614 (DOH CP-A320)"
+        # Pattern: ID followed by digits, then optional (BASE CP-AIRCRAFT)
+        id_match = re.search(r'ID\s*:\s*(\d+)\s*\(([A-Z]{3})\s+CP-([A-Z0-9]+)\)', text)
         if id_match:
             info['id'] = id_match.group(1)
             info['base'] = id_match.group(2)
             info['aircraft'] = id_match.group(3)
+            print(f"   ✓ Extracted pilot ID: {info['id']} | Base: {info['base']} | Aircraft: {info['aircraft']}")
+        else:
+            # Try simpler pattern without CP prefix
+            id_match_simple = re.search(r'ID\s*:\s*(\d+)', text)
+            if id_match_simple:
+                info['id'] = id_match_simple.group(1)
+                print(f"   ✓ Extracted pilot ID: {info['id']} (base/aircraft not found)")
+            else:
+                print(f"   ⚠️  Could not extract pilot ID from PDF header")
         
         # Period: "Period: 01-Feb-2026 - 28-Feb-2026"
         period_match = re.search(r'Period:\s*\d+-([A-Za-z]+)-(\d{4})', text)
         if period_match:
             info['month'] = period_match.group(1)
             info['year'] = int(period_match.group(2))
+            print(f"   ✓ Extracted period: {info['month']} {info['year']}")
         
         return info
     
