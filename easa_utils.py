@@ -30,6 +30,70 @@ class EASAComplianceValidator:
     def __init__(self, framework: EASAFatigueFramework = None):
         self.framework = framework or EASAFatigueFramework()
     
+    def calculate_fdp_limits(self, duty: Duty) -> Dict[str, float]:
+        """
+        Calculate EASA FDP limits based on ORO.FTL.205
+        
+        Returns:
+            - max_fdp: Base FDP limit from table (hours)
+            - extended_fdp: With captain discretion (+2h max)
+            - used_discretion: Whether actual duty exceeds base limit
+        """
+        # Get report time in home base local time
+        tz = pytz.timezone(duty.home_base_timezone)
+        report_local = duty.report_time_utc.astimezone(tz)
+        report_hour = report_local.hour
+        
+        # Number of sectors (flight segments)
+        sectors = len(duty.segments)
+        
+        # EASA ORO.FTL.205 Table 1 - Basic FDP limits (2 pilots)
+        # Based on time of start (home base reference time)
+        fdp_table = {
+            # Hour of start: {sectors: FDP hours}
+            6: {1: 13.0, 2: 12.5, 3: 12.0, 4: 11.5, 5: 11.0, 6: 10.5, 7: 10.0, 8: 10.0, 9: 9.5},
+            7: {1: 13.0, 2: 12.5, 3: 12.0, 4: 11.5, 5: 11.0, 6: 10.5, 7: 10.0, 8: 10.0, 9: 9.5},
+            8: {1: 13.0, 2: 12.5, 3: 12.0, 4: 11.5, 5: 11.0, 6: 10.5, 7: 10.0, 8: 10.0, 9: 9.5},
+            9: {1: 13.0, 2: 13.0, 3: 12.5, 4: 12.0, 5: 11.5, 6: 11.0, 7: 10.5, 8: 10.0, 9: 10.0},
+            10: {1: 13.0, 2: 13.0, 3: 13.0, 4: 12.5, 5: 12.0, 6: 11.5, 7: 11.0, 8: 10.5, 9: 10.0},
+            11: {1: 13.0, 2: 13.0, 3: 13.0, 4: 13.0, 5: 12.5, 6: 12.0, 7: 11.5, 8: 11.0, 9: 10.5},
+            12: {1: 13.0, 2: 13.0, 3: 13.0, 4: 13.0, 5: 12.5, 6: 12.0, 7: 11.5, 8: 11.0, 9: 10.5},
+            13: {1: 12.5, 2: 12.5, 3: 13.0, 4: 13.0, 5: 12.5, 6: 12.0, 7: 11.5, 8: 11.0, 9: 10.5},
+            14: {1: 12.0, 2: 12.0, 3: 12.5, 4: 12.5, 5: 12.5, 6: 12.0, 7: 11.5, 8: 11.0, 9: 10.5},
+            15: {1: 11.5, 2: 11.5, 3: 12.0, 4: 12.0, 5: 12.0, 6: 11.5, 7: 11.0, 8: 10.5, 9: 10.0},
+            16: {1: 11.0, 2: 11.0, 3: 11.5, 4: 11.5, 5: 11.5, 6: 11.0, 7: 10.5, 8: 10.0, 9: 10.0},
+            17: {1: 10.5, 2: 10.5, 3: 11.0, 4: 11.0, 5: 11.0, 6: 10.5, 7: 10.0, 8: 10.0, 9: 9.5},
+            0: {1: 10.0, 2: 10.0, 3: 10.5, 4: 10.5, 5: 10.5, 6: 10.0, 7: 10.0, 8: 9.5, 9: 9.5},
+            1: {1: 10.0, 2: 10.0, 3: 10.0, 4: 10.0, 5: 10.0, 6: 10.0, 7: 9.5, 8: 9.5, 9: 9.5},
+            2: {1: 10.0, 2: 10.0, 3: 10.0, 4: 10.0, 5: 10.0, 6: 10.0, 7: 9.5, 8: 9.5, 9: 9.5},
+            3: {1: 10.0, 2: 10.0, 3: 10.0, 4: 10.0, 5: 10.0, 6: 10.0, 7: 9.5, 8: 9.5, 9: 9.5},
+            4: {1: 11.0, 2: 11.0, 3: 10.5, 4: 10.0, 5: 10.0, 6: 10.0, 7: 9.5, 8: 9.5, 9: 9.5},
+            5: {1: 12.0, 2: 12.0, 3: 11.5, 4: 11.0, 5: 10.5, 6: 10.0, 7: 10.0, 8: 9.5, 9: 9.5},
+        }
+        
+        # Cap sectors at 9+ (same limit applies)
+        sectors_capped = min(sectors, 9)
+        
+        # Get base FDP limit
+        max_fdp = fdp_table.get(report_hour, {}).get(sectors_capped, 13.0)
+        
+        # Captain discretion: +2 hours max (EASA ORO.FTL.205(d))
+        extended_fdp = max_fdp + 2.0
+        
+        # Calculate actual FDP hours
+        actual_fdp = (duty.release_time_utc - duty.report_time_utc).total_seconds() / 3600
+        
+        # Check if discretion was used
+        used_discretion = actual_fdp > max_fdp
+        
+        return {
+            'max_fdp': max_fdp,
+            'extended_fdp': extended_fdp,
+            'actual_fdp': actual_fdp,
+            'used_discretion': used_discretion,
+            'exceeds_discretion': actual_fdp > extended_fdp  # FTL violation
+        }
+    
     def calculate_wocl_encroachment(
         self,
         duty_start: datetime,

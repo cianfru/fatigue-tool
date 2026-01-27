@@ -1023,6 +1023,12 @@ class BorbelyFatigueModel:
             )
             previous_timeline = timeline_obj
             
+            # Calculate EASA FDP limits for this duty
+            fdp_limits = self.validator.calculate_fdp_limits(duty)
+            duty.max_fdp_hours = fdp_limits['max_fdp']
+            duty.extended_fdp_hours = fdp_limits['extended_fdp']
+            duty.used_discretion = fdp_limits['used_discretion']
+            
             # Update sleep debt (with decay)
             if previous_duty:
                 days_since_last = (duty.date - previous_duty.date).days

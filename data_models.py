@@ -118,6 +118,11 @@ class Duty:
     segments: List[FlightSegment]
     home_base_timezone: str
     
+    # EASA FTL limits
+    max_fdp_hours: Optional[float] = None  # Base FDP limit from EASA table
+    extended_fdp_hours: Optional[float] = None  # With captain discretion (+2h)
+    used_discretion: bool = False  # True if actual FDP exceeds base limit
+    
     @property
     def duty_hours(self) -> float:
         """Total duty period (report to release)"""
@@ -171,6 +176,9 @@ class Roster:
     """
     roster_id: str
     pilot_id: str
+    pilot_name: Optional[str] = None  # Extracted from PDF header
+    pilot_base: Optional[str] = None  # Home base airport code (e.g., "DOH")
+    pilot_aircraft: Optional[str] = None  # Aircraft type (e.g., "A320", "B777")
     month: str  # YYYY-MM
     duties: List[Duty]
     home_base_timezone: str

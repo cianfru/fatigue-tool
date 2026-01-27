@@ -107,12 +107,20 @@ class DutyResponse(BaseModel):
     risk_level: str  # "low", "moderate", "high", "critical", "extreme"
     is_reportable: bool
     pinch_events: int
+    
+    # EASA FDP limits
+    max_fdp_hours: Optional[float]  # Base FDP limit
+    extended_fdp_hours: Optional[float]  # With captain discretion
+    used_discretion: bool  # True if exceeded base limit
 
 
 class AnalysisResponse(BaseModel):
     analysis_id: str
     roster_id: str
     pilot_id: str
+    pilot_name: Optional[str]  # Extracted from PDF
+    pilot_base: Optional[str]  # Home base airport
+    pilot_aircraft: Optional[str]  # Aircraft type
     month: str
     
     # Summary
@@ -325,14 +333,18 @@ async def analyze_roster(
                 prior_sleep=duty_timeline.prior_sleep_hours,
                 risk_level=risk,
                 is_reportable=(risk in ["critical", "extreme"]),
-                pinch_events=len(duty_timeline.pinch_events)
+                pinch_events=len(duty_timeline.pinch_events),
+                max_fdp_hours=duty.max_fdp_hours,
+                extended_fdp_hours=duty.extended_fdp_hours,
+                used_discretion=duty.used_discretion
             ))
         
         return AnalysisResponse(
             analysis_id=analysis_id,
             roster_id=roster.roster_id,
-            pilot_id=roster.pilot_id,
-            month=roster.month,
+            pilot_id=roster.pilot_id,            pilot_name=roster.pilot_name,
+            pilot_base=roster.pilot_base,
+            pilot_aircraft=roster.pilot_aircraft,            month=roster.month,
             total_duties=roster.total_duties,
             total_sectors=roster.total_sectors,
             total_duty_hours=roster.total_duty_hours,

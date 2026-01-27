@@ -139,6 +139,7 @@ class PDFRosterParser:
         print(f"   Detected format: {roster_format}")
         
         # Parse based on format
+        pilot_info = {}  # Store pilot info extracted from PDF
         duties = []
         if roster_format == 'crewlink' or roster_format == 'generic':
             # Try specialized Qatar Airways grid-based parser first
@@ -148,6 +149,7 @@ class PDFRosterParser:
                 qatar_parser = QatarRosterParser(timezone_format='auto')
                 result = qatar_parser.parse_roster(pdf_path)
                 duties = result['duties']
+                pilot_info = result.get('pilot_info', {})
                 
                 # Report unknown airports if any
                 if result.get('unknown_airports'):
@@ -157,6 +159,9 @@ class PDFRosterParser:
                 
                 if duties:
                     print(f"   ✅ Qatar parser succeeded")
+                    if pilot_info.get('name'):
+                        print(f"      Pilot: {pilot_info.get('name')} (ID: {pilot_info.get('id')})")
+                        print(f"      Base: {pilot_info.get('base')} | Aircraft: {pilot_info.get('aircraft')}")
                 else:
                     print(f"   ℹ️  Qatar parser found no duties")
                     
@@ -192,6 +197,9 @@ class PDFRosterParser:
         roster = Roster(
             roster_id=f"R_{pilot_id}_{month}",
             pilot_id=pilot_id,
+            pilot_name=pilot_info.get('name'),
+            pilot_base=pilot_info.get('base', self.home_base),
+            pilot_aircraft=pilot_info.get('aircraft'),
             month=month,
             duties=duties,
             home_base_timezone=self.home_timezone
