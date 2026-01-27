@@ -1,4 +1,5 @@
 pytz>=2023.3
+numpy>=1.24.0
 streamlit>=1.28.0
 pandas>=2.0.0
 plotly>=5.17.0
@@ -8,3 +9,9 @@ tabula-py>=2.8.0
 openpyxl>=3.1.0
 folium>=0.14.0
 streamlit-folium>=0.15.0
+matplotlib>=3.7.0
+
+# FastAPI Backend
+fastapi>=0.100.0
+uvicorn>=0.22.0
+python-multipart>=0.0.6
