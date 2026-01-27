@@ -77,8 +77,10 @@ class DutySegmentResponse(BaseModel):
     flight_number: str
     departure: str
     arrival: str
-    departure_time: str
-    arrival_time: str
+    departure_time: str  # UTC ISO format
+    arrival_time: str    # UTC ISO format
+    departure_time_local: str  # Home base local time in HH:mm format
+    arrival_time_local: str    # Home base local time in HH:mm format
     block_hours: float
 
 
@@ -283,15 +285,27 @@ async def analyze_roster(
             # Classify risk
             risk = classify_risk(duty_timeline.landing_performance)
             
+            # Get home base timezone for local time conversion
+            import pytz
+            home_tz = pytz.timezone(duty.home_base_timezone)
+            
             # Build segments
             segments = []
             for seg in duty.segments:
+                # Convert UTC times to home base local time
+                dep_utc = seg.scheduled_departure_utc
+                arr_utc = seg.scheduled_arrival_utc
+                dep_local = dep_utc.astimezone(home_tz)
+                arr_local = arr_utc.astimezone(home_tz)
+                
                 segments.append(DutySegmentResponse(
                     flight_number=seg.flight_number,
                     departure=seg.departure_airport.code,
                     arrival=seg.arrival_airport.code,
-                    departure_time=seg.scheduled_departure_utc.isoformat(),
-                    arrival_time=seg.scheduled_arrival_utc.isoformat(),
+                    departure_time=dep_utc.isoformat(),
+                    arrival_time=arr_utc.isoformat(),
+                    departure_time_local=dep_local.strftime("%H:%M"),
+                    arrival_time_local=arr_local.strftime("%H:%M"),
                     block_hours=seg.block_time_hours
                 ))
             
@@ -357,14 +371,26 @@ async def get_analysis(analysis_id: str):
         duty = roster.duties[duty_idx]
         risk = classify_risk(duty_timeline.landing_performance)
         
+        # Get home base timezone for local time conversion
+        import pytz
+        home_tz = pytz.timezone(duty.home_base_timezone)
+        
         segments = []
         for seg in duty.segments:
+            # Convert UTC times to home base local time
+            dep_utc = seg.scheduled_departure_utc
+            arr_utc = seg.scheduled_arrival_utc
+            dep_local = dep_utc.astimezone(home_tz)
+            arr_local = arr_utc.astimezone(home_tz)
+            
             segments.append({
                 "flight_number": seg.flight_number,
                 "departure": seg.departure_airport.code,
                 "arrival": seg.arrival_airport.code,
-                "departure_time": seg.scheduled_departure_utc.isoformat(),
-                "arrival_time": seg.scheduled_arrival_utc.isoformat(),
+                "departure_time": dep_utc.isoformat(),
+                "arrival_time": arr_utc.isoformat(),
+                "departure_time_local": dep_local.strftime("%H:%M"),
+                "arrival_time_local": arr_local.strftime("%H:%M"),
                 "block_hours": seg.block_time_hours
             })
         
