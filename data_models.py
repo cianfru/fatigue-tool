@@ -176,12 +176,14 @@ class Roster:
     """
     roster_id: str
     pilot_id: str
-    pilot_name: Optional[str] = None  # Extracted from PDF header
-    pilot_base: Optional[str] = None  # Home base airport code (e.g., "DOH")
-    pilot_aircraft: Optional[str] = None  # Aircraft type (e.g., "A320", "B777")
     month: str  # YYYY-MM
     duties: List[Duty]
     home_base_timezone: str
+    
+    # Optional fields extracted from PDF header (must come after required fields)
+    pilot_name: Optional[str] = None  # Extracted from PDF header
+    pilot_base: Optional[str] = None  # Home base airport code (e.g., "DOH")
+    pilot_aircraft: Optional[str] = None  # Aircraft type (e.g., "A320", "B777")
     
     # Initial conditions
     initial_sleep_pressure: float = 0.3
