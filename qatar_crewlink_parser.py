@@ -179,41 +179,74 @@ class QatarRosterParser:
         return 'local'
     
     def _extract_pilot_info(self, page) -> Dict:
-        """Extract pilot name, ID, base from header"""
+        """
+        Extract pilot and roster metadata from PDF header
+        
+        Extracts:
+        - Pilot name
+        - Pilot ID
+        - Pilot base
+        - Aircraft type
+        - Roster period (start and end dates)
+        - Block hours and duty hours statistics
+        - Timezone format (local vs UTC)
+        
+        Returns:
+            Dict with keys: name, id, base, aircraft, period_start, period_end,
+            block_hours, duty_hours, year, month
+        """
         text = page.extract_text()
         
-        # Debug: Print first 500 chars of extracted text
-        print(f"\n   [DEBUG] First 500 chars of PDF text:")
-        print(f"   {repr(text[:500])}\n")
+        # CRITICAL FIX: Clean PDF extraction artifacts
+        # pdfplumber may include (cid:X) markers for special characters like tabs
+        # These MUST be removed before regex matching
+        text_clean = re.sub(r'\(cid:\d+\)', ' ', text)
         
+        # Debug: Print first 500 chars of cleaned text
+        print(f"\n   [DEBUG] First 500 chars of cleaned PDF text:")
+        print(f"   {repr(text_clean[:500])}\n")
+        
+        # Initialize with defaults
         info = {
             'name': None,
             'id': None,
             'base': 'DOH',  # Default
-            'aircraft': 'A320',
+            'aircraft': 'A320',  # Default
             'year': None,
-            'month': None
+            'month': None,
+            'period_start': None,
+            'period_end': None,
+            'block_hours': '00:00',
+            'duty_hours': '00:00'
         }
         
-        # Name: Multiple patterns to try
-        # Pattern 1: "Name : CIANFRUGLIA Andrea" (with space after colon)
-        name_match = re.search(r'Name\s*:\s*([A-Z][A-Za-z\s]+?)(?=\s*\n|ID)', text, re.IGNORECASE | re.DOTALL)
-        if not name_match:
-            # Pattern 2: Just grab everything after "Name:" until newline
-            name_match = re.search(r'Name\s*:\s*(.+?)(?=\n|$)', text, re.IGNORECASE)
-        
+        # ----
+        # 1. EXTRACT PILOT NAME
+        # ----
+        # Pattern handles extra whitespace and stops at "All times"
+        # Improved to handle PDF artifacts and various formatting
+        name_match = re.search(r'Name\s+:\s*(.+?)(?:\n|All times|ID\s+:)', text_clean, re.DOTALL)
         if name_match:
             info['name'] = name_match.group(1).strip()
             print(f"   ✓ Extracted pilot name: {info['name']}")
         else:
-            print(f"   ⚠️  Could not extract pilot name from PDF header")
-            # Show what we tried to match
-            name_section = text[:200]
-            print(f"   [DEBUG] Text around 'Name': {repr(name_section)}")
+            # Fallback: Try without requiring whitespace after colon
+            name_match = re.search(r'Name\s*:\s*(.+?)(?:\n|$)', text_clean)
+            if name_match:
+                info['name'] = name_match.group(1).strip()
+                print(f"   ✓ Extracted pilot name (fallback): {info['name']}")
+            else:
+                print(f"   ⚠️  Could not extract pilot name from PDF header")
+                print(f"   [DEBUG] Text around 'Name': {repr(text_clean[:200])}")
         
-        # ID: "ID :134614 (DOH CP-A320)" or "ID:134614 (DOH CP-A320)"
-        # Pattern: ID followed by digits, then optional (BASE CP-AIRCRAFT)
-        id_match = re.search(r'ID\s*:\s*(\d+)\s*\(([A-Z]{3})\s+CP-([A-Z0-9]+)\)', text)
+        # ----
+        # 2. EXTRACT ID, BASE, AIRCRAFT
+        # ----
+        # Format in PDF: "ID    :134614 (DOH CP-A320)"
+        # Improved pattern with flexible spacing
+        id_pattern = r'ID\s+:\s*(\d+)\s*\(\s*([A-Z]{3})\s+CP-(\w+)\)'
+        id_match = re.search(id_pattern, text_clean)
+        
         if id_match:
             info['id'] = id_match.group(1)
             info['base'] = id_match.group(2)
@@ -221,19 +254,69 @@ class QatarRosterParser:
             print(f"   ✓ Extracted pilot ID: {info['id']} | Base: {info['base']} | Aircraft: {info['aircraft']}")
         else:
             # Try simpler pattern without CP prefix
-            id_match_simple = re.search(r'ID\s*:\s*(\d+)', text)
+            id_match_simple = re.search(r'ID\s*:\s*(\d+)', text_clean)
             if id_match_simple:
                 info['id'] = id_match_simple.group(1)
                 print(f"   ✓ Extracted pilot ID: {info['id']} (base/aircraft not found)")
             else:
                 print(f"   ⚠️  Could not extract pilot ID from PDF header")
         
-        # Period: "Period: 01-Feb-2026 - 28-Feb-2026"
-        period_match = re.search(r'Period:\s*\d+-([A-Za-z]+)-(\d{4})', text)
+        # ----
+        # 3. EXTRACT ROSTER PERIOD (ENHANCED)
+        # ----
+        # Format: "Period: 01-Feb-2026 - 28-Feb-2026 | Published"
+        # This is ESSENTIAL for determining the month being analyzed
+        period_match = re.search(
+            r'Period:\s*(\d{2}-\w{3}-\d{4})\s*-\s*(\d{2}-\w{3}-\d{4})',
+            text_clean
+        )
+        
         if period_match:
-            info['month'] = period_match.group(1)
-            info['year'] = int(period_match.group(2))
+            info['period_start'] = period_match.group(1)
+            info['period_end'] = period_match.group(2)
+            
+            # Also extract month and year from period_start
+            date_parts = re.search(r'\d+-(\w{3})-(\d{4})', info['period_start'])
+            if date_parts:
+                info['month'] = date_parts.group(1)
+                info['year'] = int(date_parts.group(2))
+            
+            print(f"   ✓ Period: {info['period_start']} to {info['period_end']}")
             print(f"   ✓ Extracted period: {info['month']} {info['year']}")
+        else:
+            # Fallback to simpler pattern
+            period_match_simple = re.search(r'Period:\s*\d+-([A-Za-z]+)-(\d{4})', text_clean)
+            if period_match_simple:
+                info['month'] = period_match_simple.group(1)
+                info['year'] = int(period_match_simple.group(2))
+                print(f"   ✓ Extracted period: {info['month']} {info['year']}")
+            else:
+                print(f"   ⚠️  Period extraction failed")
+        
+        # ----
+        # 4. EXTRACT STATISTICS (BLOCK HOURS, DUTY HOURS)
+        # ----
+        # Format: "VALUE 71:45 114:30 0 24 00:00 0 0 0 17"
+        #         (block hrs, duty hrs, ...)
+        stats_match = re.search(r'VALUE\s+([\d:]+)\s+([\d:]+)', text_clean)
+        
+        if stats_match:
+            info['block_hours'] = stats_match.group(1)
+            info['duty_hours'] = stats_match.group(2)
+            print(f"   ✓ Statistics: {info['block_hours']} block hours, {info['duty_hours']} duty hours")
+        else:
+            print(f"   ⚠️  Statistics extraction failed")
+        
+        # ----
+        # 5. DETECT TIMEZONE FORMAT
+        # ----
+        # This determines how to interpret all times in the duty details
+        if "All times are in Local" in text_clean:
+            print(f"   ✓ Timezone: LOCAL TIMES")
+        elif "All times are in UTC" in text_clean or "Zulu" in text_clean:
+            print(f"   ✓ Timezone: UTC/ZULU TIMES")
+        else:
+            print(f"   ℹ️  Timezone not explicitly stated, assuming LOCAL")
         
         return info
     
