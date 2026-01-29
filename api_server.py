@@ -84,6 +84,17 @@ class DutySegmentResponse(BaseModel):
     block_hours: float
 
 
+class SleepQualityResponse(BaseModel):
+    """Sleep quality analysis from enhanced strategic estimator"""
+    total_sleep_hours: float
+    effective_sleep_hours: float
+    sleep_efficiency: float
+    wocl_overlap_hours: float
+    sleep_strategy: str  # 'normal', 'afternoon_nap', 'early_bedtime', 'split_sleep'
+    confidence: float
+    warnings: List[str]
+
+
 class DutyResponse(BaseModel):
     duty_id: str
     date: str
@@ -112,6 +123,9 @@ class DutyResponse(BaseModel):
     max_fdp_hours: Optional[float]  # Base FDP limit
     extended_fdp_hours: Optional[float]  # With captain discretion
     used_discretion: bool  # True if exceeded base limit
+    
+    # Enhanced sleep quality analysis
+    sleep_quality: Optional[SleepQualityResponse] = None
 
 
 class AnalysisResponse(BaseModel):
@@ -336,7 +350,16 @@ async def analyze_roster(
                 pinch_events=len(duty_timeline.pinch_events),
                 max_fdp_hours=duty.max_fdp_hours,
                 extended_fdp_hours=duty.extended_fdp_hours,
-                used_discretion=duty.used_discretion
+                used_discretion=duty.used_discretion,
+                sleep_quality=SleepQualityResponse(
+                    total_sleep_hours=duty_timeline.sleep_quality_data.get('total_sleep_hours', 0.0),
+                    effective_sleep_hours=duty_timeline.sleep_quality_data.get('effective_sleep_hours', 0.0),
+                    sleep_efficiency=duty_timeline.sleep_quality_data.get('sleep_efficiency', 0.0),
+                    wocl_overlap_hours=duty_timeline.sleep_quality_data.get('wocl_overlap_hours', 0.0),
+                    sleep_strategy=duty_timeline.sleep_quality_data.get('strategy_type', 'unknown'),
+                    confidence=duty_timeline.sleep_quality_data.get('confidence', 0.0),
+                    warnings=duty_timeline.sleep_quality_data.get('warnings', [])
+                ) if duty_timeline.sleep_quality_data else None
             ))
         
         return AnalysisResponse(

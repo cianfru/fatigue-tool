@@ -7,7 +7,7 @@ Data models for roster analysis, duties, sleep, and performance tracking.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Any, Tuple
 from enum import Enum
 import pytz
 
@@ -571,6 +571,11 @@ class DutyTimeline:
     # OPTIMIZATION: Cache final state to avoid recomputation in next duty
     final_circadian_state: Optional['CircadianState'] = None
     final_process_s: float = 0.0
+    
+    # Enhanced sleep quality (from strategic estimator)
+    sleep_strategy_type: Optional[str] = None
+    sleep_confidence: Optional[float] = None
+    sleep_quality_data: Optional[Dict[str, Any]] = None
 
 
 @dataclass

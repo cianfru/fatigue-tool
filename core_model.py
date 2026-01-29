@@ -35,7 +35,7 @@ Key Findings:
 """
 
 from datetime import datetime, timedelta
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 import math
 import pytz
 import numpy as np
@@ -669,14 +669,18 @@ class BorbelyFatigueModel:
         self,
         roster: Roster,
         body_clock_timeline: List[Tuple[datetime, CircadianState]]
-    ) -> List[SleepBlock]:
+    ) -> Tuple[List[SleepBlock], Dict[str, Any]]:
         """
         Auto-generate sleep opportunities from duty gaps
         
         ENHANCED: Now uses strategic sleep estimator for realistic pilot behavior
         Includes WOCL penalties, recovery sleep boost, time pressure, etc.
+        
+        Returns:
+            Tuple of (sleep_blocks, sleep_strategies_by_duty)
         """
         sleep_blocks = []
+        sleep_strategies = {}  # duty_id -> strategy data
         
         for i, duty in enumerate(roster.duties):
             previous_duty = roster.duties[i - 1] if i > 0 else None
@@ -690,8 +694,21 @@ class BorbelyFatigueModel:
             # Extract sleep blocks from strategy
             for sleep_block in strategy.sleep_blocks:
                 sleep_blocks.append(sleep_block)
+            
+            # Store strategy data for API exposure
+            if strategy.quality_analysis:
+                quality = strategy.quality_analysis[0]  # Primary sleep block
+                sleep_strategies[duty.duty_id] = {
+                    'strategy_type': strategy.strategy_type,
+                    'confidence': strategy.confidence,
+                    'total_sleep_hours': quality.total_sleep_hours,
+                    'effective_sleep_hours': quality.effective_sleep_hours,
+                    'sleep_efficiency': quality.sleep_efficiency,
+                    'wocl_overlap_hours': quality.wocl_overlap_hours,
+                    'warnings': [w['message'] for w in quality.warnings]
+                }
         
-        return sleep_blocks
+        return sleep_blocks, sleep_strategies
     
     def _get_phase_shift_at_time(
         self,
@@ -979,8 +996,8 @@ class BorbelyFatigueModel:
             )
             body_clock_timeline.append((duty.report_time_utc, body_clock))
         
-        # Extract sleep
-        all_sleep = self.extract_sleep_from_roster(roster, body_clock_timeline)
+        # Extract sleep with strategy data
+        all_sleep, sleep_strategies = self.extract_sleep_from_roster(roster, body_clock_timeline)
         
         # Simulate each duty
         previous_duty = None
@@ -1028,6 +1045,13 @@ class BorbelyFatigueModel:
             cumulative_sleep_debt += daily_debt
             
             timeline_obj.cumulative_sleep_debt = cumulative_sleep_debt
+            
+            # Add sleep quality data to timeline
+            if duty.duty_id in sleep_strategies:
+                strategy_data = sleep_strategies[duty.duty_id]
+                timeline_obj.sleep_strategy_type = strategy_data.get('strategy_type')
+                timeline_obj.sleep_confidence = strategy_data.get('confidence')
+                timeline_obj.sleep_quality_data = strategy_data
             
             if timeline_obj.timeline:
                 current_s = timeline_obj.timeline[-1].homeostatic_component
