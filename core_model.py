@@ -719,13 +719,15 @@ class BorbelyFatigueModel:
                         sleep_blocks_response.append({
                             'sleep_start_time': sleep_start_local.strftime('%H:%M'),
                             'sleep_end_time': sleep_end_local.strftime('%H:%M'),
+                            'sleep_start_iso': sleep_start_local.isoformat(),
+                            'sleep_end_iso': sleep_end_local.isoformat(),
                             'sleep_type': sleep_type,
                             'duration_hours': block.duration_hours,
                             'effective_hours': block.effective_sleep_hours,
                             'quality_factor': block.quality_factor
                         })
                     
-                    # Primary times are from first block
+                    # Primary times are from first block (with ISO for proper date handling)
                     first_block = strategy.sleep_blocks[0]
                     sleep_start_local = first_block.start_utc.astimezone(home_tz)
                     sleep_end_local = first_block.end_utc.astimezone(home_tz)

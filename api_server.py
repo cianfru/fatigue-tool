@@ -88,6 +88,8 @@ class SleepBlockResponse(BaseModel):
     """Individual sleep period with timing"""
     sleep_start_time: str  # HH:mm in home-base timezone
     sleep_end_time: str    # HH:mm in home-base timezone
+    sleep_start_iso: str   # ISO format with date for proper chronogram positioning
+    sleep_end_iso: str     # ISO format with date for proper chronogram positioning
     sleep_type: str        # 'main', 'nap', 'anchor'
     duration_hours: float
     effective_hours: float
