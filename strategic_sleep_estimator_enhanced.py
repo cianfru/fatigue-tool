@@ -597,8 +597,8 @@ class EnhancedStrategicSleepEstimator:
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=sleep_end.astimezone(pytz.utc),
             location_timezone=self.home_tz.zone,
-            duration_hours=quality.actual_sleep_hours,
-            quality_factor=quality.sleep_efficiency,
+            duration_hours=sleep_quality.actual_sleep_hours,
+            quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
             environment='home'
         )
