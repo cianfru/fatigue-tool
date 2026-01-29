@@ -193,9 +193,11 @@ class PDFRosterParser:
         else:
             # Fallback: Generic line-by-line parser
             duties = self._parse_generic_format(full_text)
-        
+       
+            # Use extracted pilot ID from PDF if available, otherwise fall back to form input
+       extracted_pilot_id = pilot_info.get('id', pilot_id)
         roster = Roster(
-            roster_id=f"R_{pilot_id}_{month}",
+            roster_id=f"R_{extracted_pilot_id}_{month}",
             pilot_id=extracted_pilot_id
             pilot_name=pilot_info.get('name'),
             pilot_base=pilot_info.get('base', self.home_base),
