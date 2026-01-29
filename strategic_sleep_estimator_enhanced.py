@@ -415,10 +415,11 @@ class EnhancedStrategicSleepEstimator:
         )
         
         morning_sleep = SleepBlock(
-            date=morning_sleep_start.date(),
             start_utc=morning_sleep_start.astimezone(pytz.utc),
             end_utc=morning_sleep_end.astimezone(pytz.utc),
-            total_sleep_hours=morning_quality.actual_sleep_hours,
+            location_timezone=self.home_tz.zone,
+            duration_hours=morning_quality.actual_sleep_hours,
+            quality_factor=morning_quality.sleep_efficiency,
             effective_sleep_hours=morning_quality.effective_sleep_hours,
             environment='home'
         )
@@ -437,11 +438,13 @@ class EnhancedStrategicSleepEstimator:
         )
         
         afternoon_nap = SleepBlock(
-            date=nap_start.date(),
             start_utc=nap_start.astimezone(pytz.utc),
             end_utc=nap_end.astimezone(pytz.utc),
-            total_sleep_hours=nap_quality.actual_sleep_hours,
+            location_timezone=self.home_tz.zone,
+            duration_hours=nap_quality.actual_sleep_hours,
+            quality_factor=nap_quality.sleep_efficiency,
             effective_sleep_hours=nap_quality.effective_sleep_hours,
+            is_anchor_sleep=False,
             environment='home'
         )
         
@@ -494,10 +497,11 @@ class EnhancedStrategicSleepEstimator:
         )
         
         early_sleep = SleepBlock(
-            date=sleep_start.date(),
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=sleep_end.astimezone(pytz.utc),
-            total_sleep_hours=sleep_quality.actual_sleep_hours,
+            location_timezone=self.home_tz.zone,
+            duration_hours=sleep_quality.actual_sleep_hours,
+            quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
             environment='home'
         )
@@ -536,10 +540,11 @@ class EnhancedStrategicSleepEstimator:
         )
         
         anchor_sleep = SleepBlock(
-            date=anchor_start.date(),
             start_utc=anchor_start.astimezone(pytz.utc),
             end_utc=anchor_end.astimezone(pytz.utc),
-            total_sleep_hours=anchor_quality.actual_sleep_hours,
+            location_timezone=self.home_tz.zone,
+            duration_hours=anchor_quality.actual_sleep_hours,
+            quality_factor=anchor_quality.sleep_efficiency,
             effective_sleep_hours=anchor_quality.effective_sleep_hours,
             environment='home'
         )
@@ -589,10 +594,11 @@ class EnhancedStrategicSleepEstimator:
         )
         
         normal_sleep = SleepBlock(
-            date=sleep_start.date(),
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=sleep_end.astimezone(pytz.utc),
-            total_sleep_hours=sleep_quality.actual_sleep_hours,
+            location_timezone=self.home_tz.zone,
+            duration_hours=quality.actual_sleep_hours,
+            quality_factor=quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
             environment='home'
         )
