@@ -863,12 +863,10 @@ class BorbelyFatigueModel:
             duty.release_time_utc = duty.report_time_utc + timedelta(hours=8)
         
         while current_time <= duty.release_time_utc:
-            
+        
             # Get current sector and flight phase
             current_sector = get_current_sector(current_time)
             phase = self.get_flight_phase(duty.segments, current_time)
-            
-            # Calculate step duration in hours
             step_duration_hours = resolution_minutes / 60.0
             
             # Apply workload multiplier to get effective wake time
