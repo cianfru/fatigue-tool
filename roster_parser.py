@@ -4,7 +4,7 @@
 Roster Parser - Extract duty data from airline PDF/CSV rosters
 
 Supports:
-- Qatar Airways CrewLink PDF (using specialized grid-based parser)
+- CrewLink-style grid PDFs (Qatar Airways, Emirates, Etihad, etc.)
 - Generic CSV exports
 - Manual JSON input
 
@@ -20,7 +20,7 @@ from typing import List, Dict, Optional, Tuple
 import pytz
 
 from data_models import Airport, FlightSegment, Duty, Roster
-from qatar_crewlink_parser import QatarRosterParser
+from qatar_crewlink_parser import CrewLinkRosterParser
 
 # ============================================================================
 # AIRPORT DATABASE
@@ -158,15 +158,15 @@ class PDFRosterParser:
                         print(f"      - {code}")
                 
                 if duties:
-                    print(f"   ✅ Qatar parser succeeded")
+                    print(f"   ✅ Grid parser succeeded")
                     if pilot_info.get('name'):
                         print(f"      Pilot: {pilot_info.get('name')} (ID: {pilot_info.get('id')})")
                         print(f"      Base: {pilot_info.get('base')} | Aircraft: {pilot_info.get('aircraft')}")
                 else:
-                    print(f"   ℹ️  Qatar parser found no duties")
+                    print(f"   ℹ️  Grid parser found no duties")
                     
             except Exception as e:
-                print(f"   ⚠️  Qatar parser: {e}")
+                print(f"   ⚠️  Grid parser: {e}")
                 
                 # Only fall back to line-based if explicitly detected as CrewLink
                 if roster_format == 'crewlink':
@@ -181,7 +181,7 @@ class PDFRosterParser:
                         "  2. The PDF is image-based or corrupted\n"
                         "  3. Text extraction failed\n\n"
                         "Supported formats:\n"
-                        "  • Qatar Airways CrewLink (grid layout with dates as columns)\n"
+                        "  • CrewLink grid format (grid layout with dates as columns)\n"
                         "  • Tabular format (with vertical pipes '|')\n"
                         "  • CSV files (comma-separated values)\n\n"
                         "Please provide a text-based PDF roster or contact support."
@@ -212,8 +212,8 @@ class PDFRosterParser:
         """Auto-detect roster format from content
         
         Detection strategy:
-        1. Look for explicit CrewLink/Qatar Airways headers
-        2. Look for Qatar Airways grid pattern (dates like "01Feb", "02Feb", etc.)
+        1. Look for explicit CrewLink headers
+        2. Look for grid pattern (dates like "01Feb", "02Feb", etc.)
         3. Look for grid-like structure (multiple dates stacked)
         4. Look for tabular format (lots of pipes)
         5. Default to generic
