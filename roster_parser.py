@@ -142,12 +142,12 @@ class PDFRosterParser:
         pilot_info = {}  # Store pilot info extracted from PDF
         duties = []
         if roster_format == 'crewlink' or roster_format == 'generic':
-            # Try specialized Qatar Airways grid-based parser first
+            # Try specialized CrewLink-style grid parser first
             # (works for both explicitly detected and unknown formats)
             try:
-                print("   Attempting specialized Qatar Airways grid parser...")
-                qatar_parser = QatarRosterParser(timezone_format='auto')
-                result = qatar_parser.parse_roster(pdf_path)
+                print("   Attempting CrewLink grid-format parser...")
+                grid_parser = CrewLinkRosterParser(timezone_format='auto')
+                result = grid_parser.parse_roster(pdf_path)
                 duties = result['duties']
                 pilot_info = result.get('pilot_info', {})
                 
