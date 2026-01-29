@@ -697,6 +697,18 @@ class BorbelyFatigueModel:
             # Store strategy data for API exposure
             if strategy.quality_analysis:
                 quality = strategy.quality_analysis[0]  # Primary sleep block
+                # Get sleep start/end times from the first sleep block
+                sleep_start_time = None
+                sleep_end_time = None
+                if strategy.sleep_blocks:
+                    first_block = strategy.sleep_blocks[0]
+                    # Convert to home timezone and format as HH:mm
+                    home_tz = pytz.timezone(roster.home_base_timezone)
+                    sleep_start_local = first_block.start_utc.astimezone(home_tz)
+                    sleep_end_local = first_block.end_utc.astimezone(home_tz)
+                    sleep_start_time = sleep_start_local.strftime('%H:%M')
+                    sleep_end_time = sleep_end_local.strftime('%H:%M')
+                
                 sleep_strategies[duty.duty_id] = {
                     'strategy_type': strategy.strategy_type,
                     'confidence': strategy.confidence,
@@ -704,7 +716,9 @@ class BorbelyFatigueModel:
                     'effective_sleep_hours': quality.effective_sleep_hours,
                     'sleep_efficiency': quality.sleep_efficiency,
                     'wocl_overlap_hours': quality.wocl_overlap_hours,
-                    'warnings': [w['message'] for w in quality.warnings]
+                    'warnings': [w['message'] for w in quality.warnings],
+                    'sleep_start_time': sleep_start_time,
+                    'sleep_end_time': sleep_end_time
                 }
         
         return sleep_blocks, sleep_strategies

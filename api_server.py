@@ -93,6 +93,8 @@ class SleepQualityResponse(BaseModel):
     sleep_strategy: str  # 'normal', 'afternoon_nap', 'early_bedtime', 'split_sleep'
     confidence: float
     warnings: List[str]
+    sleep_start_time: Optional[str] = None  # ISO format or HH:mm in home-base timezone
+    sleep_end_time: Optional[str] = None    # ISO format or HH:mm in home-base timezone
 
 
 class DutyResponse(BaseModel):
@@ -358,7 +360,9 @@ async def analyze_roster(
                     wocl_overlap_hours=duty_timeline.sleep_quality_data.get('wocl_overlap_hours', 0.0),
                     sleep_strategy=duty_timeline.sleep_quality_data.get('strategy_type', 'unknown'),
                     confidence=duty_timeline.sleep_quality_data.get('confidence', 0.0),
-                    warnings=duty_timeline.sleep_quality_data.get('warnings', [])
+                    warnings=duty_timeline.sleep_quality_data.get('warnings', []),
+                    sleep_start_time=duty_timeline.sleep_quality_data.get('sleep_start_time'),
+                    sleep_end_time=duty_timeline.sleep_quality_data.get('sleep_end_time')
                 ) if duty_timeline.sleep_quality_data else None
             ))
         
