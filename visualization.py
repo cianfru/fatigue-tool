@@ -21,7 +21,7 @@ import folium
 from folium import plugins
 
 from data_models import DutyTimeline, MonthlyAnalysis, FlightPhase
-from config import ModelConfig
+from core_model import ModelConfig
 
 # ============================================================================
 # V2 PRO COLOR SCHEME (Plotly Dark Mode + Okabe & Ito)

@@ -26,9 +26,8 @@ import base64
 from pathlib import Path
 
 # Import your fatigue model
-from core_model import BorbelyFatigueModel
+from core_model import BorbelyFatigueModel, ModelConfig
 from roster_parser import PDFRosterParser, CSVRosterParser
-from config import ModelConfig
 from data_models import MonthlyAnalysis, DutyTimeline
 from chronogram import FatigueChronogram
 from aviation_calendar import AviationCalendar
