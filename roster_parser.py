@@ -196,7 +196,7 @@ class PDFRosterParser:
         
         roster = Roster(
             roster_id=f"R_{pilot_id}_{month}",
-            pilot_id=pilot_id,
+            pilot_id=extracted_pilot_id
             pilot_name=pilot_info.get('name'),
             pilot_base=pilot_info.get('base', self.home_base),
             pilot_aircraft=pilot_info.get('aircraft'),
