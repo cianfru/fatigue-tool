@@ -792,7 +792,14 @@ class BorbelyFatigueModel:
         FIXED: Now properly uses sleep history to initialize S value
         """
         
+        import logging
+        logger = logging.getLogger(__name__)
+        
         timeline = []
+        
+        # Log duty timing for debugging
+        duty_duration = (duty.release_time_utc - duty.report_time_utc).total_seconds() / 3600
+        logger.debug(f"[{duty.duty_id}] Timeline sim: Report={duty.report_time_utc.isoformat()}, Release={duty.release_time_utc.isoformat()}, Duration={duty_duration:.1f}h, Sleep blocks={len(sleep_history)}")
         
         # ====================================================================
         # STEP 1: Find last sleep and calculate S_0
@@ -853,16 +860,18 @@ class BorbelyFatigueModel:
         duty_duration = duty.release_time_utc - duty.report_time_utc
         if duty_duration.total_seconds() < 0:
             # Invalid duty times - swap them or use minimum
-            import logging
-            logging.warning(f"Duty {duty.duty_id}: Invalid time range - release before report. Using 8-hour minimum.")
+            logger.warning(f"[{duty.duty_id}] Invalid time range - release before report. Using 8-hour minimum.")
             duty.release_time_utc = duty.report_time_utc + timedelta(hours=8)
         elif duty_duration.total_seconds() == 0:
             # Zero-duration duty - use 8-hour default
-            import logging
-            logging.warning(f"Duty {duty.duty_id}: Zero duration. Using 8-hour default.")
+            logger.warning(f"[{duty.duty_id}] Zero duration. Using 8-hour default.")
             duty.release_time_utc = duty.report_time_utc + timedelta(hours=8)
         
+        logger.debug(f"[{duty.duty_id}] Starting timeline loop: {current_time.isoformat()} -> {duty.release_time_utc.isoformat()}")
+        loop_count = 0
+        
         while current_time <= duty.release_time_utc:
+            loop_count += 1
         
             # Get current sector and flight phase
             current_sector = get_current_sector(current_time)
@@ -909,9 +918,13 @@ class BorbelyFatigueModel:
             last_step_time = current_time
             current_time += timedelta(minutes=resolution_minutes)
         
+        logger.debug(f"[{duty.duty_id}] Loop completed: {loop_count} iterations, {len(timeline)} timeline points")
+        
         # Build timeline and cache final state
         duty_timeline = self._build_duty_timeline(duty, timeline, sleep_history, circadian_phase_shift)
         duty_timeline.final_process_s = s_current  # Cache for next duty
+        
+        logger.debug(f"[{duty.duty_id}] Final performance: min={duty_timeline.min_performance:.1f}%, landing={duty_timeline.landing_performance}")
         
         return duty_timeline
     
@@ -924,9 +937,13 @@ class BorbelyFatigueModel:
     ) -> DutyTimeline:
         """Build summary with statistics"""
         
+        import logging
+        logger = logging.getLogger(__name__)
+        
         if not timeline:
             # If timeline is empty, compute a default performance based on circadian and sleep
             # This prevents 0% performance for duties with missing timing data
+            logger.warning(f"[{duty.duty_id}] Empty timeline - using fallback calculation")
             tz = pytz.timezone(duty.home_base_timezone)
             mid_duty_time = duty.report_time_utc + (duty.release_time_utc - duty.report_time_utc) / 2
             
