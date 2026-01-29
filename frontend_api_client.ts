@@ -49,6 +49,27 @@ export interface Duty {
   pinch_events: number;
 }
 
+export interface SleepBlock {
+  sleep_start_time: string;  // HH:mm
+  sleep_end_time: string;    // HH:mm
+  sleep_start_iso: string;   // ISO format with date
+  sleep_end_iso: string;     // ISO format with date
+  sleep_type: string;        // 'main', 'nap', 'anchor'
+  duration_hours: number;
+  effective_hours: number;
+  quality_factor: number;
+}
+
+export interface RestDaySleep {
+  date: string;              // YYYY-MM-DD
+  sleep_blocks: SleepBlock[];
+  total_sleep_hours: number;
+  effective_sleep_hours: number;
+  sleep_efficiency: number;
+  strategy_type: string;     // 'recovery'
+  confidence: number;
+}
+
 export interface AnalysisResult {
   analysis_id: string;
   roster_id: string;
@@ -76,6 +97,9 @@ export interface AnalysisResult {
   
   // Detailed duties
   duties: Duty[];
+  
+  // Rest days sleep patterns
+  rest_days_sleep: RestDaySleep[];
 }
 
 export interface TimelinePoint {
