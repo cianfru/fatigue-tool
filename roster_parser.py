@@ -4,9 +4,9 @@
 Roster Parser - Extract duty data from airline PDF/CSV rosters
 
 Supports:
-- CrewLink-style grid PDFs (Qatar Airways, Emirates, Etihad, etc.)
+- Qatar Airways CrewLink (Grid & Text formats)
 - Generic CSV exports
-- Manual JSON input
+- Robust Pilot ID and Report Time extraction
 
 Scientific Note: Parser outputs standardized Roster objects
 for biomathematical analysis (Borbély model)
@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 import pytz
 
+# Ensure you have these models defined in your project
 from data_models import Airport, FlightSegment, Duty, Roster
 from qatar_crewlink_parser import CrewLinkRosterParser
 
@@ -29,11 +30,6 @@ from qatar_crewlink_parser import CrewLinkRosterParser
 class AirportDatabase:
     """
     IATA airport database with timezone information
-    
-    Data sources:
-    - OpenFlights.org airport database
-    - IATA official codes
-    - Timezone from tz database
     """
     
     # Core airports (expand as needed)
@@ -63,6 +59,12 @@ class AirportDatabase:
         'ALP': {'name': 'Aleppo', 'timezone': 'Asia/Damascus', 'lat': 36.18, 'lon': 37.22},
         'DMM': {'name': 'Dammam', 'timezone': 'Asia/Riyadh', 'lat': 26.47, 'lon': 49.80},
         'TBS': {'name': 'Tbilisi', 'timezone': 'Asia/Tbilisi', 'lat': 41.71, 'lon': 44.74},
+        'AUH': {'name': 'Abu Dhabi', 'timezone': 'Asia/Dubai', 'lat': 24.43, 'lon': 54.65},
+        'ELQ': {'name': 'Gassim', 'timezone': 'Asia/Riyadh', 'lat': 26.30, 'lon': 43.77},
+        'IKA': {'name': 'Tehran Imam Khomeini', 'timezone': 'Asia/Tehran', 'lat': 35.41, 'lon': 51.15},
+        'NIF': {'name': 'Najaf', 'timezone': 'Asia/Baghdad', 'lat': 31.99, 'lon': 44.40},
+        'SHJ': {'name': 'Sharjah', 'timezone': 'Asia/Dubai', 'lat': 25.32, 'lon': 55.51},
+        'JMK': {'name': 'Mykonos', 'timezone': 'Europe/Athens', 'lat': 37.43, 'lon': 25.34},
     }
     
     @classmethod
@@ -71,9 +73,13 @@ class AirportDatabase:
         code = iata_code.upper()
         
         if code not in cls.AIRPORTS:
-            raise ValueError(
-                f"Airport '{code}' not in database. "
-                f"Add to AirportDatabase.AIRPORTS or use add_custom_airport()"
+            # Fallback for unknown airports to prevent crash, default to UTC
+            print(f"⚠️ Warning: Airport '{code}' not in database. Using UTC default.")
+            return Airport(
+                code=code,
+                timezone='UTC',
+                latitude=0.0,
+                longitude=0.0
             )
         
         data = cls.AIRPORTS[code]
@@ -113,18 +119,11 @@ class PDFRosterParser:
         self.home_base = home_base
         self.home_timezone = home_timezone
         self.airport_db = AirportDatabase()
+        self.roster_year = datetime.now().year # Default, will be updated from PDF
     
     def parse_pdf(self, pdf_path: str, pilot_id: str, month: str) -> Roster:
         """
         Main entry point - extract roster from PDF
-        
-        Args:
-            pdf_path: Path to PDF roster file
-            pilot_id: Pilot identifier (e.g., "P12345")
-            month: Roster month (e.g., "2024-01")
-        
-        Returns:
-            Roster object ready for fatigue analysis
         """
         print(f"📄 Parsing PDF roster: {pdf_path}")
         
@@ -134,16 +133,21 @@ class PDFRosterParser:
             for page in pdf.pages:
                 full_text += page.extract_text() + "\n"
         
+        # 0. Attempt to extract the Roster Period Year
+        self._extract_roster_year(full_text)
+
+        # [cite_start]1. Pre-extract Header Info (Robust Regex for ID/Name) [cite: 4]
+        header_info = self._extract_header_info(full_text)
+        
         # Detect roster format
         roster_format = self._detect_format(full_text)
         print(f"   Detected format: {roster_format}")
         
-        # Parse based on format
-        pilot_info = {}  # Store pilot info extracted from PDF
+        pilot_info = {} 
         duties = []
+
         if roster_format == 'crewlink' or roster_format == 'generic':
             # Try specialized CrewLink-style grid parser first
-            # (works for both explicitly detected and unknown formats)
             try:
                 print("   Attempting CrewLink grid-format parser...")
                 grid_parser = CrewLinkRosterParser(timezone_format='auto')
@@ -159,49 +163,39 @@ class PDFRosterParser:
                 
                 if duties:
                     print(f"   ✅ Grid parser succeeded")
-                    if pilot_info.get('name'):
-                        print(f"      Pilot: {pilot_info.get('name')} (ID: {pilot_info.get('id')})")
-                        print(f"      Base: {pilot_info.get('base')} | Aircraft: {pilot_info.get('aircraft')}")
                 else:
-                    print(f"   ℹ️  Grid parser found no duties")
+                    print(f"   ℹ️  Grid parser found no duties - Switching to Line Parser")
+                    raise ValueError("Grid parser returned empty duties")
                     
             except Exception as e:
                 print(f"   ⚠️  Grid parser: {e}")
                 
-                # Only fall back to line-based if explicitly detected as CrewLink
-                if roster_format == 'crewlink':
-                    print("   Trying line-based CrewLink parser...")
-                    duties = self._parse_crewlink_format(full_text)
-                else:
-                    # Generic format - raise informative error
-                    raise NotImplementedError(
-                        "❌ Unsupported PDF format detected.\n\n"
-                        "The PDF could not be parsed. This could mean:\n"
-                        "  1. The PDF format is not supported\n"
-                        "  2. The PDF is image-based or corrupted\n"
-                        "  3. Text extraction failed\n\n"
-                        "Supported formats:\n"
-                        "  • CrewLink grid format (grid layout with dates as columns)\n"
-                        "  • Tabular format (with vertical pipes '|')\n"
-                        "  • CSV files (comma-separated values)\n\n"
-                        "Please provide a text-based PDF roster or contact support."
-                    )
+                # Fall back to line-based parser (Handles the messy "text soup")
+                print("   Trying line-based CrewLink parser (Stateful)...")
+                duties = self._parse_crewlink_format(full_text)
         
         elif roster_format == 'tabular':
             duties = self._parse_tabular_format(full_text)
         
         else:
-            # Fallback: Generic line-by-line parser
             duties = self._parse_generic_format(full_text)
        
-            # Use extracted pilot ID from PDF if available, otherwise fall back to form input
-       extracted_pilot_id = pilot_info.get('id', pilot_id)
+        # MERGE LOGIC: Prioritize the Header Extraction for ID/Name
+        [cite_start]# [cite: 4] Source shows ID:XXXX format which header_info captures
+        final_pilot_id = header_info.get('id') or pilot_info.get('id') or pilot_id
+        final_pilot_name = header_info.get('name') or pilot_info.get('name')
+        final_base = header_info.get('base') or pilot_info.get('base') or self.home_base
+        final_aircraft = header_info.get('aircraft') or pilot_info.get('aircraft')
+
+        print(f"   Found Pilot: {final_pilot_name} (ID: {final_pilot_id})")
+        print(f"   Base: {final_base} | Aircraft: {final_aircraft}")
+
         roster = Roster(
-            roster_id=f"R_{extracted_pilot_id}_{month}",
-            pilot_id=extracted_pilot_id
-            pilot_name=pilot_info.get('name'),
-            pilot_base=pilot_info.get('base', self.home_base),
-            pilot_aircraft=pilot_info.get('aircraft'),
+            roster_id=f"R_{final_pilot_id}_{month}",
+            pilot_id=final_pilot_id,
+            pilot_name=final_pilot_name,
+            pilot_base=final_base,
+            pilot_aircraft=final_aircraft,
             month=month,
             duties=duties,
             home_base_timezone=self.home_timezone
@@ -210,138 +204,168 @@ class PDFRosterParser:
         print(f"✓ Parsed {len(duties)} duties, {roster.total_sectors} sectors")
         return roster
     
-    def _detect_format(self, text: str) -> str:
-        """Auto-detect roster format from content
-        
-        Detection strategy:
-        1. Look for explicit CrewLink headers
-        2. Look for grid pattern (dates like "01Feb", "02Feb", etc.)
-        3. Look for grid-like structure (multiple dates stacked)
-        4. Look for tabular format (lots of pipes)
-        5. Default to generic
+    def _extract_roster_year(self, text: str):
+        [cite_start]"""Extract year from 'Period: 01-Aug-2025' line [cite: 6]"""
+        match = re.search(r'Period:.*(\d{4})', text)
+        if match:
+            self.roster_year = int(match.group(1))
+            print(f"   Confirmed Roster Year: {self.roster_year}")
+
+    def _extract_header_info(self, text: str) -> Dict[str, str]:
         """
+        Robustly extract Pilot Header details using Regex
+        Matches format: Name: XXXX \n ID:134614 (DOH CP-A320)
+        """
+        info = {}
+        
+        # [cite_start]1. Extract ID [cite: 4]
+        # Matches "ID:134614" or "ID: 134614"
+        id_match = re.search(r'(?:ID|Staff No)\s*[:]\s*(\d+)', text, re.IGNORECASE)
+        if id_match:
+            info['id'] = id_match.group(1)
+
+        # [cite_start]2. Extract Name [cite: 3]
+        # Matches "Name: CIANFRUGLIA Andrea"
+        name_match = re.search(r'Name\s*[:]\s*([^\n\r\(]+)', text, re.IGNORECASE)
+        if name_match:
+            info['name'] = name_match.group(1).strip()
+
+        # [cite_start]3. Extract Base and Aircraft from parens [cite: 4]
+        # Looks for patterns like (DOH CP-A320)
+        details_match = re.search(r'\(([A-Z]{3})\s+(?:CP-)?([A-Z0-9\-]+)\)', text)
+        if details_match:
+            info['base'] = details_match.group(1)      # e.g. DOH
+            info['aircraft'] = details_match.group(2)  # e.g. A320
+            
+        return info
+
+    def _detect_format(self, text: str) -> str:
+        """Auto-detect roster format from content"""
         text_lower = text.lower()
         
         # Explicit Qatar Airways CrewLink indicators
-        if 'crewlink' in text_lower or 'qatar airways' in text_lower:
+        if 'crewlink' in text_lower or 'qatar airways' in text_lower or 'qatar' in text_lower:
             return 'crewlink'
         
-        # Grid format indicators - look for date pattern like "01Feb", "02Feb", etc.
-        # These appear as column headers in Qatar Airways rosters
+        # Grid format indicators
         date_pattern_count = len(re.findall(r'\d{2}[A-Z][a-z]{2}', text))
-        if date_pattern_count >= 5:  # Multiple dates = likely grid format
-            print(f"   ℹ️  Detected {date_pattern_count} date headers (grid format)")
+        if date_pattern_count >= 5: 
             return 'crewlink'
-        
-        # Look for Qatar-specific keywords
-        qatar_keywords = ['period:', 'name:', 'base:', 'pilot', 'rpt:', 'crew', 'roster']
-        qatar_matches = sum(1 for kw in qatar_keywords if kw in text_lower)
-        if qatar_matches >= 3:
-            print(f"   ℹ️  Detected Qatar Airways keywords")
-            return 'crewlink'
-        
-        # Tabular format (lots of vertical bars)
-        if text.count('|') > 20:
-            return 'tabular'
         
         return 'generic'
     
     def _parse_crewlink_format(self, text: str) -> List[Duty]:
         """
-        Parse Qatar Airways CrewLink PDF format
+        Parse Qatar Airways CrewLink PDF format (Stateful "Soup" Parser)
         
-        Example format:
-        Date       Flight  Dep   Arr   STD     STA     Report  Release
-        15-JAN-24  QR001   DOH   LHR   07:30   13:15   06:00   14:30
+        Handles fragmented text where RPT (Report/Sign-in) appears 
+        [cite_start]before the flight details, distinct from the flight row. [cite: 7]
         """
         duties = []
         lines = text.split('\n')
         
         current_duty_flights = []
         current_date = None
-        report_time = None
+        current_report_time = None  # Store RPT when found
+        current_release_time = None
+        
+        # [cite_start]Regex for "RPT:HH:MM" tag [cite: 7]
+        rpt_pattern = re.compile(r'RPT:(\d{2}:\d{2})')
+        
+        # [cite_start]Regex for date headers like "01Aug" or "01Aug Fri" [cite: 7]
+        date_pattern = re.compile(r'(\d{2}[A-Z][a-z]{2})')
         
         for line in lines:
-            # Skip header/empty lines
-            if not line.strip() or 'Flight' in line or '---' in line:
+            line = line.strip()
+            if not line:
                 continue
-            
-            # Extract duty data
-            match = self._extract_duty_line_crewlink(line)
-            if not match:
-                continue
-            
-            date, flight_num, dep, arr, std, sta, rep, rel = match
-            
-            # New duty starts (different report time or date change)
-            if report_time and rep != report_time:
-                # Save previous duty
+
+            # 1. Capture Date (e.g., "01Aug")
+            # We need this to anchor the duty
+            date_match = date_pattern.search(line)
+            if date_match:
+                try:
+                    date_str = date_match.group(1)
+                    current_date = self._parse_partial_date(date_str)
+                except ValueError:
+                    pass
+
+            # 2. Capture Report Time (RPT)
+            # [cite_start]Looks for "RPT:07:30" anywhere in the line [cite: 7]
+            rpt_match = rpt_pattern.search(line)
+            if rpt_match:
+                # If we find a NEW report time, finalize previous duty
                 if current_duty_flights:
+                    # Use date of first flight for the previous duty
+                    duty_date = current_duty_flights[0].date_obj if hasattr(current_duty_flights[0], 'date_obj') else current_date
                     duty = self._build_duty_from_flights(
                         current_duty_flights,
-                        current_date,
-                        report_time,
-                        release_time
+                        duty_date,
+                        current_report_time,
+                        "00:00" # fallback release if not captured
                     )
                     duties.append(duty)
+                    current_duty_flights = []
                 
-                # Reset for new duty
-                current_duty_flights = []
+                current_report_time = rpt_match.group(1)
+                
+            # 3. Capture Flight Info
+            # [cite_start]Matches: 1044 DOH 08:45 AUH 09:55 [cite: 7]
+            flight_match = self._extract_flight_data_loose(line)
             
-            # Parse flight segment
-            segment = self._parse_flight_segment(
-                flight_num, dep, arr, date, std, sta
-            )
-            
-            current_duty_flights.append(segment)
-            current_date = date
-            report_time = rep
-            release_time = rel
-        
-        # Don't forget last duty
-        if current_duty_flights:
+            if flight_match and current_date:
+                flight_num, dep, std, arr, sta = flight_match
+                
+                # Parse the segment
+                segment = self._parse_flight_segment(
+                    flight_num, dep, arr, 
+                    current_date.strftime('%d-%b-%Y'),
+                    std, sta
+                )
+                segment.date_obj = current_date # Store for reference
+                
+                current_duty_flights.append(segment)
+
+        # 4. Save any remaining duty at end of file
+        if current_duty_flights and current_report_time:
+            duty_date = current_duty_flights[0].date_obj if hasattr(current_duty_flights[0], 'date_obj') else current_date
             duty = self._build_duty_from_flights(
                 current_duty_flights,
-                current_date,
-                report_time,
-                release_time
+                duty_date,
+                current_report_time,
+                "00:00"
             )
             duties.append(duty)
-        
+            
         return duties
-    
-    def _extract_duty_line_crewlink(self, line: str) -> Optional[Tuple]:
-        """Extract data from single CrewLink roster line"""
-        # Regex pattern for CrewLink format
-        pattern = r'(\d{2}-[A-Z]{3}-\d{2,4})\s+([A-Z]{2}\d{1,4})\s+([A-Z]{3})\s+([A-Z]{3})\s+(\d{2}:\d{2})\s+(\d{2}:\d{2}(?:\+\d)?)\s+(\d{2}:\d{2})\s+(\d{2}:\d{2}(?:\+\d)?)'
-        
+
+    def _extract_flight_data_loose(self, line: str) -> Optional[Tuple]:
+        """
+        Regex for raw flight strings
+        [cite_start]Matches: "1044 DOH 08:45 AUH 09:55" [cite: 7]
+        """
+        pattern = r'(\d{3,4})\s+([A-Z]{3})\s+(\d{2}:\d{2})\s+([A-Z]{3})\s+(\d{2}:\d{2}(?:\+\d)?)'
         match = re.search(pattern, line)
         if match:
             return match.groups()
         return None
-    
-    def _parse_flight_segment(
-        self,
-        flight_num: str,
-        dep_code: str,
-        arr_code: str,
-        date_str: str,
-        std_str: str,
-        sta_str: str
-    ) -> FlightSegment:
-        """Create FlightSegment from parsed data"""
-        
-        # Get airports
+
+    def _parse_partial_date(self, date_str: str) -> datetime:
+        """Handle '01Aug' -> datetime object with correct year"""
+        dt = datetime.strptime(date_str, '%d%b')
+        return dt.replace(year=self.roster_year)
+
+    def _parse_flight_segment(self, flight_num: str, dep_code: str, arr_code: str, date_str: str, std_str: str, sta_str: str) -> FlightSegment:
         dep_airport = self.airport_db.get_airport(dep_code)
         arr_airport = self.airport_db.get_airport(arr_code)
         
-        # Parse date
-        date = datetime.strptime(date_str, '%d-%b-%y')
-        
-        # Parse times (handle next-day arrivals with +1)
+        try:
+            date = datetime.strptime(date_str, '%d-%b-%Y')
+        except ValueError:
+             date = datetime.strptime(date_str, '%d-%b-%y')
+
         std_time = datetime.strptime(std_str, '%H:%M').time()
         
-        # Handle next-day indicator
         if '+' in sta_str:
             sta_str_clean = sta_str.split('+')[0]
             days_offset = int(sta_str.split('+')[1])
@@ -351,16 +375,12 @@ class PDFRosterParser:
         
         sta_time = datetime.strptime(sta_str_clean, '%H:%M').time()
         
-        # Combine date + time in local timezones
         dep_tz = pytz.timezone(dep_airport.timezone)
         arr_tz = pytz.timezone(arr_airport.timezone)
         
         std_local = dep_tz.localize(datetime.combine(date, std_time))
-        sta_local = arr_tz.localize(
-            datetime.combine(date + timedelta(days=days_offset), sta_time)
-        )
+        sta_local = arr_tz.localize(datetime.combine(date + timedelta(days=days_offset), sta_time))
         
-        # Convert to UTC
         std_utc = std_local.astimezone(pytz.utc)
         sta_utc = sta_local.astimezone(pytz.utc)
         
@@ -372,19 +392,9 @@ class PDFRosterParser:
             scheduled_arrival_utc=sta_utc
         )
     
-    def _build_duty_from_flights(
-        self,
-        segments: List[FlightSegment],
-        date: datetime,
-        report_str: str,
-        release_str: str
-    ) -> Duty:
-        """Construct Duty object from flight segments"""
-        
-        # Parse report/release times
+    def _build_duty_from_flights(self, segments: List[FlightSegment], date: datetime, report_str: str, release_str: str) -> Duty:
         report_time_obj = datetime.strptime(report_str, '%H:%M').time()
         
-        # Handle next-day release
         if '+' in release_str:
             release_str_clean = release_str.split('+')[0]
             days_offset = int(release_str.split('+')[1])
@@ -394,18 +404,14 @@ class PDFRosterParser:
         
         release_time_obj = datetime.strptime(release_str_clean, '%H:%M').time()
         
-        # Localize to home base timezone
         home_tz = pytz.timezone(self.home_timezone)
+
         report_local = home_tz.localize(datetime.combine(date, report_time_obj))
-        release_local = home_tz.localize(
-            datetime.combine(date + timedelta(days=days_offset), release_time_obj)
-        )
+        release_local = home_tz.localize(datetime.combine(date + timedelta(days=days_offset), release_time_obj))
         
-        # Convert to UTC
         report_utc = report_local.astimezone(pytz.utc)
         release_utc = release_local.astimezone(pytz.utc)
         
-        # Generate duty ID
         duty_id = f"D_{date.strftime('%Y%m%d')}_{segments[0].flight_number}"
         
         return Duty(
@@ -418,39 +424,10 @@ class PDFRosterParser:
         )
     
     def _parse_tabular_format(self, text: str) -> List[Duty]:
-        """Parse generic tabular PDF format"""
-        raise NotImplementedError(
-            "⚠️ Tabular PDF format detected but parser not yet implemented.\n\n"
-            "Please provide a sample of your PDF roster for customization.\n"
-            "Contact support with your roster PDF file."
-        )
+        raise NotImplementedError("Tabular PDF format parser not yet implemented.")
     
     def _parse_generic_format(self, text: str) -> List[Duty]:
-        """Fallback generic parser - tries specialized Qatar parser as last resort"""
-        
-        print("⚠️  Generic format detected - attempting specialized Qatar parser...")
-        
-        # Last resort: try the specialized Qatar parser
-        try:
-            qatar_parser = QatarRosterParser(timezone_format='auto')
-            # We need a temp PDF path - this is a limitation
-            # The generic parser receives text, not the PDF path
-            raise NotImplementedError(
-                "❌ Unsupported PDF format detected.\n\n"
-                "The text-based detection didn't recognize this as a Qatar Airways roster.\n\n"
-                "This could mean:\n"
-                "  1. The PDF keywords ('CrewLink', 'Qatar Airways', 'Period', etc.) are not being extracted\n"
-                "  2. The PDF uses a different format than expected\n"
-                "  3. The PDF is image-based or has extraction issues\n\n"
-                "Supported formats:\n"
-                "  • Qatar Airways CrewLink PDF (grid layout with dates as columns)\n"
-                "  • Tabular format (with vertical bars/pipes '|')\n"
-                "  • CSV files (comma-separated values)\n\n"
-                "ACTION: Please verify the PDF is not image-based or corrupted.\n"
-                "        Try uploading again, or contact support with a sample PDF."
-            )
-        except Exception as e:
-            raise NotImplementedError(str(e))
+        raise NotImplementedError("Generic format parser failed to identify roster structure.")
 
 # ============================================================================
 # CSV PARSER
@@ -466,12 +443,9 @@ class CSVRosterParser:
     
     def parse_csv(self, csv_path: str, pilot_id: str, month: str) -> Roster:
         """Parse CSV roster file"""
-        
         print(f"📊 Parsing CSV roster: {csv_path}")
-        
         df = pd.read_csv(csv_path)
         
-        # Detect CSV format
         if 'Flight' in df.columns:
             duties = self._parse_simple_csv(df)
         else:
@@ -484,25 +458,20 @@ class CSVRosterParser:
             duties=duties,
             home_base_timezone=self.home_timezone
         )
-        
         print(f"✓ Parsed {len(duties)} duties, {roster.total_sectors} sectors")
         return roster
     
     def _parse_simple_csv(self, df: pd.DataFrame) -> List[Duty]:
-        """Parse simple one-flight-per-row CSV"""
-        
         duties = []
         current_duty_flights = []
         last_report = None
         last_date = None
+        last_release = None
         
         for _, row in df.iterrows():
-            # Parse flight segment
             segment = self._parse_csv_flight(row)
             
-            # Check if new duty starts
             if last_report and row['Report'] != last_report:
-                # Save previous duty
                 duty = self._build_csv_duty(
                     current_duty_flights,
                     last_date,
@@ -517,7 +486,6 @@ class CSVRosterParser:
             last_release = row['Release']
             last_date = row['Date']
         
-        # Last duty
         if current_duty_flights:
             duty = self._build_csv_duty(
                 current_duty_flights,
@@ -530,18 +498,13 @@ class CSVRosterParser:
         return duties
     
     def _parse_csv_flight(self, row: pd.Series) -> FlightSegment:
-        """Parse single CSV row into FlightSegment"""
-        
-        # Get airports
         dep = self.airport_db.get_airport(row['Departure'])
         arr = self.airport_db.get_airport(row['Arrival'])
         
-        # Parse datetime
         date = pd.to_datetime(row['Date'])
         std_time = pd.to_datetime(row['STD'], format='%H:%M').time()
         sta_time = pd.to_datetime(row['STA'], format='%H:%M').time()
         
-        # Localize and convert to UTC
         dep_tz = pytz.timezone(dep.timezone)
         arr_tz = pytz.timezone(arr.timezone)
         
@@ -556,15 +519,7 @@ class CSVRosterParser:
             scheduled_arrival_utc=sta_utc
         )
     
-    def _build_csv_duty(
-        self,
-        segments: List[FlightSegment],
-        date: str,
-        report: str,
-        release: str
-    ) -> Duty:
-        """Build Duty from CSV data"""
-        
+    def _build_csv_duty(self, segments: List[FlightSegment], date: str, report: str, release: str) -> Duty:
         date_obj = pd.to_datetime(date)
         report_time = pd.to_datetime(report, format='%H:%M').time()
         release_time = pd.to_datetime(release, format='%H:%M').time()
