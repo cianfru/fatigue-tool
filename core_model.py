@@ -849,6 +849,19 @@ class BorbelyFatigueModel:
         s_current = s_at_wake
         current_time = duty.report_time_utc
         
+        # Ensure minimum duty length for timeline calculation
+        duty_duration = duty.release_time_utc - duty.report_time_utc
+        if duty_duration.total_seconds() < 0:
+            # Invalid duty times - swap them or use minimum
+            import logging
+            logging.warning(f"Duty {duty.duty_id}: Invalid time range - release before report. Using 8-hour minimum.")
+            duty.release_time_utc = duty.report_time_utc + timedelta(hours=8)
+        elif duty_duration.total_seconds() == 0:
+            # Zero-duration duty - use 8-hour default
+            import logging
+            logging.warning(f"Duty {duty.duty_id}: Zero duration. Using 8-hour default.")
+            duty.release_time_utc = duty.report_time_utc + timedelta(hours=8)
+        
         while current_time <= duty.release_time_utc:
             
             # Get current sector and flight phase
@@ -914,7 +927,35 @@ class BorbelyFatigueModel:
         """Build summary with statistics"""
         
         if not timeline:
-            return DutyTimeline(duty.duty_id, duty.date, [])
+            # If timeline is empty, compute a default performance based on circadian and sleep
+            # This prevents 0% performance for duties with missing timing data
+            tz = pytz.timezone(duty.home_base_timezone)
+            mid_duty_time = duty.report_time_utc + (duty.release_time_utc - duty.report_time_utc) / 2
+            
+            # Estimate S from sleep history
+            s_estimate = 0.3
+            for sleep in reversed(sleep_history):
+                if sleep.end_utc <= duty.report_time_utc:
+                    sleep_quality_ratio = sleep.effective_sleep_hours / 8.0
+                    s_estimate = max(0.1, 0.7 - (sleep_quality_ratio * 0.6))
+                    break
+            
+            # Calculate C at duty midpoint
+            c_estimate = self.compute_process_c(mid_duty_time, duty.home_base_timezone, phase_shift)
+            
+            # Calculate default performance
+            default_performance = self.integrate_performance(c_estimate, s_estimate, 0.0)
+            
+            return DutyTimeline(
+                duty_id=duty.duty_id,
+                duty_date=duty.date,
+                timeline=[],
+                min_performance=default_performance,
+                average_performance=default_performance,
+                landing_performance=default_performance,
+                prior_sleep_hours=sum(s.effective_sleep_hours for s in sleep_history[-3:] if s.end_utc <= duty.report_time_utc),
+                wocl_encroachment_hours=self.validator.is_disruptive_duty(duty).get('wocl_hours', 0.0)
+            )
         
         min_perf = min(p.raw_performance for p in timeline)
         min_point = min(timeline, key=lambda p: p.raw_performance)
