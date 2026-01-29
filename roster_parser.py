@@ -20,7 +20,7 @@ from typing import List, Dict, Optional, Tuple
 import pytz
 
 from data_models import Airport, FlightSegment, Duty, Roster
-from roster_parser_qatar import QatarRosterParser
+from qatar_crewlink_parser import QatarRosterParser
 
 # ============================================================================
 # AIRPORT DATABASE
