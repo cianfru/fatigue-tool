@@ -1153,6 +1153,9 @@ class BorbelyFatigueModel:
         # Extract sleep with strategy data
         all_sleep, sleep_strategies = self.extract_sleep_from_roster(roster, body_clock_timeline)
         
+        # Store sleep_strategies for API access
+        self.sleep_strategies = sleep_strategies
+        
         # Simulate each duty
         previous_duty = None
         previous_timeline = None

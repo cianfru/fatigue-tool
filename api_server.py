@@ -396,7 +396,7 @@ async def analyze_roster(
         
         # Extract rest days sleep from sleep_strategies
         rest_days_sleep = []
-        for key, strategy_data in sleep_strategies.items():
+        for key, strategy_data in model.sleep_strategies.items():
             if key.startswith('rest_'):
                 # Format: rest_YYYY-MM-DD
                 rest_date = key.replace('rest_', '')
