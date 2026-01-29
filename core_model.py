@@ -47,6 +47,7 @@ from data_models import (
     PerformancePoint, PinchEvent, DutyTimeline, MonthlyAnalysis, FlightPhase
 )
 from easa_utils import BiomathematicalSleepEstimator, EASAComplianceValidator
+from strategic_sleep_estimator_enhanced import EnhancedStrategicSleepEstimator
 
 
 # ============================================================================
@@ -236,6 +237,11 @@ class BorbelyFatigueModel:
             self.config.sleep_quality_params
         )
         self.validator = EASAComplianceValidator(self.config.easa_framework)
+        
+        # Enhanced strategic sleep estimator for realistic pilot behavior
+        self.strategic_sleep_estimator = EnhancedStrategicSleepEstimator(
+            home_timezone=self.config.home_timezone
+        )
         
         # Aviation Workload Integration Model (NEW in V4)
         self.workload_model = WorkloadModel()
@@ -666,46 +672,24 @@ class BorbelyFatigueModel:
     ) -> List[SleepBlock]:
         """
         Auto-generate sleep opportunities from duty gaps
-        NEW in V2
+        
+        ENHANCED: Now uses strategic sleep estimator for realistic pilot behavior
+        Includes WOCL penalties, recovery sleep boost, time pressure, etc.
         """
         sleep_blocks = []
         
         for i, duty in enumerate(roster.duties):
-            if i + 1 < len(roster.duties):
-                next_duty = roster.duties[i + 1]
-                
-                # Sleep window: release + 1h to report - 2h
-                sleep_start = duty.release_time_utc + timedelta(hours=1)
-                sleep_end = next_duty.report_time_utc - timedelta(hours=2)
-                
-                if sleep_end <= sleep_start:
-                    continue
-                
-                # Location
-                location_tz = duty.segments[-1].arrival_airport.timezone
-                is_home_base = (location_tz == roster.home_base_timezone)
-                
-                # Get circadian state
-                phase_shift = self._get_phase_shift_at_time(sleep_start, body_clock_timeline)
-                
-                # Prior wake time
-                prior_wake = (sleep_start - duty.report_time_utc).total_seconds() / 3600
-                if i > 0 and sleep_blocks:
-                    prior_wake += (duty.report_time_utc - sleep_blocks[-1].end_utc).total_seconds() / 3600
-                
-                # Estimate sleep
-                environment = 'home' if is_home_base else 'layover'
-                
-                sleep = self.sleep_estimator.estimate_sleep_block(
-                    opportunity_start=sleep_start,
-                    opportunity_end=sleep_end,
-                    location_timezone=location_tz,
-                    circadian_phase_shift=phase_shift,
-                    environment=environment,
-                    prior_wake_hours=min(24, prior_wake)
-                )
-                
-                sleep_blocks.append(sleep)
+            previous_duty = roster.duties[i - 1] if i > 0 else None
+            
+            # Use enhanced strategic sleep estimator
+            strategy = self.strategic_sleep_estimator.estimate_strategic_sleep(
+                duty=duty,
+                previous_duty=previous_duty
+            )
+            
+            # Extract sleep blocks from strategy
+            for sleep_block in strategy.sleep_blocks:
+                sleep_blocks.append(sleep_block)
         
         return sleep_blocks
     
