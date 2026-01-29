@@ -239,7 +239,7 @@ async def root():
     return {
         "status": "ok",
         "service": "Fatigue Analysis API",
-        "version": "4.0.0",
+        "version": "4.2.0",
         "model": "Borbély Two-Process + Workload Integration"
     }
 
