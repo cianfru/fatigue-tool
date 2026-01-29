@@ -39,8 +39,8 @@ from visualization import FatigueVisualizer
 
 app = FastAPI(
     title="Fatigue Analysis API",
-    description="EASA-compliant biomathematical fatigue analysis",
-    version="4.0.0"
+    description="EASA-compliant biomathematical fatigue analysis with sleep quality modeling",
+    version="4.2.0"
 )
 
 # CORS - Allow Lovable frontend to connect
@@ -93,6 +93,11 @@ class SleepBlockResponse(BaseModel):
     duration_hours: float
     effective_hours: float
     quality_factor: float
+    # Pre-computed positioning for chronogram (avoids browser timezone issues)
+    sleep_start_day: Optional[int] = None   # Day of month (1-31) in home timezone
+    sleep_start_hour: Optional[float] = None  # Hour (0-24) in home timezone
+    sleep_end_day: Optional[int] = None     # Day of month (1-31) in home timezone  
+    sleep_end_hour: Optional[float] = None    # Hour (0-24) in home timezone
 
 
 class SleepQualityResponse(BaseModel):
@@ -107,6 +112,13 @@ class SleepQualityResponse(BaseModel):
     sleep_blocks: List[SleepBlockResponse] = []  # All sleep periods
     sleep_start_time: Optional[str] = None  # Primary sleep start (HH:mm)
     sleep_end_time: Optional[str] = None    # Primary sleep end (HH:mm)
+    sleep_start_iso: Optional[str] = None   # Primary sleep start (ISO format with date for chronogram)
+    sleep_end_iso: Optional[str] = None     # Primary sleep end (ISO format with date for chronogram)
+    # Pre-computed positioning for chronogram (avoids browser timezone issues)
+    sleep_start_day: Optional[int] = None   # Day of month (1-31) in home timezone
+    sleep_start_hour: Optional[float] = None  # Hour (0-24) in home timezone
+    sleep_end_day: Optional[int] = None     # Day of month (1-31) in home timezone
+    sleep_end_hour: Optional[float] = None    # Hour (0-24) in home timezone
 
 
 class DutyResponse(BaseModel):
@@ -389,7 +401,23 @@ async def analyze_roster(
                     warnings=duty_timeline.sleep_quality_data.get('warnings', []),
                     sleep_blocks=duty_timeline.sleep_quality_data.get('sleep_blocks', []),
                     sleep_start_time=duty_timeline.sleep_quality_data.get('sleep_start_time'),
-                    sleep_end_time=duty_timeline.sleep_quality_data.get('sleep_end_time')
+                    sleep_end_time=duty_timeline.sleep_quality_data.get('sleep_end_time'),
+                    # Extract top-level fields from LAST sleep block (most relevant for pre-duty)
+                    # For afternoon_nap strategy: last block is the nap before night duty
+                    # For single-block strategies: last block is the only block
+                    sleep_start_iso=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[-1].get('sleep_start_iso') 
+                                     if duty_timeline.sleep_quality_data.get('sleep_blocks') else None),
+                    sleep_end_iso=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[-1].get('sleep_end_iso') 
+                                   if duty_timeline.sleep_quality_data.get('sleep_blocks') else None),
+                    # Pre-computed positioning for frontend chronogram (avoids browser timezone issues)
+                    sleep_start_day=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[-1].get('sleep_start_day') 
+                                     if duty_timeline.sleep_quality_data.get('sleep_blocks') else None),
+                    sleep_start_hour=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[-1].get('sleep_start_hour') 
+                                      if duty_timeline.sleep_quality_data.get('sleep_blocks') else None),
+                    sleep_end_day=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[-1].get('sleep_end_day') 
+                                   if duty_timeline.sleep_quality_data.get('sleep_blocks') else None),
+                    sleep_end_hour=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[-1].get('sleep_end_hour') 
+                                    if duty_timeline.sleep_quality_data.get('sleep_blocks') else None)
                 ) if duty_timeline.sleep_quality_data else None
             ))
         
