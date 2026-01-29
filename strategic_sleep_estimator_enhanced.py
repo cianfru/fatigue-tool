@@ -87,8 +87,9 @@ class EnhancedStrategicSleepEstimator:
     - Late sleep onset
     """
     
-    def __init__(self, home_timezone: str = 'UTC'):
-        self.home_tz = pytz.timezone(home_timezone)
+    def __init__(self):
+        # Timezone is provided per-call in estimate_strategic_sleep()
+        pass
         
         # Research-backed baseline parameters
         self.NORMAL_BEDTIME_HOUR = 23
@@ -117,13 +118,16 @@ class EnhancedStrategicSleepEstimator:
     def estimate_strategic_sleep(
         self,
         duty: Duty,
-        previous_duty: Optional[Duty] = None
+        previous_duty: Optional[Duty] = None,
+        home_timezone: str = 'UTC'
     ) -> SleepStrategy:
         """
         Main entry point: Estimate how pilot actually slept before duty
         
         NOW INCLUDES FULL QUALITY CALCULATION
         """
+        # Set home timezone for this calculation
+        self.home_tz = pytz.timezone(home_timezone)
         
         report_local = duty.report_time_utc.astimezone(self.home_tz)
         report_hour = report_local.hour

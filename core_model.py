@@ -239,9 +239,7 @@ class BorbelyFatigueModel:
         self.validator = EASAComplianceValidator(self.config.easa_framework)
         
         # Enhanced strategic sleep estimator for realistic pilot behavior
-        self.strategic_sleep_estimator = EnhancedStrategicSleepEstimator(
-            home_timezone=self.config.home_timezone
-        )
+        self.strategic_sleep_estimator = EnhancedStrategicSleepEstimator()
         
         # Aviation Workload Integration Model (NEW in V4)
         self.workload_model = WorkloadModel()
@@ -685,10 +683,11 @@ class BorbelyFatigueModel:
         for i, duty in enumerate(roster.duties):
             previous_duty = roster.duties[i - 1] if i > 0 else None
             
-            # Use enhanced strategic sleep estimator
+            # Use enhanced strategic sleep estimator with roster timezone
             strategy = self.strategic_sleep_estimator.estimate_strategic_sleep(
                 duty=duty,
-                previous_duty=previous_duty
+                previous_duty=previous_duty,
+                home_timezone=roster.home_base_timezone
             )
             
             # Extract sleep blocks from strategy
