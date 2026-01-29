@@ -143,6 +143,17 @@ class DutyResponse(BaseModel):
     sleep_quality: Optional[SleepQualityResponse] = None
 
 
+class RestDaySleepResponse(BaseModel):
+    """Sleep pattern for a rest day (no duties)"""
+    date: str  # YYYY-MM-DD
+    sleep_blocks: List[SleepBlockResponse]
+    total_sleep_hours: float
+    effective_sleep_hours: float
+    sleep_efficiency: float
+    strategy_type: str  # 'recovery'
+    confidence: float
+
+
 class AnalysisResponse(BaseModel):
     analysis_id: str
     roster_id: str
@@ -173,6 +184,9 @@ class AnalysisResponse(BaseModel):
     
     # Detailed duties
     duties: List[DutyResponse]
+    
+    # Rest days sleep patterns
+    rest_days_sleep: List[RestDaySleepResponse] = []
 
 
 class ChronogramRequest(BaseModel):
@@ -380,6 +394,23 @@ async def analyze_roster(
                 ) if duty_timeline.sleep_quality_data else None
             ))
         
+        # Extract rest days sleep from sleep_strategies
+        rest_days_sleep = []
+        for key, strategy_data in sleep_strategies.items():
+            if key.startswith('rest_'):
+                # Format: rest_YYYY-MM-DD
+                rest_date = key.replace('rest_', '')
+                rest_day_response = RestDaySleepResponse(
+                    date=rest_date,
+                    sleep_blocks=strategy_data.get('sleep_blocks', []),
+                    total_sleep_hours=strategy_data.get('total_sleep_hours', 0.0),
+                    effective_sleep_hours=strategy_data.get('effective_sleep_hours', 0.0),
+                    sleep_efficiency=strategy_data.get('sleep_efficiency', 0.0),
+                    strategy_type=strategy_data.get('strategy_type', 'recovery'),
+                    confidence=strategy_data.get('confidence', 0.0)
+                )
+                rest_days_sleep.append(rest_day_response)
+        
         return AnalysisResponse(
             analysis_id=analysis_id,
             roster_id=roster.roster_id,
@@ -397,7 +428,8 @@ async def analyze_roster(
             max_sleep_debt=monthly_analysis.max_sleep_debt,
             worst_duty_id=monthly_analysis.lowest_performance_duty,
             worst_performance=monthly_analysis.lowest_performance_value,
-            duties=duties_response
+            duties=duties_response,
+            rest_days_sleep=rest_days_sleep
         )
     
     except HTTPException:
