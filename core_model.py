@@ -34,7 +34,7 @@ Key Findings:
 - Multiple landing cycles compound fatigue more than cruise duration
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import List, Tuple, Optional, Dict, Any
 import math
 import pytz
@@ -674,11 +674,14 @@ class BorbelyFatigueModel:
         ENHANCED: Now uses strategic sleep estimator for realistic pilot behavior
         Includes WOCL penalties, recovery sleep boost, time pressure, etc.
         
+        Also generates standard recovery sleep for REST DAYS (days with no duties)
+        
         Returns:
             Tuple of (sleep_blocks, sleep_strategies_by_duty)
         """
         sleep_blocks = []
-        sleep_strategies = {}  # duty_id -> strategy data
+        sleep_strategies = {}  # duty_id or rest_day_key -> strategy data
+        home_tz = pytz.timezone(roster.home_base_timezone)
         
         for i, duty in enumerate(roster.duties):
             previous_duty = roster.duties[i - 1] if i > 0 else None
@@ -704,8 +707,7 @@ class BorbelyFatigueModel:
                 
                 if strategy.sleep_blocks:
                     # Build response for ALL sleep blocks
-                    home_tz = pytz.timezone(roster.home_base_timezone)
-                    for i, block in enumerate(strategy.sleep_blocks):
+                    for idx, block in enumerate(strategy.sleep_blocks):
                         sleep_start_local = block.start_utc.astimezone(home_tz)
                         sleep_end_local = block.end_utc.astimezone(home_tz)
                         
@@ -746,6 +748,63 @@ class BorbelyFatigueModel:
                     'sleep_end_time': sleep_end_time,
                     'sleep_blocks': sleep_blocks_response
                 }
+            
+            # Generate rest day sleep for gap between this duty and next
+            if i < len(roster.duties) - 1:
+                next_duty = roster.duties[i + 1]
+                duty_release = duty.release_time_utc.astimezone(home_tz)
+                next_duty_report = next_duty.report_time_utc.astimezone(home_tz)
+                
+                # Check for multi-day gaps
+                gap_days = (next_duty_report.date() - duty_release.date()).days
+                
+                for rest_day_offset in range(1, gap_days):
+                    rest_date = duty_release.date() + timedelta(days=rest_day_offset)
+                    rest_day_key = f"rest_{rest_date.isoformat()}"
+                    
+                    # Standard recovery sleep: 23:00-07:00
+                    sleep_start = home_tz.localize(
+                        datetime.combine(rest_date - timedelta(days=1), time(23, 0))
+                    )
+                    sleep_end = home_tz.localize(
+                        datetime.combine(rest_date, time(7, 0))
+                    )
+                    
+                    # Create recovery sleep block
+                    recovery_block = SleepBlock(
+                        start_utc=sleep_start.astimezone(pytz.utc),
+                        end_utc=sleep_end.astimezone(pytz.utc),
+                        location_timezone=home_tz.zone,
+                        duration_hours=8.0,
+                        quality_factor=0.95,  # Well-rested day: high quality
+                        effective_sleep_hours=7.6,  # 8h × 0.95
+                        environment='home'
+                    )
+                    
+                    sleep_blocks.append(recovery_block)
+                    
+                    # Store rest day strategy
+                    sleep_strategies[rest_day_key] = {
+                        'strategy_type': 'recovery',
+                        'confidence': 0.95,
+                        'total_sleep_hours': 8.0,
+                        'effective_sleep_hours': 7.6,
+                        'sleep_efficiency': 0.95,
+                        'wocl_overlap_hours': 0.0,
+                        'warnings': [],
+                        'sleep_start_time': '23:00',
+                        'sleep_end_time': '07:00',
+                        'sleep_blocks': [{
+                            'sleep_start_time': '23:00',
+                            'sleep_end_time': '07:00',
+                            'sleep_start_iso': sleep_start.isoformat(),
+                            'sleep_end_iso': sleep_end.isoformat(),
+                            'sleep_type': 'main',
+                            'duration_hours': 8.0,
+                            'effective_hours': 7.6,
+                            'quality_factor': 0.95
+                        }]
+                    }
         
         return sleep_blocks, sleep_strategies
     
