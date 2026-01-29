@@ -84,6 +84,16 @@ class DutySegmentResponse(BaseModel):
     block_hours: float
 
 
+class SleepBlockResponse(BaseModel):
+    """Individual sleep period with timing"""
+    sleep_start_time: str  # HH:mm in home-base timezone
+    sleep_end_time: str    # HH:mm in home-base timezone
+    sleep_type: str        # 'main', 'nap', 'anchor'
+    duration_hours: float
+    effective_hours: float
+    quality_factor: float
+
+
 class SleepQualityResponse(BaseModel):
     """Sleep quality analysis from enhanced strategic estimator"""
     total_sleep_hours: float
@@ -93,8 +103,9 @@ class SleepQualityResponse(BaseModel):
     sleep_strategy: str  # 'normal', 'afternoon_nap', 'early_bedtime', 'split_sleep'
     confidence: float
     warnings: List[str]
-    sleep_start_time: Optional[str] = None  # ISO format or HH:mm in home-base timezone
-    sleep_end_time: Optional[str] = None    # ISO format or HH:mm in home-base timezone
+    sleep_blocks: List[SleepBlockResponse] = []  # All sleep periods
+    sleep_start_time: Optional[str] = None  # Primary sleep start (HH:mm)
+    sleep_end_time: Optional[str] = None    # Primary sleep end (HH:mm)
 
 
 class DutyResponse(BaseModel):
@@ -361,6 +372,7 @@ async def analyze_roster(
                     sleep_strategy=duty_timeline.sleep_quality_data.get('strategy_type', 'unknown'),
                     confidence=duty_timeline.sleep_quality_data.get('confidence', 0.0),
                     warnings=duty_timeline.sleep_quality_data.get('warnings', []),
+                    sleep_blocks=duty_timeline.sleep_quality_data.get('sleep_blocks', []),
                     sleep_start_time=duty_timeline.sleep_quality_data.get('sleep_start_time'),
                     sleep_end_time=duty_timeline.sleep_quality_data.get('sleep_end_time')
                 ) if duty_timeline.sleep_quality_data else None

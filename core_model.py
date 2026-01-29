@@ -700,10 +700,33 @@ class BorbelyFatigueModel:
                 # Get sleep start/end times from the first sleep block
                 sleep_start_time = None
                 sleep_end_time = None
+                sleep_blocks_response = []
+                
                 if strategy.sleep_blocks:
-                    first_block = strategy.sleep_blocks[0]
-                    # Convert to home timezone and format as HH:mm
+                    # Build response for ALL sleep blocks
                     home_tz = pytz.timezone(roster.home_base_timezone)
+                    for i, block in enumerate(strategy.sleep_blocks):
+                        sleep_start_local = block.start_utc.astimezone(home_tz)
+                        sleep_end_local = block.end_utc.astimezone(home_tz)
+                        
+                        # Determine sleep type
+                        sleep_type = 'main'
+                        if not block.is_anchor_sleep:
+                            sleep_type = 'nap'
+                        elif block.is_inflight_rest:
+                            sleep_type = 'inflight'
+                        
+                        sleep_blocks_response.append({
+                            'sleep_start_time': sleep_start_local.strftime('%H:%M'),
+                            'sleep_end_time': sleep_end_local.strftime('%H:%M'),
+                            'sleep_type': sleep_type,
+                            'duration_hours': block.duration_hours,
+                            'effective_hours': block.effective_sleep_hours,
+                            'quality_factor': block.quality_factor
+                        })
+                    
+                    # Primary times are from first block
+                    first_block = strategy.sleep_blocks[0]
                     sleep_start_local = first_block.start_utc.astimezone(home_tz)
                     sleep_end_local = first_block.end_utc.astimezone(home_tz)
                     sleep_start_time = sleep_start_local.strftime('%H:%M')
@@ -718,7 +741,8 @@ class BorbelyFatigueModel:
                     'wocl_overlap_hours': quality.wocl_overlap_hours,
                     'warnings': [w['message'] for w in quality.warnings],
                     'sleep_start_time': sleep_start_time,
-                    'sleep_end_time': sleep_end_time
+                    'sleep_end_time': sleep_end_time,
+                    'sleep_blocks': sleep_blocks_response
                 }
         
         return sleep_blocks, sleep_strategies
