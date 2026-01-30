@@ -62,9 +62,12 @@ class AirportDatabase:
         'AUH': {'name': 'Abu Dhabi', 'timezone': 'Asia/Dubai', 'lat': 24.43, 'lon': 54.65},
         'ELQ': {'name': 'Gassim', 'timezone': 'Asia/Riyadh', 'lat': 26.30, 'lon': 43.77},
         'IKA': {'name': 'Tehran Imam Khomeini', 'timezone': 'Asia/Tehran', 'lat': 35.41, 'lon': 51.15},
-        'NIF': {'name': 'Najaf', 'timezone': 'Asia/Baghdad', 'lat': 31.99, 'lon': 44.40},
+        'NJF': {'name': 'Najaf', 'timezone': 'Asia/Baghdad', 'lat': 31.99, 'lon': 44.40},
         'SHJ': {'name': 'Sharjah', 'timezone': 'Asia/Dubai', 'lat': 25.32, 'lon': 55.51},
         'JMK': {'name': 'Mykonos', 'timezone': 'Europe/Athens', 'lat': 37.43, 'lon': 25.34},
+        'BAH': {'name': 'Bahrain', 'timezone': 'Asia/Bahrain', 'lat': 26.27, 'lon': 50.63},
+        'MCT': {'name': 'Muscat', 'timezone': 'Asia/Muscat', 'lat': 23.59, 'lon': 58.28},
+        'EBL': {'name': 'Erbil', 'timezone': 'Asia/Baghdad', 'lat': 36.23, 'lon': 43.96},
     }
     
     @classmethod
@@ -119,7 +122,7 @@ class PDFRosterParser:
         self.home_base = home_base
         self.home_timezone = home_timezone
         self.airport_db = AirportDatabase()
-        self.roster_year = datetime.now().year # Default, will be updated from PDF
+        self.roster_year = datetime.now().year  # Default, will be updated from PDF
     
     def parse_pdf(self, pdf_path: str, pilot_id: str, month: str) -> Roster:
         """
@@ -133,10 +136,10 @@ class PDFRosterParser:
             for page in pdf.pages:
                 full_text += page.extract_text() + "\n"
         
-        # 0. Attempt to extract the Roster Period Year
+        # Extract the Roster Period Year
         self._extract_roster_year(full_text)
 
-        # [cite_start]1. Pre-extract Header Info (Robust Regex for ID/Name) [cite: 4]
+        # Pre-extract Header Info (Robust Regex for ID/Name)
         header_info = self._extract_header_info(full_text)
         
         # Detect roster format
@@ -181,7 +184,6 @@ class PDFRosterParser:
             duties = self._parse_generic_format(full_text)
        
         # MERGE LOGIC: Prioritize the Header Extraction for ID/Name
-        [cite_start]# [cite: 4] Source shows ID:XXXX format which header_info captures
         final_pilot_id = header_info.get('id') or pilot_info.get('id') or pilot_id
         final_pilot_name = header_info.get('name') or pilot_info.get('name')
         final_base = header_info.get('base') or pilot_info.get('base') or self.home_base
@@ -205,7 +207,7 @@ class PDFRosterParser:
         return roster
     
     def _extract_roster_year(self, text: str):
-        [cite_start]"""Extract year from 'Period: 01-Aug-2025' line [cite: 6]"""
+        """Extract year from 'Period: 01-Aug-2025' line"""
         match = re.search(r'Period:.*(\d{4})', text)
         if match:
             self.roster_year = int(match.group(1))
@@ -216,26 +218,45 @@ class PDFRosterParser:
         Robustly extract Pilot Header details using Regex
         Matches format: Name: XXXX \n ID:134614 (DOH CP-A320)
         """
+        # AGGRESSIVE cleaning of PDF artifacts
+        text = re.sub(r'\(cid:\d+\)', '', text)  # Remove (cid:X) markers
+        text = re.sub(r'[\x00-\x1F\x7F]', ' ', text)  # Remove control characters
+        
         info = {}
         
-        # [cite_start]1. Extract ID [cite: 4]
-        # Matches "ID:134614" or "ID: 134614"
-        id_match = re.search(r'(?:ID|Staff No)\s*[:]\s*(\d+)', text, re.IGNORECASE)
+        # DEBUG: Show what we're working with
+        if 'ID' in text:
+            id_context = text[text.find('ID'):text.find('ID')+100]
+            print(f"   [DEBUG] Text around ID: {repr(id_context)}")
+        else:
+            print(f"   [DEBUG] 'ID' keyword not found in text")
+        
+        # 1. Extract ID - MORE FLEXIBLE pattern
+        # Match ID followed by digits, allowing for spaces/junk between digits
+        id_match = re.search(r'ID\s*[:]\s*([\d\s]+)', text, re.IGNORECASE)
         if id_match:
-            info['id'] = id_match.group(1)
+            # Clean up the captured digits (remove spaces)
+            raw_id = id_match.group(1)
+            clean_id = re.sub(r'\D', '', raw_id)  # Keep only digits
+            if clean_id:
+                info['id'] = clean_id
+                print(f"   [DEBUG] Extracted ID: '{clean_id}' (raw: '{raw_id.strip()}')")
+        else:
+            print(f"   [DEBUG] ID extraction FAILED")
 
-        # [cite_start]2. Extract Name [cite: 3]
-        # Matches "Name: CIANFRUGLIA Andrea"
+        # 2. Extract Name
         name_match = re.search(r'Name\s*[:]\s*([^\n\r\(]+)', text, re.IGNORECASE)
         if name_match:
             info['name'] = name_match.group(1).strip()
+            print(f"   [DEBUG] Extracted Name: '{info['name']}'")
 
-        # [cite_start]3. Extract Base and Aircraft from parens [cite: 4]
-        # Looks for patterns like (DOH CP-A320)
-        details_match = re.search(r'\(([A-Z]{3})\s+(?:CP-)?([A-Z0-9\-]+)\)', text)
+        # 3. Extract Base and Aircraft from parens
+        # Looks for patterns like (DOH CP-A320) or (DOH FO-A320)
+        details_match = re.search(r'\(([A-Z]{3})\s+[A-Z]{2}-([A-Z0-9\-]+)\)', text)
         if details_match:
             info['base'] = details_match.group(1)      # e.g. DOH
             info['aircraft'] = details_match.group(2)  # e.g. A320
+            print(f"   [DEBUG] Extracted Base: {info['base']}, Aircraft: {info['aircraft']}")
             
         return info
 
@@ -259,7 +280,7 @@ class PDFRosterParser:
         Parse Qatar Airways CrewLink PDF format (Stateful "Soup" Parser)
         
         Handles fragmented text where RPT (Report/Sign-in) appears 
-        [cite_start]before the flight details, distinct from the flight row. [cite: 7]
+        before the flight details, distinct from the flight row.
         """
         duties = []
         lines = text.split('\n')
@@ -269,10 +290,10 @@ class PDFRosterParser:
         current_report_time = None  # Store RPT when found
         current_release_time = None
         
-        # [cite_start]Regex for "RPT:HH:MM" tag [cite: 7]
+        # Regex for "RPT:HH:MM" tag
         rpt_pattern = re.compile(r'RPT:(\d{2}:\d{2})')
         
-        # [cite_start]Regex for date headers like "01Aug" or "01Aug Fri" [cite: 7]
+        # Regex for date headers like "01Aug" or "01Aug Fri"
         date_pattern = re.compile(r'(\d{2}[A-Z][a-z]{2})')
         
         for line in lines:
@@ -291,7 +312,7 @@ class PDFRosterParser:
                     pass
 
             # 2. Capture Report Time (RPT)
-            # [cite_start]Looks for "RPT:07:30" anywhere in the line [cite: 7]
+            # Looks for "RPT:07:30" anywhere in the line
             rpt_match = rpt_pattern.search(line)
             if rpt_match:
                 # If we find a NEW report time, finalize previous duty
@@ -302,7 +323,7 @@ class PDFRosterParser:
                         current_duty_flights,
                         duty_date,
                         current_report_time,
-                        "00:00" # fallback release if not captured
+                        "00:00"  # fallback release if not captured
                     )
                     duties.append(duty)
                     current_duty_flights = []
@@ -310,7 +331,7 @@ class PDFRosterParser:
                 current_report_time = rpt_match.group(1)
                 
             # 3. Capture Flight Info
-            # [cite_start]Matches: 1044 DOH 08:45 AUH 09:55 [cite: 7]
+            # Matches: 1044 DOH 08:45 AUH 09:55
             flight_match = self._extract_flight_data_loose(line)
             
             if flight_match and current_date:
@@ -322,7 +343,7 @@ class PDFRosterParser:
                     current_date.strftime('%d-%b-%Y'),
                     std, sta
                 )
-                segment.date_obj = current_date # Store for reference
+                segment.date_obj = current_date  # Store for reference
                 
                 current_duty_flights.append(segment)
 
@@ -342,7 +363,7 @@ class PDFRosterParser:
     def _extract_flight_data_loose(self, line: str) -> Optional[Tuple]:
         """
         Regex for raw flight strings
-        [cite_start]Matches: "1044 DOH 08:45 AUH 09:55" [cite: 7]
+        Matches: "1044 DOH 08:45 AUH 09:55"
         """
         pattern = r'(\d{3,4})\s+([A-Z]{3})\s+(\d{2}:\d{2})\s+([A-Z]{3})\s+(\d{2}:\d{2}(?:\+\d)?)'
         match = re.search(pattern, line)
