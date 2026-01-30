@@ -137,8 +137,11 @@ class CrewLinkRosterParser:
         self.timezone_format = timezone_format.lower()
         self.unknown_airports = set()  # Track for reporting
         
-        if self.timezone_format not in ['auto', 'local', 'zulu']:
-            raise ValueError(f"timezone_format must be 'auto', 'local' or 'zulu', got '{timezone_format}'")
+        if self.timezone_format not in ['auto', 'local', 'zulu', 'homebase']:
+        raise ValueError(f"timezone_format must be 'auto', 'local', 'zulu', or 'homebase', got '{timezone_format}'")
+
+        # Store home base timezone for 'homebase' format conversions
+        self.home_timezone = 'Asia/Qatar'  # Default DOH, will be updated from pilot_info
     
     def _get_or_create_airport(self, code: str) -> Optional[Airport]:
         """
@@ -187,7 +190,14 @@ class CrewLinkRosterParser:
             
             # Extract pilot info from header
             pilot_info = self._extract_pilot_info(page)
-            pilot_info['timezone_format'] = self.timezone_format
+
+            # Update home timezone from pilot base
+            if pilot_info.get('base'):
+                base_airport = self._get_or_create_airport(pilot_info['base'])
+            if base_airport:
+                self.home_timezone = base_airport.timezone
+
+pilot_info['timezone_format'] = self.timezone_format
             
             # Extract the main schedule table
             table = self._extract_schedule_table(page)
