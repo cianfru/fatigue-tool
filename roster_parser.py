@@ -244,8 +244,8 @@ class PDFRosterParser:
         else:
             print(f"   [DEBUG] ID extraction FAILED")
 
-        # 2. Extract Name
-        name_match = re.search(r'Name\s*[:]\s*([^\n\r\(]+)', text, re.IGNORECASE)
+        # 2. Extract Name - Stop at "All times", "ID", or newline
+        name_match = re.search(r'Name\s*[:]\s*(.+?)(?=\s+All times|\s+ID|\n|$)', text, re.IGNORECASE)
         if name_match:
             info['name'] = name_match.group(1).strip()
             print(f"   [DEBUG] Extracted Name: '{info['name']}'")
