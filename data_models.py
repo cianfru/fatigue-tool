@@ -393,6 +393,12 @@ class SleepBlock:
     environment: str = "unknown"       # home, hotel, layover, crew_rest
     
     # Pre-computed day/hour for timezone-safe chronogram positioning
+    sleep_start_day: Optional[int] = None       # Day of month (1-31)
+    sleep_start_hour: Optional[float] = None    # Decimal hour (0-24)
+    sleep_end_day: Optional[int] = None         # Day of month (1-31)
+    sleep_end_hour: Optional[float] = None      # Decimal hour (0-24)
+    
+    # Pre-computed day/hour for timezone-safe chronogram positioning
     # These prevent frontend timezone conversion issues
     sleep_start_day: Optional[int] = None      # Day of month (1-31)
     sleep_start_hour: Optional[float] = None   # Decimal hour in local time (0-24)
