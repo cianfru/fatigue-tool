@@ -481,6 +481,7 @@ class CrewLinkRosterParser:
     def _parse_column_to_duty(self, date: datetime, column_data: List[str]) -> Optional[Duty]:
         """
         Parse a single date column vertical data stack into a Duty
+        Enhanced to validate times against segment data
         """
         if not column_data:
             return None
@@ -539,6 +540,20 @@ class CrewLinkRosterParser:
             else:  # zulu
                 # Report time is already in UTC
                 report_time = pytz.utc.localize(report_time_naive)
+            
+            # Validate report time against first departure
+            first_departure = segments[0].scheduled_departure_utc
+            if report_time > first_departure:
+                # Report is after departure - move to previous day
+                if self.timezone_format == 'local':
+                    dep_tz = pytz.timezone(dep_airport.timezone)
+                    report_time_naive_prev = report_time_naive - timedelta(days=1)
+                    report_time = dep_tz.localize(report_time_naive_prev)
+                elif self.timezone_format == 'homebase':
+                    home_tz = pytz.timezone(self.home_timezone)
+                    report_time_naive_prev = report_time_naive - timedelta(days=1)
+                    report_time = home_tz.localize(report_time_naive_prev)
+                print(f"  ⚠️  Report time adjusted to previous day (was after first departure)")
         else:
             # Fallback: report time = departure time - 1 hour
             report_time = segments[0].scheduled_departure_utc - timedelta(hours=1)
@@ -550,6 +565,11 @@ class CrewLinkRosterParser:
         # EASA defines FDP as report time to END OF LAST LANDING (not +1 hour)
         last_landing = segments[-1].scheduled_arrival_utc
         release_time = last_landing + timedelta(minutes=30)
+        
+        # Final validation: ensure report < release
+        if report_time >= release_time:
+            print(f"  ⚠️  Invalid duty: report >= release, adjusting release time")
+            release_time = report_time + timedelta(hours=1)  # Minimum 1h duty
         
         # Create duty
         # Use departure airport timezone as home base (will be corrected by parent parser)

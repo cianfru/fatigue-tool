@@ -413,6 +413,49 @@ class PDFRosterParser:
             scheduled_arrival_utc=sta_utc
         )
     
+    def _validate_duty_times(self, report_utc: datetime, release_utc: datetime, 
+                            segments: List[FlightSegment], date: datetime) -> Tuple[datetime, datetime, List[str]]:
+        """
+        Validate and correct duty times to ensure chronological consistency.
+        
+        Returns:
+            Tuple of (corrected_report_utc, corrected_release_utc, warnings)
+        """
+        warnings = []
+        corrected_report = report_utc
+        corrected_release = release_utc
+        
+        if not segments:
+            return corrected_report, corrected_release, warnings
+        
+        first_departure = segments[0].scheduled_departure_utc
+        last_arrival = segments[-1].scheduled_arrival_utc
+        
+        # Check if report time is after first departure (likely wrong day)
+        if corrected_report > first_departure:
+            # Move report to previous day
+            corrected_report = corrected_report - timedelta(days=1)
+            warnings.append(f"Report time moved to previous day (was after first departure)")
+        
+        # Validate report is before first departure (with reasonable buffer)
+        time_before_departure = (first_departure - corrected_report).total_seconds() / 3600
+        if time_before_departure < 0.5:  # Less than 30 minutes before departure
+            warnings.append(f"Warning: Report time only {time_before_departure*60:.0f}min before departure")
+        elif time_before_departure > 4:  # More than 4 hours before departure
+            warnings.append(f"Note: Report time {time_before_departure:.1f}h before departure (long pre-flight)")
+        
+        # Validate release time is after last arrival
+        if corrected_release < last_arrival:
+            # Release must be at least 30 min after landing
+            corrected_release = last_arrival + timedelta(minutes=30)
+            warnings.append(f"Release time adjusted to 30min after last landing")
+        
+        # Final check: ensure report < release
+        if corrected_report >= corrected_release:
+            warnings.append(f"ERROR: Invalid duty - report time >= release time")
+        
+        return corrected_report, corrected_release, warnings
+
     def _build_duty_from_flights(self, segments: List[FlightSegment], date: datetime, report_str: str, release_str: str) -> Duty:
         report_time_obj = datetime.strptime(report_str, '%H:%M').time()
         
@@ -432,6 +475,15 @@ class PDFRosterParser:
         
         report_utc = report_local.astimezone(pytz.utc)
         release_utc = release_local.astimezone(pytz.utc)
+        
+        # Validate and correct times
+        report_utc, release_utc, validation_warnings = self._validate_duty_times(
+            report_utc, release_utc, segments, date
+        )
+        
+        # Log any warnings
+        for warning in validation_warnings:
+            print(f"  ⚠️  {warning}")
         
         duty_id = f"D_{date.strftime('%Y%m%d')}_{segments[0].flight_number}"
         
