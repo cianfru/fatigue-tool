@@ -547,12 +547,12 @@ class CrewLinkRosterParser:
                 # Report is after departure - move to previous day
                 if self.timezone_format == 'local':
                     dep_tz = pytz.timezone(dep_airport.timezone)
-                    report_time_naive = datetime(date.year, date.month, date.day - 1, report_hour, report_minute)
-                    report_time = dep_tz.localize(report_time_naive)
+                    report_time_naive_prev = report_time_naive - timedelta(days=1)
+                    report_time = dep_tz.localize(report_time_naive_prev)
                 elif self.timezone_format == 'homebase':
                     home_tz = pytz.timezone(self.home_timezone)
-                    report_time_naive = datetime(date.year, date.month, date.day - 1, report_hour, report_minute)
-                    report_time = home_tz.localize(report_time_naive)
+                    report_time_naive_prev = report_time_naive - timedelta(days=1)
+                    report_time = home_tz.localize(report_time_naive_prev)
                 print(f"  ⚠️  Report time adjusted to previous day (was after first departure)")
         else:
             # Fallback: report time = departure time - 1 hour

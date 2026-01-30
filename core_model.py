@@ -1037,18 +1037,34 @@ class UnifiedSleepCalculator:
         
         # Ensure we still have a valid sleep period
         if adjusted_start >= adjusted_end:
-            # Sleep completely eliminated - use minimal viable sleep
-            adjusted_end = duty.report_time_utc - timedelta(minutes=30)
-            adjusted_start = adjusted_end - timedelta(hours=2)  # Minimal 2h sleep
-            warnings.append("WARNING: Sleep severely constrained by duty schedule")
+            # Sleep completely eliminated or invalid - use minimal viable sleep
+            # Calculate available window between duties
+            if previous_duty:
+                earliest_sleep = previous_duty.release_time_utc + timedelta(minutes=30)
+            else:
+                earliest_sleep = duty.report_time_utc - timedelta(hours=8)
             
-            # Check again against previous duty
-            if previous_duty and adjusted_start < previous_duty.release_time_utc:
-                adjusted_start = previous_duty.release_time_utc + timedelta(minutes=30)
-                # Recalculate end if needed
-                if adjusted_start >= adjusted_end:
-                    adjusted_end = adjusted_start + timedelta(hours=1)  # At least 1h
-                    warnings.append("CRITICAL: Less than 2h rest between duties")
+            latest_sleep = duty.report_time_utc - timedelta(minutes=30)
+            
+            # Check if there's any viable window
+            time_available = (latest_sleep - earliest_sleep).total_seconds() / 3600
+            
+            if time_available >= 2:
+                # We have at least 2h - use it
+                adjusted_start = earliest_sleep
+                adjusted_end = latest_sleep
+                warnings.append("WARNING: Sleep severely constrained by duty schedule")
+            elif time_available >= 1:
+                # Only 1-2h available
+                adjusted_start = earliest_sleep
+                adjusted_end = latest_sleep
+                warnings.append("CRITICAL: Less than 2h rest between duties")
+            else:
+                # Less than 1h available - this is a critical scheduling issue
+                # Set minimum 1h sleep period anyway for model stability
+                adjusted_end = duty.report_time_utc - timedelta(minutes=30)
+                adjusted_start = adjusted_end - timedelta(hours=1)
+                warnings.append("CRITICAL: Insufficient rest period - regulatory violation likely")
         
         return adjusted_start, adjusted_end, warnings
     
