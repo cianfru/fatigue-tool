@@ -142,6 +142,9 @@ class DutyResponse(BaseModel):
     
     # Enhanced sleep quality analysis
     sleep_quality: Optional[SleepQualityResponse] = None
+    
+    # Validation warnings (NEW - BUG FIX #5)
+    time_validation_warnings: List[str] = []
 
 
 class RestDaySleepResponse(BaseModel):
@@ -361,6 +364,15 @@ async def analyze_roster(
                     block_hours=seg.block_time_hours
                 ))
             
+            # Check for time validation warnings
+            time_warnings = []
+            if duty.report_time_utc >= duty.release_time_utc:
+                time_warnings.append("Invalid duty: report time >= release time")
+            if duty.duty_hours > 24:
+                time_warnings.append(f"Unusual duty length: {duty.duty_hours:.1f} hours")
+            if duty.duty_hours < 0.5:
+                time_warnings.append(f"Very short duty: {duty.duty_hours:.1f} hours")
+            
             duties_response.append(DutyResponse(
                 duty_id=duty_timeline.duty_id,
                 date=duty_timeline.duty_date.strftime("%Y-%m-%d"),
@@ -381,6 +393,7 @@ async def analyze_roster(
                 max_fdp_hours=duty.max_fdp_hours,
                 extended_fdp_hours=duty.extended_fdp_hours,
                 used_discretion=duty.used_discretion,
+                time_validation_warnings=time_warnings,
                 sleep_quality=SleepQualityResponse(
                     total_sleep_hours=duty_timeline.sleep_quality_data.get('total_sleep_hours', 0.0),
                     effective_sleep_hours=duty_timeline.sleep_quality_data.get('effective_sleep_hours', 0.0),
