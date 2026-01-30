@@ -127,20 +127,22 @@ class CrewLinkRosterParser:
         
         Args:
             auto_create_airports: Create placeholder for unknown airports
-            timezone_format: 'auto', 'local', or 'zulu'
+            timezone_format: 'auto', 'local', 'zulu', or 'homebase'
                 - 'auto': Detect from PDF header (default, recommended)
                 - 'local': Times in roster are in local timezone of each airport
                 - 'zulu': Times in roster are in UTC/Zulu (all times are UTC)
+                - 'homebase': Times are in home base timezone (DOH)
         """
         self.airports = KNOWN_AIRPORTS.copy()
         self.auto_create_airports = auto_create_airports
         self.timezone_format = timezone_format.lower()
         self.unknown_airports = set()  # Track for reporting
         
+        # FIXED: Added 'homebase' to valid formats
         if self.timezone_format not in ['auto', 'local', 'zulu', 'homebase']:
-        raise ValueError(f"timezone_format must be 'auto', 'local', 'zulu', or 'homebase', got '{timezone_format}'")
-
-        # Store home base timezone for 'homebase' format conversions
+            raise ValueError(f"timezone_format must be 'auto', 'local', 'zulu', or 'homebase', got '{timezone_format}'")
+        
+        # FIXED: Added home_timezone for 'homebase' format conversions
         self.home_timezone = 'Asia/Qatar'  # Default DOH, will be updated from pilot_info
     
     def _get_or_create_airport(self, code: str) -> Optional[Airport]:
@@ -190,14 +192,14 @@ class CrewLinkRosterParser:
             
             # Extract pilot info from header
             pilot_info = self._extract_pilot_info(page)
-
-            # Update home timezone from pilot base
+            
+            # FIXED: Update home timezone from pilot base
             if pilot_info.get('base'):
                 base_airport = self._get_or_create_airport(pilot_info['base'])
-            if base_airport:
-                self.home_timezone = base_airport.timezone
-
-pilot_info['timezone_format'] = self.timezone_format
+                if base_airport:
+                    self.home_timezone = base_airport.timezone
+            
+            pilot_info['timezone_format'] = self.timezone_format
             
             # Extract the main schedule table
             table = self._extract_schedule_table(page)
@@ -219,30 +221,44 @@ pilot_info['timezone_format'] = self.timezone_format
         Looks for phrases like:
         - "All times are in Local" -> 'local'
         - "All times are in UTC" -> 'zulu'
-        - "Times: UTC" -> 'zulu'
+        - "All times are Home Base (DOH)" -> 'homebase'
         
         Returns:
-            'local' or 'zulu'
+            'local', 'zulu', or 'homebase'
         """
-        text = page.extract_text().lower()
+        text = page.extract_text()
         
-        # Check for explicit statements
-        if 'all times are in local' in text or 'times: local' in text or 'times local' in text:
-            print("✓ Detected timezone format: LOCAL (times shown in airport local time)")
-            return 'local'
+        # Clean PDF artifacts
+        text_clean = re.sub(r'\(cid:\d+\)', '', text)
+        text_clean = re.sub(r'[\x00-\x1F\x7F]', ' ', text_clean)
+        text_lower = text_clean.lower()
         
-        if ('all times are in utc' in text or 
-            'all times are in zulu' in text or
-            'times: utc' in text or
-            'times: zulu' in text or
-            'times utc' in text):
-            print("✓ Detected timezone format: ZULU/UTC (all times are UTC)")
+        # Pattern 1: UTC/Zulu format
+        if ('all times are in utc' in text_lower or 
+            'all times are utc' in text_lower or
+            'times are in utc' in text_lower or
+            'times: utc' in text_lower or
+            'times utc' in text_lower):
+            print("   📍 Timezone format: UTC/ZULU")
             return 'zulu'
         
-        # Default to local if not explicitly stated
-        print("⚠️  Could not detect timezone format from PDF header")
-        print("    Defaulting to 'local' format (times in each airport's local timezone)")
-        print("    If times are showing incorrectly, the PDF may be using UTC format")
+        # Pattern 2: Local time format
+        if ('all times are local' in text_lower or 
+            'times are local' in text_lower or
+            'all times are in local' in text_lower or
+            'times: local' in text_lower):
+            print("   📍 Timezone format: LOCAL TIME")
+            return 'local'
+        
+        # Pattern 3: Home base format
+        if ('home base' in text_lower or 
+            'all times are home base' in text_lower or
+            'times in home base' in text_lower):
+            print("   📍 Timezone format: HOME BASE (DOH)")
+            return 'homebase'
+        
+        # Default to local
+        print("   ⚠️  Could not detect timezone format, defaulting to LOCAL")
         return 'local'
     
     def _extract_pilot_info(self, page) -> Dict:
@@ -504,18 +520,22 @@ pilot_info['timezone_format'] = self.timezone_format
         if not segments:
             return None
         
-        # Now create report time using the DEPARTURE AIRPORT timezone (not home base)
-        # This is critical for circadian alignment
+        # Now create report time using proper timezone conversion
         if report_hour is not None:
             report_time_naive = datetime(date.year, date.month, date.day, report_hour, report_minute)
             
             # Get timezone from departure airport (first segment's departure)
             dep_airport = segments[0].departure_airport
             
+            # FIXED: Added 'homebase' format conversion
             if self.timezone_format == 'local':
                 # Report time is in LOCAL timezone of departure airport
                 dep_tz = pytz.timezone(dep_airport.timezone)
                 report_time = dep_tz.localize(report_time_naive)
+            elif self.timezone_format == 'homebase':
+                # Report time is in HOME BASE timezone
+                home_tz = pytz.timezone(self.home_timezone)
+                report_time = home_tz.localize(report_time_naive)
             else:  # zulu
                 # Report time is already in UTC
                 report_time = pytz.utc.localize(report_time_naive)
@@ -614,7 +634,7 @@ pilot_info['timezone_format'] = self.timezone_format
                     i += 5
                     continue
                 
-                # Convert to UTC based on timezone format
+                # FIXED: Convert to UTC based on timezone format
                 try:
                     if self.timezone_format == 'local':
                         # Times are in LOCAL timezone of each airport
@@ -623,6 +643,13 @@ pilot_info['timezone_format'] = self.timezone_format
                         
                         dep_utc = dep_tz.localize(dep_time).astimezone(pytz.utc)
                         arr_utc = arr_tz.localize(arr_time).astimezone(pytz.utc)
+                    
+                    elif self.timezone_format == 'homebase':
+                        # NEW: Times are in HOME BASE timezone (DOH)
+                        home_tz = pytz.timezone(self.home_timezone)
+                        
+                        dep_utc = home_tz.localize(dep_time).astimezone(pytz.utc)
+                        arr_utc = home_tz.localize(arr_time).astimezone(pytz.utc)
                     
                     else:  # timezone_format == 'zulu'
                         # Times are already in UTC/Zulu
