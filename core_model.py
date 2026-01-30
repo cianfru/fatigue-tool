@@ -942,16 +942,39 @@ class UnifiedSleepCalculator:
     ) -> SleepStrategy:
         """
         Normal daytime duty - standard sleep
-        BUG FIX #4: Added day/hour fields for chronogram positioning
-        BUG FIX #5: Added sleep overlap validation
+        
+        REALISTIC PILOT BEHAVIOR:
+        -------------------------
+        Pilots maintain consistent wake times (~07:00) regardless of duty start time.
+        They do NOT delay wake time for afternoon duties.
+        
+        All "normal" duties (07:00-20:00 report) use:
+        - Sleep: 23:00 → 07:00 (previous night)
+        - Wake at consistent time
+        - Variable awake duration before duty
+        
+        This results in:
+        - 07:00 report: 0h awake before duty ✅
+        - 12:00 report: 5h awake before duty ✅  
+        - 17:00 report: 10h awake before duty ✅ (degraded performance expected)
+        - 19:00 report: 12h awake before duty ⚠️ (transitions to night strategy at 20:00)
+        
+        Performance degradation is EXPECTED and MODELED for later duties.
+        This is realistic - pilots don't optimize sleep, they accept fatigue.
+        
+        NOTE: Duties at 20:00+ use _night_departure_strategy with afternoon nap.
+        
+        Scientific basis:
+        - Van Dongen et al. (2003): Performance degrades after 16 hours awake
+        - Roenneberg et al. (2007): Average wake time ~07:30
+        - Borbély two-process model: Process S increases exponentially while awake
         """
         
         report_local = duty.report_time_utc.astimezone(self.home_tz)
         
-        wake_time = report_local - timedelta(hours=2.5)
-        sleep_duration = self.NORMAL_SLEEP_DURATION
-        sleep_end = wake_time
-        sleep_start = sleep_end - timedelta(hours=sleep_duration)
+        # All normal duties: sleep previous night, wake at normal time
+        sleep_start = report_local.replace(hour=self.NORMAL_BEDTIME_HOUR, minute=0) - timedelta(days=1)
+        sleep_end = report_local.replace(hour=self.NORMAL_WAKE_HOUR, minute=0)
         
         # Validate sleep doesn't overlap with duties
         sleep_start_utc = sleep_start.astimezone(pytz.utc)
@@ -983,23 +1006,37 @@ class UnifiedSleepCalculator:
             quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
             environment='home',
-            # ✅ BUG FIX #4: Pre-computed day/hour for timezone-safe chronogram positioning
             sleep_start_day=sleep_start.day,
             sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
             sleep_end_day=sleep_end.day,
             sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
         )
         
-        # Reduce confidence if sleep was constrained
-        confidence = 0.90
+        # Calculate awake duration
+        awake_hours = (report_local - sleep_end).total_seconds() / 3600
+        
+        # Handle very early duty (pilot barely awake - sleep inertia)
+        if awake_hours < 0.5:  # Less than 30 minutes awake
+            print(f"  ℹ️  Very short wake time ({awake_hours:.1f}h) - pilot may still be groggy (sleep inertia)")
+        
+        # Confidence decreases with longer awake periods (realistic fatigue)
+        if awake_hours < 2:
+            confidence = 0.95  # Just woke up (may have sleep inertia)
+        elif awake_hours < 6:
+            confidence = 0.90  # Morning duty
+        elif awake_hours < 10:
+            confidence = 0.80  # Afternoon duty
+        else:
+            confidence = 0.70  # Long awake period (approaching fatigue)
+        
         if sleep_warnings:
-            confidence = 0.70
+            confidence *= 0.8  # Further reduce if sleep was constrained
         
         return SleepStrategy(
             strategy_type='normal',
             sleep_blocks=[normal_sleep],
             confidence=confidence,
-            explanation=f"Daytime duty: Normal sleep = {sleep_quality.effective_sleep_hours:.1f}h effective",
+            explanation=f"Normal sleep ({sleep_quality.effective_sleep_hours:.1f}h effective), {awake_hours:.1f}h awake before duty",
             quality_analysis=[sleep_quality]
         )
     
