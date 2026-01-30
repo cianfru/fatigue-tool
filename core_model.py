@@ -682,6 +682,7 @@ class UnifiedSleepCalculator:
         
         For departures at 20:00+ (BUG FIX #2: threshold now 20, not 22)
         BUG FIX #4: Added day/hour fields for chronogram positioning
+        BUG FIX #5: Added sleep overlap validation
         """
         
         report_local = duty.report_time_utc.astimezone(self.home_tz)
@@ -692,11 +693,14 @@ class UnifiedSleepCalculator:
         ) - timedelta(days=1)
         morning_sleep_end = report_local.replace(hour=8, minute=0)
         
-        if previous_duty:
-            release_local = previous_duty.release_time_utc.astimezone(self.home_tz)
-            earliest_sleep = release_local + timedelta(hours=1.5)
-            if morning_sleep_start < earliest_sleep:
-                morning_sleep_start = earliest_sleep
+        # Validate morning sleep doesn't overlap with duties
+        morning_sleep_start_utc = morning_sleep_start.astimezone(pytz.utc)
+        morning_sleep_end_utc = morning_sleep_end.astimezone(pytz.utc)
+        morning_sleep_start_utc, morning_sleep_end_utc, morning_warnings = self._validate_sleep_no_overlap(
+            morning_sleep_start_utc, morning_sleep_end_utc, duty, previous_duty
+        )
+        morning_sleep_start = morning_sleep_start_utc.astimezone(self.home_tz)
+        morning_sleep_end = morning_sleep_end_utc.astimezone(self.home_tz)
         
         morning_quality = self.calculate_sleep_quality(
             sleep_start=morning_sleep_start,
@@ -706,6 +710,10 @@ class UnifiedSleepCalculator:
             next_event=report_local,
             location_timezone=self.home_tz.zone
         )
+        
+        # Log warnings
+        for warning in morning_warnings:
+            print(f"  ⚠️  Morning sleep: {warning}")
         
         morning_sleep = SleepBlock(
             start_utc=morning_sleep_start.astimezone(pytz.utc),
@@ -726,6 +734,15 @@ class UnifiedSleepCalculator:
         nap_end = report_local - timedelta(hours=1.5)
         nap_start = nap_end - timedelta(hours=3.5)
         
+        # Validate nap doesn't overlap with duties  
+        nap_start_utc = nap_start.astimezone(pytz.utc)
+        nap_end_utc = nap_end.astimezone(pytz.utc)
+        nap_start_utc, nap_end_utc, nap_warnings = self._validate_sleep_no_overlap(
+            nap_start_utc, nap_end_utc, duty, previous_duty
+        )
+        nap_start = nap_start_utc.astimezone(self.home_tz)
+        nap_end = nap_end_utc.astimezone(self.home_tz)
+        
         nap_quality = self.calculate_sleep_quality(
             sleep_start=nap_start,
             sleep_end=nap_end,
@@ -735,6 +752,10 @@ class UnifiedSleepCalculator:
             is_nap=True,
             location_timezone=self.home_tz.zone
         )
+        
+        # Log warnings
+        for warning in nap_warnings:
+            print(f"  ⚠️  Afternoon nap: {warning}")
         
         afternoon_nap = SleepBlock(
             start_utc=nap_start.astimezone(pytz.utc),
@@ -754,10 +775,15 @@ class UnifiedSleepCalculator:
         
         total_effective = morning_quality.effective_sleep_hours + nap_quality.effective_sleep_hours
         
+        # Reduce confidence if sleep was constrained
+        confidence = 0.70
+        if morning_warnings or nap_warnings:
+            confidence = 0.50
+        
         return SleepStrategy(
             strategy_type='afternoon_nap',
             sleep_blocks=[morning_sleep, afternoon_nap],
-            confidence=0.70,
+            confidence=confidence,
             explanation=f"Night departure: {morning_quality.actual_sleep_hours:.1f}h + "
                        f"{nap_quality.actual_sleep_hours:.1f}h nap = {total_effective:.1f}h effective",
             quality_analysis=[morning_quality, nap_quality]
@@ -775,6 +801,7 @@ class UnifiedSleepCalculator:
         """
         Early report strategy (<07:00) - early bedtime
         BUG FIX #4: Added day/hour fields for chronogram positioning
+        BUG FIX #5: Added sleep overlap validation
         """
         
         report_local = duty.report_time_utc.astimezone(self.home_tz)
@@ -784,12 +811,14 @@ class UnifiedSleepCalculator:
         sleep_end = wake_time
         sleep_start = sleep_end - timedelta(hours=sleep_duration)
         
-        if previous_duty:
-            release_local = previous_duty.release_time_utc.astimezone(self.home_tz)
-            earliest_sleep = release_local + timedelta(hours=1.5)
-            if sleep_start < earliest_sleep:
-                sleep_start = earliest_sleep
-                sleep_duration = (sleep_end - sleep_start).total_seconds() / 3600
+        # Validate sleep doesn't overlap with duties
+        sleep_start_utc = sleep_start.astimezone(pytz.utc)
+        sleep_end_utc = sleep_end.astimezone(pytz.utc)
+        sleep_start_utc, sleep_end_utc, sleep_warnings = self._validate_sleep_no_overlap(
+            sleep_start_utc, sleep_end_utc, duty, previous_duty
+        )
+        sleep_start = sleep_start_utc.astimezone(self.home_tz)
+        sleep_end = sleep_end_utc.astimezone(self.home_tz)
         
         sleep_quality = self.calculate_sleep_quality(
             sleep_start=sleep_start,
@@ -799,6 +828,10 @@ class UnifiedSleepCalculator:
             next_event=report_local,
             location_timezone=self.home_tz.zone
         )
+        
+        # Log warnings
+        for warning in sleep_warnings:
+            print(f"  ⚠️  Early morning sleep: {warning}")
         
         early_sleep = SleepBlock(
             start_utc=sleep_start.astimezone(pytz.utc),
@@ -815,10 +848,15 @@ class UnifiedSleepCalculator:
             sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
         )
         
+        # Reduce confidence if sleep was constrained
+        confidence = 0.60
+        if sleep_warnings:
+            confidence = 0.45
+        
         return SleepStrategy(
             strategy_type='early_bedtime',
             sleep_blocks=[early_sleep],
-            confidence=0.60,
+            confidence=confidence,
             explanation=f"Early report: Early bedtime = {sleep_quality.effective_sleep_hours:.1f}h effective",
             quality_analysis=[sleep_quality]
         )
@@ -835,12 +873,22 @@ class UnifiedSleepCalculator:
         """
         WOCL duty strategy - anchor sleep before duty
         BUG FIX #4: Added day/hour fields for chronogram positioning
+        BUG FIX #5: Added sleep overlap validation
         """
         
         report_local = duty.report_time_utc.astimezone(self.home_tz)
         
         anchor_end = report_local - timedelta(hours=1.5)
         anchor_start = anchor_end - timedelta(hours=4.5)
+        
+        # Validate sleep doesn't overlap with duties
+        anchor_start_utc = anchor_start.astimezone(pytz.utc)
+        anchor_end_utc = anchor_end.astimezone(pytz.utc)
+        anchor_start_utc, anchor_end_utc, anchor_warnings = self._validate_sleep_no_overlap(
+            anchor_start_utc, anchor_end_utc, duty, previous_duty
+        )
+        anchor_start = anchor_start_utc.astimezone(self.home_tz)
+        anchor_end = anchor_end_utc.astimezone(self.home_tz)
         
         anchor_quality = self.calculate_sleep_quality(
             sleep_start=anchor_start,
@@ -850,6 +898,10 @@ class UnifiedSleepCalculator:
             next_event=report_local,
             location_timezone=self.home_tz.zone
         )
+        
+        # Log warnings
+        for warning in anchor_warnings:
+            print(f"  ⚠️  WOCL anchor sleep: {warning}")
         
         anchor_sleep = SleepBlock(
             start_utc=anchor_start.astimezone(pytz.utc),
@@ -866,10 +918,15 @@ class UnifiedSleepCalculator:
             sleep_end_hour=anchor_end.hour + anchor_end.minute / 60.0
         )
         
+        # Reduce confidence if sleep was constrained
+        confidence = 0.50
+        if anchor_warnings:
+            confidence = 0.35
+        
         return SleepStrategy(
             strategy_type='split_sleep',
             sleep_blocks=[anchor_sleep],
-            confidence=0.50,
+            confidence=confidence,
             explanation=f"WOCL duty: Split sleep = {anchor_quality.effective_sleep_hours:.1f}h effective",
             quality_analysis=[anchor_quality]
         )
@@ -886,6 +943,7 @@ class UnifiedSleepCalculator:
         """
         Normal daytime duty - standard sleep
         BUG FIX #4: Added day/hour fields for chronogram positioning
+        BUG FIX #5: Added sleep overlap validation
         """
         
         report_local = duty.report_time_utc.astimezone(self.home_tz)
@@ -895,12 +953,14 @@ class UnifiedSleepCalculator:
         sleep_end = wake_time
         sleep_start = sleep_end - timedelta(hours=sleep_duration)
         
-        if previous_duty:
-            release_local = previous_duty.release_time_utc.astimezone(self.home_tz)
-            earliest_sleep = release_local + timedelta(hours=1.5)
-            if sleep_start < earliest_sleep:
-                sleep_start = earliest_sleep
-                sleep_duration = (sleep_end - sleep_start).total_seconds() / 3600
+        # Validate sleep doesn't overlap with duties
+        sleep_start_utc = sleep_start.astimezone(pytz.utc)
+        sleep_end_utc = sleep_end.astimezone(pytz.utc)
+        sleep_start_utc, sleep_end_utc, sleep_warnings = self._validate_sleep_no_overlap(
+            sleep_start_utc, sleep_end_utc, duty, previous_duty
+        )
+        sleep_start = sleep_start_utc.astimezone(self.home_tz)
+        sleep_end = sleep_end_utc.astimezone(self.home_tz)
         
         sleep_quality = self.calculate_sleep_quality(
             sleep_start=sleep_start,
@@ -910,6 +970,10 @@ class UnifiedSleepCalculator:
             next_event=report_local,
             location_timezone=self.home_tz.zone
         )
+        
+        # Log warnings
+        for warning in sleep_warnings:
+            print(f"  ⚠️  Normal sleep: {warning}")
         
         normal_sleep = SleepBlock(
             start_utc=sleep_start.astimezone(pytz.utc),
@@ -926,10 +990,15 @@ class UnifiedSleepCalculator:
             sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
         )
         
+        # Reduce confidence if sleep was constrained
+        confidence = 0.90
+        if sleep_warnings:
+            confidence = 0.70
+        
         return SleepStrategy(
             strategy_type='normal',
             sleep_blocks=[normal_sleep],
-            confidence=0.90,
+            confidence=confidence,
             explanation=f"Daytime duty: Normal sleep = {sleep_quality.effective_sleep_hours:.1f}h effective",
             quality_analysis=[sleep_quality]
         )
@@ -937,6 +1006,51 @@ class UnifiedSleepCalculator:
     # ========================================================================
     # HELPER METHODS
     # ========================================================================
+    
+    def _validate_sleep_no_overlap(
+        self,
+        sleep_start: datetime,
+        sleep_end: datetime,
+        duty: Duty,
+        previous_duty: Optional[Duty] = None
+    ) -> Tuple[datetime, datetime, List[str]]:
+        """
+        Validate that sleep doesn't overlap with duty periods.
+        Adjusts sleep times if necessary to prevent collisions.
+        
+        Returns:
+            Tuple of (adjusted_sleep_start, adjusted_sleep_end, warnings)
+        """
+        warnings = []
+        adjusted_start = sleep_start
+        adjusted_end = sleep_end
+        
+        # Check if sleep overlaps with current duty
+        if adjusted_end > duty.report_time_utc:
+            adjusted_end = duty.report_time_utc - timedelta(minutes=30)
+            warnings.append("Sleep truncated: would overlap with duty report time")
+        
+        # Check if sleep overlaps with previous duty
+        if previous_duty and adjusted_start < previous_duty.release_time_utc:
+            adjusted_start = previous_duty.release_time_utc + timedelta(hours=1)
+            warnings.append("Sleep delayed: previous duty not yet released")
+        
+        # Ensure we still have a valid sleep period
+        if adjusted_start >= adjusted_end:
+            # Sleep completely eliminated - use minimal viable sleep
+            adjusted_end = duty.report_time_utc - timedelta(minutes=30)
+            adjusted_start = adjusted_end - timedelta(hours=2)  # Minimal 2h sleep
+            warnings.append("WARNING: Sleep severely constrained by duty schedule")
+            
+            # Check again against previous duty
+            if previous_duty and adjusted_start < previous_duty.release_time_utc:
+                adjusted_start = previous_duty.release_time_utc + timedelta(minutes=30)
+                # Recalculate end if needed
+                if adjusted_start >= adjusted_end:
+                    adjusted_end = adjusted_start + timedelta(hours=1)  # At least 1h
+                    warnings.append("CRITICAL: Less than 2h rest between duties")
+        
+        return adjusted_start, adjusted_end, warnings
     
     def _duty_crosses_wocl(self, duty: Duty) -> bool:
         """Check if duty encroaches on WOCL (02:00-06:00)"""
