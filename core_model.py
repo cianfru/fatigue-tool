@@ -303,7 +303,7 @@ class ModelConfig:
 
 
 # ============================================================================
-# SECTION 3: UNIFIED SLEEP CALCULATION ENGINE
+# SECTION 3: UNIFIED SLEEP CALCULATION ENGINE (FIXED)
 # ============================================================================
 
 @dataclass
@@ -365,6 +365,7 @@ class UnifiedSleepCalculator:
     - Bug #1: WOCL calculation now converts to local timezone before extracting hours
     - Bug #2: NIGHT_FLIGHT_THRESHOLD changed from 22 to 20 for Qatar departures
     - Bug #3: duty_duration and crosses_wocl calculated before decision tree
+    - Bug #4: Added sleep_start_day/hour fields to prevent chronogram overlap (timezone-safe)
     """
     
     def __init__(self, config: ModelConfig = None):
@@ -680,6 +681,7 @@ class UnifiedSleepCalculator:
         Night flight strategy with afternoon nap
         
         For departures at 20:00+ (BUG FIX #2: threshold now 20, not 22)
+        BUG FIX #4: Added day/hour fields for chronogram positioning
         """
         
         report_local = duty.report_time_utc.astimezone(self.home_tz)
@@ -712,7 +714,12 @@ class UnifiedSleepCalculator:
             duration_hours=morning_quality.actual_sleep_hours,
             quality_factor=morning_quality.sleep_efficiency,
             effective_sleep_hours=morning_quality.effective_sleep_hours,
-            environment='home'
+            environment='home',
+            # BUG FIX #4: Pre-computed day/hour for timezone-safe chronogram positioning
+            sleep_start_day=morning_sleep_start.day,
+            sleep_start_hour=morning_sleep_start.hour + morning_sleep_start.minute / 60.0,
+            sleep_end_day=morning_sleep_end.day,
+            sleep_end_hour=morning_sleep_end.hour + morning_sleep_end.minute / 60.0
         )
         
         # Afternoon nap
@@ -737,7 +744,12 @@ class UnifiedSleepCalculator:
             quality_factor=nap_quality.sleep_efficiency,
             effective_sleep_hours=nap_quality.effective_sleep_hours,
             is_anchor_sleep=False,
-            environment='home'
+            environment='home',
+            # BUG FIX #4: Pre-computed day/hour for timezone-safe chronogram positioning
+            sleep_start_day=nap_start.day,
+            sleep_start_hour=nap_start.hour + nap_start.minute / 60.0,
+            sleep_end_day=nap_end.day,
+            sleep_end_hour=nap_end.hour + nap_end.minute / 60.0
         )
         
         total_effective = morning_quality.effective_sleep_hours + nap_quality.effective_sleep_hours
@@ -760,7 +772,10 @@ class UnifiedSleepCalculator:
         duty: Duty,
         previous_duty: Optional[Duty]
     ) -> SleepStrategy:
-        """Early report strategy (<07:00) - early bedtime"""
+        """
+        Early report strategy (<07:00) - early bedtime
+        BUG FIX #4: Added day/hour fields for chronogram positioning
+        """
         
         report_local = duty.report_time_utc.astimezone(self.home_tz)
         
@@ -792,7 +807,12 @@ class UnifiedSleepCalculator:
             duration_hours=sleep_quality.actual_sleep_hours,
             quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
-            environment='home'
+            environment='home',
+            # BUG FIX #4: Pre-computed day/hour for timezone-safe chronogram positioning
+            sleep_start_day=sleep_start.day,
+            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
+            sleep_end_day=sleep_end.day,
+            sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
         )
         
         return SleepStrategy(
@@ -812,7 +832,10 @@ class UnifiedSleepCalculator:
         duty: Duty,
         previous_duty: Optional[Duty]
     ) -> SleepStrategy:
-        """WOCL duty strategy - anchor sleep before duty"""
+        """
+        WOCL duty strategy - anchor sleep before duty
+        BUG FIX #4: Added day/hour fields for chronogram positioning
+        """
         
         report_local = duty.report_time_utc.astimezone(self.home_tz)
         
@@ -835,7 +858,12 @@ class UnifiedSleepCalculator:
             duration_hours=anchor_quality.actual_sleep_hours,
             quality_factor=anchor_quality.sleep_efficiency,
             effective_sleep_hours=anchor_quality.effective_sleep_hours,
-            environment='home'
+            environment='home',
+            # ✅ BUG FIX #4: Pre-computed day/hour for timezone-safe chronogram positioning
+            sleep_start_day=anchor_start.day,
+            sleep_start_hour=anchor_start.hour + anchor_start.minute / 60.0,
+            sleep_end_day=anchor_end.day,
+            sleep_end_hour=anchor_end.hour + anchor_end.minute / 60.0
         )
         
         return SleepStrategy(
@@ -847,7 +875,7 @@ class UnifiedSleepCalculator:
         )
     
     # ========================================================================
-    # STRATEGY 4: Normal Daytime
+    # STRATEGY 4: Normal Daytime - ✅ FIXED
     # ========================================================================
     
     def _normal_sleep_strategy(
@@ -855,7 +883,10 @@ class UnifiedSleepCalculator:
         duty: Duty,
         previous_duty: Optional[Duty]
     ) -> SleepStrategy:
-        """Normal daytime duty - standard sleep"""
+        """
+        Normal daytime duty - standard sleep
+        BUG FIX #4: Added day/hour fields for chronogram positioning
+        """
         
         report_local = duty.report_time_utc.astimezone(self.home_tz)
         
@@ -887,7 +918,12 @@ class UnifiedSleepCalculator:
             duration_hours=sleep_quality.actual_sleep_hours,
             quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
-            environment='home'
+            environment='home',
+            # ✅ BUG FIX #4: Pre-computed day/hour for timezone-safe chronogram positioning
+            sleep_start_day=sleep_start.day,
+            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
+            sleep_end_day=sleep_end.day,
+            sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
         )
         
         return SleepStrategy(
@@ -914,7 +950,6 @@ class UnifiedSleepCalculator:
             current += timedelta(hours=1)
         
         return False
-
 
 # ============================================================================
 # SECTION 4: BORBÉLY MODEL IMPLEMENTATION
