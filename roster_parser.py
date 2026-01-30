@@ -220,9 +220,16 @@ class PDFRosterParser:
         
         # 1. Extract ID
         # Matches "ID:134614" or "ID: 134614"
-        id_match = re.search(r'(?:ID|Staff No)\s*[:]\s*(\d+)', text, re.IGNORECASE)
-        if id_match:
-            info['id'] = id_match.group(1)
+        id_match = re.search(r'ID\s*[:]\s*([\d\s]+)', text, re.IGNORECASE)
+    if id_match:
+        # Clean up the captured digits (remove spaces)
+        raw_id = id_match.group(1)
+        clean_id = re.sub(r'\D', '', raw_id)  # Keep only digits
+        if clean_id:
+            info['id'] = clean_id
+            print(f"   [DEBUG] Extracted ID: '{clean_id}' (raw: '{raw_id}')")
+    else:
+        print(f"   [DEBUG] ID extraction FAILED")
 
         # 2. Extract Name
         # Matches "Name: CIANFRUGLIA Andrea"
