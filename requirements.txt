@@ -1,4 +1,5 @@
 pytz>=2023.3
+airportsdata>=20240101
 numpy>=1.24.0
 streamlit>=1.28.0
 pandas>=2.0.0

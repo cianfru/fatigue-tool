@@ -16,96 +16,31 @@ import pdfplumber
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import pytz
+import airportsdata
 
 from data_models import Airport, FlightSegment, Duty
 
 
-# Known airports database with timezone information
-# This is a starter list - unknown airports are auto-created with UTC timezone
-# Parser will flag unknown airports for manual timezone addition if needed
-KNOWN_AIRPORTS = {
-    # === MIDDLE EAST HUBS ===
-    'DOH': Airport('DOH', 'Asia/Qatar', 25.273056, 51.608056),        # Doha
-    'DXB': Airport('DXB', 'Asia/Dubai', 25.252778, 55.364444),        # Dubai
-    'AUH': Airport('AUH', 'Asia/Dubai', 24.433056, 54.651111),        # Abu Dhabi
-    'JED': Airport('JED', 'Asia/Riyadh', 21.679556, 39.156639),       # Jeddah
-    'RUH': Airport('RUH', 'Asia/Riyadh', 24.957222, 46.698889),       # Riyadh
-    'DMM': Airport('DMM', 'Asia/Riyadh', 26.471161, 49.797933),       # Dammam
-    'KWI': Airport('KWI', 'Asia/Kuwait', 29.226667, 47.968889),       # Kuwait
-    'BAH': Airport('BAH', 'Asia/Bahrain', 26.270556, 50.633611),      # Bahrain
-    'MCT': Airport('MCT', 'Asia/Muscat', 23.593278, 58.284444),       # Muscat
-    
-    # === MAJOR EUROPEAN HUBS ===
-    'LHR': Airport('LHR', 'Europe/London', 51.4700, -0.4543),         # London Heathrow
-    'LGW': Airport('LGW', 'Europe/London', 51.148056, -0.190278),     # London Gatwick
-    'CDG': Airport('CDG', 'Europe/Paris', 49.009722, 2.547778),       # Paris CDG
-    'FRA': Airport('FRA', 'Europe/Berlin', 50.033333, 8.570556),      # Frankfurt
-    'MUC': Airport('MUC', 'Europe/Berlin', 48.353889, 11.786111),     # Munich
-    'AMS': Airport('AMS', 'Europe/Amsterdam', 52.308056, 4.764167),   # Amsterdam
-    'FCO': Airport('FCO', 'Europe/Rome', 41.804167, 12.250833),       # Rome
-    'MAD': Airport('MAD', 'Europe/Madrid', 40.471926, -3.56264),      # Madrid
-    'BCN': Airport('BCN', 'Europe/Madrid', 41.297078, 2.078464),      # Barcelona
-    'ZRH': Airport('ZRH', 'Europe/Zurich', 47.464722, 8.549167),      # Zurich
-    'VIE': Airport('VIE', 'Europe/Vienna', 48.110833, 16.570833),     # Vienna
-    'ATH': Airport('ATH', 'Europe/Athens', 37.934444, 23.947222),     # Athens
-    'IST': Airport('IST', 'Europe/Istanbul', 41.275278, 28.751944),   # Istanbul
-    
-    # === NORTH AMERICA ===
-    'JFK': Airport('JFK', 'America/New_York', 40.6413, -73.7781),     # New York JFK
-    'EWR': Airport('EWR', 'America/New_York', 40.6925, -74.168611),   # Newark
-    'IAD': Airport('IAD', 'America/New_York', 38.944533, -77.455811), # Washington Dulles
-    'ORD': Airport('ORD', 'America/Chicago', 41.978611, -87.904722),  # Chicago
-    'LAX': Airport('LAX', 'America/Los_Angeles', 33.94, -118.41),     # Los Angeles
-    'SFO': Airport('SFO', 'America/Los_Angeles', 37.619, -122.375),   # San Francisco
-    'YYZ': Airport('YYZ', 'America/Toronto', 43.677222, -79.630556),  # Toronto
-    'YVR': Airport('YVR', 'America/Vancouver', 49.193889, -123.184),  # Vancouver
-    
-    # === ASIA PACIFIC ===
-    'SIN': Airport('SIN', 'Asia/Singapore', 1.350194, 103.994433),    # Singapore
-    'HKG': Airport('HKG', 'Asia/Hong_Kong', 22.308889, 113.914722),   # Hong Kong
-    'BKK': Airport('BKK', 'Asia/Bangkok', 13.681111, 100.747222),     # Bangkok
-    'KUL': Airport('KUL', 'Asia/Kuala_Lumpur', 2.745578, 101.709917), # Kuala Lumpur
-    'CGK': Airport('CGK', 'Asia/Jakarta', -6.125567, 106.655897),     # Jakarta
-    'MNL': Airport('MNL', 'Asia/Manila', 14.508647, 121.019581),      # Manila
-    'ICN': Airport('ICN', 'Asia/Seoul', 37.469075, 126.450517),       # Seoul Incheon
-    'NRT': Airport('NRT', 'Asia/Tokyo', 35.764722, 140.386389),       # Tokyo Narita
-    'PVG': Airport('PVG', 'Asia/Shanghai', 31.143333, 121.805278),    # Shanghai
-    'PEK': Airport('PEK', 'Asia/Shanghai', 40.080111, 116.584556),    # Beijing
-    'DEL': Airport('DEL', 'Asia/Kolkata', 28.556161, 77.100389),      # Delhi
-    'BOM': Airport('BOM', 'Asia/Kolkata', 19.088686, 72.867919),      # Mumbai
-    'HYD': Airport('HYD', 'Asia/Kolkata', 17.231361, 78.429639),      # Hyderabad
-    'BLR': Airport('BLR', 'Asia/Kolkata', 13.198889, 77.705556),      # Bangalore
-    'CCJ': Airport('CCJ', 'Asia/Kolkata', 11.136111, 75.955278),      # Kozhikode
-    'TRV': Airport('TRV', 'Asia/Kolkata', 8.482122, 76.920136),       # Thiruvananthapuram
-    'SYD': Airport('SYD', 'Australia/Sydney', -33.946111, 151.177222),# Sydney
-    'MEL': Airport('MEL', 'Australia/Melbourne', -37.673333, 144.843333), # Melbourne
-    
-    # === AFRICA ===
-    'CAI': Airport('CAI', 'Africa/Cairo', 30.121944, 31.405556),      # Cairo
-    'JNB': Airport('JNB', 'Africa/Johannesburg', -26.133694, 28.242317), # Johannesburg
-    'CPT': Airport('CPT', 'Africa/Johannesburg', -33.969444, 18.597222), # Cape Town
-    'NBO': Airport('NBO', 'Africa/Nairobi', -1.319167, 36.927778),    # Nairobi
-    'ADD': Airport('ADD', 'Africa/Addis_Ababa', 8.977889, 38.799319), # Addis Ababa
-    
-    # === SOUTH AMERICA ===
-    'GRU': Airport('GRU', 'America/Sao_Paulo', -23.435556, -46.473056), # São Paulo
-    'EZE': Airport('EZE', 'America/Argentina/Buenos_Aires', -34.822222, -58.535833), # Buenos Aires
-    
-    # === MIDDLE EAST REGIONAL ===
-    'AMM': Airport('AMM', 'Asia/Amman', 31.722556, 35.993214),        # Amman
-    'BEY': Airport('BEY', 'Asia/Beirut', 33.820931, 35.488389),       # Beirut
-    'LCA': Airport('LCA', 'Asia/Nicosia', 34.875117, 33.624944),      # Larnaca
-    'TBS': Airport('TBS', 'Asia/Tbilisi', 41.669167, 44.954722),      # Tbilisi
-    'EVN': Airport('EVN', 'Asia/Yerevan', 40.147275, 44.395881),      # Yerevan
-    'GYD': Airport('GYD', 'Asia/Baku', 40.467222, 50.046667),         # Baku
-    'RSI': Airport('RSI', 'Asia/Baghdad', 33.262222, 44.234722),      # Basra
-    'BGW': Airport('BGW', 'Asia/Baghdad', 33.262514, 44.234622),      # Baghdad
-    'TIF': Airport('TIF', 'Asia/Riyadh', 21.483333, 39.183333),       # Taif
-    'ALP': Airport('ALP', 'Asia/Damascus', 36.180556, 37.224444),     # Aleppo
-    
-    # NOTE: Unknown airports are automatically created with UTC timezone
-    # Parser will flag them for manual timezone addition if accurate analysis is needed
-}
+# Load global IATA airport database (~7,800 airports with timezones and coordinates)
+# This replaces the old hardcoded KNOWN_AIRPORTS dict
+_IATA_DB = airportsdata.load('IATA')
+
+
+def _lookup_airport(iata_code: str) -> Optional[Airport]:
+    """
+    Look up an airport by IATA code from the airportsdata database.
+
+    Returns Airport object with timezone and coordinates, or None if not found.
+    """
+    entry = _IATA_DB.get(iata_code.upper())
+    if entry:
+        return Airport(
+            code=entry['iata'],
+            timezone=entry['tz'],
+            latitude=entry['lat'],
+            longitude=entry['lon']
+        )
+    return None
 
 
 class CrewLinkRosterParser:
@@ -124,54 +59,58 @@ class CrewLinkRosterParser:
     def __init__(self, auto_create_airports: bool = True, timezone_format: str = 'auto'):
         """
         Initialize parser
-        
+
         Args:
-            auto_create_airports: Create placeholder for unknown airports
+            auto_create_airports: Create placeholder for unknown airports not in airportsdata
             timezone_format: 'auto', 'local', 'zulu', or 'homebase'
                 - 'auto': Detect from PDF header (default, recommended)
                 - 'local': Times in roster are in local timezone of each airport
                 - 'zulu': Times in roster are in UTC/Zulu (all times are UTC)
                 - 'homebase': Times are in home base timezone (DOH)
         """
-        self.airports = KNOWN_AIRPORTS.copy()
+        self.airport_cache = {}  # Runtime cache for resolved Airport objects
         self.auto_create_airports = auto_create_airports
         self.timezone_format = timezone_format.lower()
-        self.unknown_airports = set()  # Track for reporting
-        
-        # FIXED: Added 'homebase' to valid formats
+        self.unknown_airports = set()  # Track codes not found in airportsdata
+
         if self.timezone_format not in ['auto', 'local', 'zulu', 'homebase']:
             raise ValueError(f"timezone_format must be 'auto', 'local', 'zulu', or 'homebase', got '{timezone_format}'")
-        
-        # FIXED: Added home_timezone for 'homebase' format conversions
+
         self.home_timezone = 'Asia/Qatar'  # Default DOH, will be updated from pilot_info
-    
+
     def _get_or_create_airport(self, code: str) -> Optional[Airport]:
         """
-        Get airport from database, or create placeholder if unknown
-        
-        This allows parser to work with ANY flights, not just known routes
+        Look up airport from airportsdata (~7,800 IATA airports).
+        Falls back to UTC placeholder only if the code is truly unknown.
         """
-        if code in self.airports:
-            return self.airports[code]
-        
+        if code in self.airport_cache:
+            return self.airport_cache[code]
+
+        # Primary lookup: airportsdata (covers ~7,800 airports)
+        airport = _lookup_airport(code)
+        if airport:
+            self.airport_cache[code] = airport
+            return airport
+
+        # Code not in airportsdata
         if not self.auto_create_airports:
             self.unknown_airports.add(code)
             return None
-        
-        # Create placeholder airport with UTC timezone
+
+        # Create UTC placeholder as last resort
         placeholder = Airport(
             code=code,
-            timezone='UTC',  # Default timezone
+            timezone='UTC',
             latitude=0.0,
             longitude=0.0
         )
-        
-        self.airports[code] = placeholder
+
+        self.airport_cache[code] = placeholder
         self.unknown_airports.add(code)
-        
-        print(f"⚠️  Created placeholder airport for {code} (timezone=UTC)")
-        print(f"    Please add proper timezone for accurate analysis")
-        
+
+        print(f"⚠️  Airport {code} not found in airportsdata ({len(_IATA_DB)} entries). Using UTC placeholder.")
+        print(f"    Fatigue/circadian calculations for sectors involving {code} may be inaccurate.")
+
         return placeholder
     
     def parse_roster(self, pdf_path: str) -> Dict:
@@ -216,49 +155,54 @@ class CrewLinkRosterParser:
     
     def _detect_timezone_format(self, page) -> str:
         """
-        Auto-detect timezone format from PDF header
-        
+        Auto-detect timezone format from PDF header.
+
+        Uses regex with flexible whitespace to handle pdfplumber extraction
+        artifacts (extra spaces, newlines between words, reordered columns).
+
         Looks for phrases like:
         - "All times are in Local" -> 'local'
         - "All times are in UTC" -> 'zulu'
-        - "All times are Home Base (DOH)" -> 'homebase'
-        
+        - "All times are Home Base" -> 'homebase'
+
         Returns:
             'local', 'zulu', or 'homebase'
         """
-        text = page.extract_text()
-        
+        text = page.extract_text() or ''
+
         # Clean PDF artifacts
-        text_clean = re.sub(r'\(cid:\d+\)', '', text)
+        text_clean = re.sub(r'\(cid:\d+\)', ' ', text)
         text_clean = re.sub(r'[\x00-\x1F\x7F]', ' ', text_clean)
+        # Collapse multiple whitespace (spaces, tabs) into single space
+        text_clean = re.sub(r'[ \t]+', ' ', text_clean)
         text_lower = text_clean.lower()
-        
+
+        # Debug: print any line containing "time" for troubleshooting
+        for line in text_lower.split('\n'):
+            if 'time' in line:
+                print(f"   [TZ-DETECT] Found line with 'time': {repr(line.strip())}")
+
         # Pattern 1: UTC/Zulu format
-        if ('all times are in utc' in text_lower or 
-            'all times are utc' in text_lower or
-            'times are in utc' in text_lower or
-            'times: utc' in text_lower or
-            'times utc' in text_lower):
-            print("   📍 Timezone format: UTC/ZULU")
+        # Matches: "all times are in utc", "times utc", "times: utc", etc.
+        if re.search(r'(?:all\s+)?times?\s*(?:are\s+)?(?:in\s+)?[:\-–]?\s*(?:utc|zulu)', text_lower):
+            print("   📍 Timezone format detected: UTC/ZULU")
             return 'zulu'
-        
+
         # Pattern 2: Local time format
-        if ('all times are local' in text_lower or 
-            'times are local' in text_lower or
-            'all times are in local' in text_lower or
-            'times: local' in text_lower):
-            print("   📍 Timezone format: LOCAL TIME")
+        # Matches: "all times are in local", "times are local", "times: local", etc.
+        if re.search(r'(?:all\s+)?times?\s*(?:are\s+)?(?:in\s+)?[:\-–]?\s*local', text_lower):
+            print("   📍 Timezone format detected: LOCAL TIME")
             return 'local'
-        
+
         # Pattern 3: Home base format
-        if ('home base' in text_lower or 
-            'all times are home base' in text_lower or
-            'times in home base' in text_lower):
-            print("   📍 Timezone format: HOME BASE (DOH)")
+        # Matches: "all times are home base", "times in home base", "home base time"
+        if re.search(r'(?:all\s+)?times?\s*(?:are\s+)?(?:in\s+)?[:\-–]?\s*home\s*base', text_lower) or \
+           re.search(r'home\s*base\s+time', text_lower):
+            print("   📍 Timezone format detected: HOME BASE")
             return 'homebase'
-        
+
         # Default to local
-        print("   ⚠️  Could not detect timezone format, defaulting to LOCAL")
+        print("   ⚠️  Could not detect timezone format from PDF header, defaulting to LOCAL")
         return 'local'
     
     def _extract_pilot_info(self, page) -> Dict:

@@ -18,91 +18,75 @@ import re
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 import pytz
+import airportsdata
 
 # Ensure you have these models defined in your project
 from data_models import Airport, FlightSegment, Duty, Roster
 from qatar_crewlink_parser import CrewLinkRosterParser
 
 # ============================================================================
-# AIRPORT DATABASE
+# AIRPORT DATABASE (backed by airportsdata ~7,800 IATA airports)
 # ============================================================================
+
+# Module-level load (cached)
+_IATA_DB = airportsdata.load('IATA')
+
 
 class AirportDatabase:
     """
-    IATA airport database with timezone information
+    IATA airport database backed by airportsdata package.
+
+    Provides timezone, latitude, and longitude for ~7,800 airports worldwide.
+    Falls back to UTC placeholder for codes not in the database.
     """
-    
-    # Core airports (expand as needed)
-    AIRPORTS = {
-        'DOH': {'name': 'Doha', 'timezone': 'Asia/Qatar', 'lat': 25.26, 'lon': 51.61},
-        'LHR': {'name': 'London Heathrow', 'timezone': 'Europe/London', 'lat': 51.47, 'lon': -0.46},
-        'JFK': {'name': 'New York JFK', 'timezone': 'America/New_York', 'lat': 40.64, 'lon': -73.78},
-        'AMS': {'name': 'Amsterdam', 'timezone': 'Europe/Amsterdam', 'lat': 52.31, 'lon': 4.77},
-        'CDG': {'name': 'Paris CDG', 'timezone': 'Europe/Paris', 'lat': 49.01, 'lon': 2.55},
-        'DXB': {'name': 'Dubai', 'timezone': 'Asia/Dubai', 'lat': 25.25, 'lon': 55.36},
-        'SIN': {'name': 'Singapore', 'timezone': 'Asia/Singapore', 'lat': 1.35, 'lon': 103.99},
-        'HKG': {'name': 'Hong Kong', 'timezone': 'Asia/Hong_Kong', 'lat': 22.31, 'lon': 113.91},
-        'SYD': {'name': 'Sydney', 'timezone': 'Australia/Sydney', 'lat': -33.95, 'lon': 151.18},
-        'LAX': {'name': 'Los Angeles', 'timezone': 'America/Los_Angeles', 'lat': 33.94, 'lon': -118.41},
-        'ORD': {'name': 'Chicago', 'timezone': 'America/Chicago', 'lat': 41.98, 'lon': -87.90},
-        'FRA': {'name': 'Frankfurt', 'timezone': 'Europe/Berlin', 'lat': 50.05, 'lon': 8.57},
-        'MUC': {'name': 'Munich', 'timezone': 'Europe/Berlin', 'lat': 48.35, 'lon': 11.79},
-        'BKK': {'name': 'Bangkok', 'timezone': 'Asia/Bangkok', 'lat': 13.69, 'lon': 100.75},
-        'MEL': {'name': 'Melbourne', 'timezone': 'Australia/Melbourne', 'lat': -37.67, 'lon': 144.84},
-        'EDI': {'name': 'Edinburgh', 'timezone': 'Europe/London', 'lat': 55.95, 'lon': -3.37},
-        'MAD': {'name': 'Madrid', 'timezone': 'Europe/Madrid', 'lat': 40.47, 'lon': -3.57},
-        'BCN': {'name': 'Barcelona', 'timezone': 'Europe/Madrid', 'lat': 41.30, 'lon': 2.08},
-        'FCO': {'name': 'Rome', 'timezone': 'Europe/Rome', 'lat': 41.80, 'lon': 12.25},
-        'ATH': {'name': 'Athens', 'timezone': 'Europe/Athens', 'lat': 37.94, 'lon': 23.95},
-        'TRV': {'name': 'Thiruvananthapuram', 'timezone': 'Asia/Kolkata', 'lat': 8.48, 'lon': 76.90},
-        'LCA': {'name': 'Larnaca', 'timezone': 'Asia/Nicosia', 'lat': 34.40, 'lon': 33.62},
-        'ALP': {'name': 'Aleppo', 'timezone': 'Asia/Damascus', 'lat': 36.18, 'lon': 37.22},
-        'DMM': {'name': 'Dammam', 'timezone': 'Asia/Riyadh', 'lat': 26.47, 'lon': 49.80},
-        'TBS': {'name': 'Tbilisi', 'timezone': 'Asia/Tbilisi', 'lat': 41.71, 'lon': 44.74},
-        'AUH': {'name': 'Abu Dhabi', 'timezone': 'Asia/Dubai', 'lat': 24.43, 'lon': 54.65},
-        'ELQ': {'name': 'Gassim', 'timezone': 'Asia/Riyadh', 'lat': 26.30, 'lon': 43.77},
-        'IKA': {'name': 'Tehran Imam Khomeini', 'timezone': 'Asia/Tehran', 'lat': 35.41, 'lon': 51.15},
-        'NJF': {'name': 'Najaf', 'timezone': 'Asia/Baghdad', 'lat': 31.99, 'lon': 44.40},
-        'SHJ': {'name': 'Sharjah', 'timezone': 'Asia/Dubai', 'lat': 25.32, 'lon': 55.51},
-        'JMK': {'name': 'Mykonos', 'timezone': 'Europe/Athens', 'lat': 37.43, 'lon': 25.34},
-        'BAH': {'name': 'Bahrain', 'timezone': 'Asia/Bahrain', 'lat': 26.27, 'lon': 50.63},
-        'MCT': {'name': 'Muscat', 'timezone': 'Asia/Muscat', 'lat': 23.59, 'lon': 58.28},
-        'EBL': {'name': 'Erbil', 'timezone': 'Asia/Baghdad', 'lat': 36.23, 'lon': 43.96},
-    }
-    
+
+    # Runtime overrides (e.g. for military/private airfields not in airportsdata)
+    _custom_airports: Dict[str, dict] = {}
+
     @classmethod
     def get_airport(cls, iata_code: str) -> Airport:
-        """Get Airport object from IATA code"""
+        """Get Airport object from IATA code using airportsdata."""
         code = iata_code.upper()
-        
-        if code not in cls.AIRPORTS:
-            # Fallback for unknown airports to prevent crash, default to UTC
-            print(f"⚠️ Warning: Airport '{code}' not in database. Using UTC default.")
+
+        # Check custom overrides first
+        if code in cls._custom_airports:
+            data = cls._custom_airports[code]
             return Airport(
                 code=code,
-                timezone='UTC',
-                latitude=0.0,
-                longitude=0.0
+                timezone=data['timezone'],
+                latitude=data['lat'],
+                longitude=data['lon']
             )
-        
-        data = cls.AIRPORTS[code]
+
+        # Primary lookup: airportsdata
+        entry = _IATA_DB.get(code)
+        if entry:
+            return Airport(
+                code=entry['iata'],
+                timezone=entry['tz'],
+                latitude=entry['lat'],
+                longitude=entry['lon']
+            )
+
+        # Fallback for unknown airports to prevent crash
+        print(f"⚠️ Airport '{code}' not found in airportsdata ({len(_IATA_DB)} entries). Using UTC default.")
         return Airport(
             code=code,
-            timezone=data['timezone'],
-            latitude=data['lat'],
-            longitude=data['lon']
+            timezone='UTC',
+            latitude=0.0,
+            longitude=0.0
         )
-    
+
     @classmethod
     def add_custom_airport(cls, iata: str, name: str, timezone: str, lat: float, lon: float):
-        """Add airport to database at runtime"""
-        cls.AIRPORTS[iata.upper()] = {
+        """Add/override airport at runtime (for codes not in airportsdata)."""
+        cls._custom_airports[iata.upper()] = {
             'name': name,
             'timezone': timezone,
             'lat': lat,
             'lon': lon
         }
-        print(f"✓ Added {iata} ({name}) to airport database")
+        print(f"✓ Added custom airport {iata} ({name})")
 
 # ============================================================================
 # PDF PARSER (CrewLink, Generic Airline Rosters)
