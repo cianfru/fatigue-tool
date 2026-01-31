@@ -1,5 +1,5 @@
 """
-OpenClimb Aviation Fatigue Prediction System
+Aerowake Aviation Fatigue Prediction System
 Version 6.0 - Polished Unified Architecture
 
 A biomathematical fatigue model for airline pilots based on:
