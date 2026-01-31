@@ -181,6 +181,103 @@ class ModelConfig:
             sleep_quality_params=SleepQualityParameters()
         )
 
+    @classmethod
+    def conservative_config(cls):
+        """
+        Stricter thresholds for safety-first analysis.
+        - Faster homeostatic pressure buildup (shorter tau_i)
+        - Slower recovery during sleep (longer tau_d)
+        - Higher baseline sleep need
+        - Stronger circadian penalties on sleep quality
+        - Tighter risk thresholds (scores shift up by ~5 points)
+        """
+        return cls(
+            easa_framework=EASAFatigueFramework(),
+            borbely_params=BorbelyParameters(
+                tau_i=16.0,
+                tau_d=4.8,
+                baseline_sleep_need_hours=8.5,
+                inertia_duration_minutes=40.0,
+                inertia_max_magnitude=0.35,
+            ),
+            risk_thresholds=RiskThresholds(thresholds={
+                'low': (80, 100),
+                'moderate': (70, 80),
+                'high': (60, 70),
+                'critical': (50, 60),
+                'extreme': (0, 50)
+            }),
+            adaptation_rates=AdaptationRates(
+                westward_hours_per_day=1.0,
+                eastward_hours_per_day=0.7,
+            ),
+            sleep_quality_params=SleepQualityParameters(
+                quality_hotel_typical=0.75,
+                quality_hotel_airport=0.70,
+                quality_crew_rest_facility=0.60,
+                max_circadian_quality_penalty=0.30,
+            )
+        )
+
+    @classmethod
+    def liberal_config(cls):
+        """
+        Relaxed thresholds for experienced-crew / low-risk route analysis.
+        - Slower homeostatic pressure buildup (longer tau_i)
+        - Faster recovery during sleep (shorter tau_d)
+        - Lower baseline sleep need
+        - Looser risk thresholds (scores shift down by ~5 points)
+        """
+        return cls(
+            easa_framework=EASAFatigueFramework(),
+            borbely_params=BorbelyParameters(
+                tau_i=20.0,
+                tau_d=3.8,
+                baseline_sleep_need_hours=7.5,
+                inertia_duration_minutes=20.0,
+                inertia_max_magnitude=0.25,
+            ),
+            risk_thresholds=RiskThresholds(thresholds={
+                'low': (70, 100),
+                'moderate': (60, 70),
+                'high': (50, 60),
+                'critical': (40, 50),
+                'extreme': (0, 40)
+            }),
+            adaptation_rates=AdaptationRates(
+                westward_hours_per_day=1.8,
+                eastward_hours_per_day=1.2,
+            ),
+            sleep_quality_params=SleepQualityParameters(
+                quality_hotel_typical=0.85,
+                quality_hotel_airport=0.80,
+                quality_crew_rest_facility=0.70,
+            )
+        )
+
+    @classmethod
+    def research_config(cls):
+        """
+        Textbook Borbély two-process parameters for academic comparison.
+        Uses values from Jewett & Kronauer (1999) and Van Dongen (2003)
+        without operational adjustments.
+        """
+        return cls(
+            easa_framework=EASAFatigueFramework(),
+            borbely_params=BorbelyParameters(
+                tau_i=18.2,
+                tau_d=4.2,
+                circadian_amplitude=0.30,
+                weight_circadian=0.5,
+                weight_homeostatic=0.5,
+                interaction_exponent=1.0,
+                baseline_sleep_need_hours=8.0,
+            ),
+            risk_thresholds=RiskThresholds(),
+            adaptation_rates=AdaptationRates(),
+            sleep_quality_params=SleepQualityParameters()
+        )
+
 
 # ============================================================================
 # SLEEP QUALITY ANALYSIS
