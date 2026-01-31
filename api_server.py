@@ -81,11 +81,6 @@ class DutySegmentResponse(BaseModel):
     departure_time_local: str  # Home base local time in HH:mm format
     arrival_time_local: str    # Home base local time in HH:mm format
     block_hours: float
-    # Pre-computed positioning for chronogram (avoids browser timezone issues)
-    departure_day: Optional[int] = None   # Day of month (1-31) in home timezone
-    departure_hour: Optional[float] = None  # Hour (0-24) in home timezone
-    arrival_day: Optional[int] = None     # Day of month (1-31) in home timezone
-    arrival_hour: Optional[float] = None    # Hour (0-24) in home timezone
 
 
 class SleepBlockResponse(BaseModel):
@@ -98,11 +93,6 @@ class SleepBlockResponse(BaseModel):
     duration_hours: float
     effective_hours: float
     quality_factor: float
-    # Pre-computed positioning for chronogram (avoids browser timezone issues)
-    sleep_start_day: Optional[int] = None   # Day of month (1-31) in home timezone
-    sleep_start_hour: Optional[float] = None  # Hour (0-24) in home timezone
-    sleep_end_day: Optional[int] = None     # Day of month (1-31) in home timezone
-    sleep_end_hour: Optional[float] = None    # Hour (0-24) in home timezone
 
 
 class SleepQualityResponse(BaseModel):
@@ -119,11 +109,6 @@ class SleepQualityResponse(BaseModel):
     sleep_end_time: Optional[str] = None    # Primary sleep end (HH:mm)
     sleep_start_iso: Optional[str] = None   # Primary sleep start (ISO format with date for chronogram)
     sleep_end_iso: Optional[str] = None     # Primary sleep end (ISO format with date for chronogram)
-    # Pre-computed positioning for chronogram (avoids browser timezone issues)
-    sleep_start_day: Optional[int] = None   # Day of month (1-31) in home timezone
-    sleep_start_hour: Optional[float] = None  # Hour (0-24) in home timezone
-    sleep_end_day: Optional[int] = None     # Day of month (1-31) in home timezone
-    sleep_end_hour: Optional[float] = None    # Hour (0-24) in home timezone
 
 
 class DutyResponse(BaseModel):
@@ -131,14 +116,6 @@ class DutyResponse(BaseModel):
     date: str
     report_time_utc: str
     release_time_utc: str
-    # Local time strings for display (HH:MM format)
-    report_time_local: Optional[str] = None
-    release_time_local: Optional[str] = None
-    # Pre-computed positioning for chronogram (avoids browser timezone issues)
-    report_day: Optional[int] = None      # Day of month (1-31) in home timezone
-    report_hour: Optional[float] = None   # Hour (0-24) in home timezone
-    release_day: Optional[int] = None     # Day of month (1-31) in home timezone
-    release_hour: Optional[float] = None  # Hour (0-24) in home timezone
     duty_hours: float
     sectors: int
     segments: List[DutySegmentResponse]
@@ -384,17 +361,8 @@ async def analyze_roster(
                     arrival_time=arr_utc.isoformat(),
                     departure_time_local=dep_local.strftime("%H:%M"),
                     arrival_time_local=arr_local.strftime("%H:%M"),
-                    block_hours=seg.block_time_hours,
-                    # Pre-computed positioning for chronogram
-                    departure_day=dep_local.day,
-                    departure_hour=dep_local.hour + dep_local.minute / 60.0,
-                    arrival_day=arr_local.day,
-                    arrival_hour=arr_local.hour + arr_local.minute / 60.0
+                    block_hours=seg.block_time_hours
                 ))
-            
-            # Convert report/release to home timezone for chronogram positioning
-            report_local = duty.report_time_utc.astimezone(home_tz)
-            release_local = duty.release_time_utc.astimezone(home_tz)
             
             # Check for time validation warnings
             time_warnings = []
@@ -410,14 +378,6 @@ async def analyze_roster(
                 date=duty_timeline.duty_date.strftime("%Y-%m-%d"),
                 report_time_utc=duty.report_time_utc.isoformat(),
                 release_time_utc=duty.release_time_utc.isoformat(),
-                # Local time strings for display
-                report_time_local=report_local.strftime("%H:%M"),
-                release_time_local=release_local.strftime("%H:%M"),
-                # Pre-computed positioning for chronogram
-                report_day=report_local.day,
-                report_hour=report_local.hour + report_local.minute / 60.0,
-                release_day=release_local.day,
-                release_hour=release_local.hour + release_local.minute / 60.0,
                 duty_hours=duty.duty_hours,
                 sectors=len(duty.segments),
                 segments=segments,
