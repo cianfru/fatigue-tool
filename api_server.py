@@ -141,6 +141,9 @@ class DutyResponse(BaseModel):
     date: str
     report_time_utc: str
     release_time_utc: str
+    # Local time strings for direct display (HH:MM in home timezone)
+    report_time_local: Optional[str] = None
+    release_time_local: Optional[str] = None
     duty_hours: float
     sectors: int
     segments: List[DutySegmentResponse]
@@ -282,6 +285,10 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
             block_hours=seg.block_time_hours
         ))
 
+    # Convert report/release to home timezone for display
+    report_local = duty.report_time_utc.astimezone(home_tz)
+    release_local = duty.release_time_utc.astimezone(home_tz)
+
     # Time validation warnings
     time_warnings = []
     if duty.report_time_utc >= duty.release_time_utc:
@@ -326,6 +333,8 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
         date=duty_timeline.duty_date.strftime("%Y-%m-%d"),
         report_time_utc=duty.report_time_utc.isoformat(),
         release_time_utc=duty.release_time_utc.isoformat(),
+        report_time_local=report_local.strftime("%H:%M"),
+        release_time_local=release_local.strftime("%H:%M"),
         duty_hours=duty.duty_hours,
         sectors=len(duty.segments),
         segments=segments,

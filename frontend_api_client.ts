@@ -29,6 +29,8 @@ export interface Duty {
   date: string;
   report_time_utc: string;
   release_time_utc: string;
+  report_time_local: string | null;   // HH:mm in home-base timezone
+  release_time_local: string | null;  // HH:mm in home-base timezone
   duty_hours: number;
   sectors: number;
   segments: DutySegment[];
