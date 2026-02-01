@@ -95,8 +95,27 @@ class SleepBlockResponse(BaseModel):
     quality_factor: float
 
 
+class QualityFactorsResponse(BaseModel):
+    """Breakdown of multiplicative quality factors applied to raw sleep duration.
+    Each factor is a multiplier around 1.0 (>1 = boost, <1 = penalty).
+    effective_sleep = duration * product(all factors), clamped to [0.65, 1.0]."""
+    base_efficiency: float        # Location-based: home 0.90, hotel 0.85, crew_rest 0.70
+    wocl_boost: float             # WOCL-aligned sleep consolidation boost (1.0-1.15)
+    late_onset_penalty: float     # Penalty for sleep starting after 01:00 (0.93-1.0)
+    recovery_boost: float         # Post-duty homeostatic drive boost (1.0-1.10)
+    time_pressure_factor: float   # Proximity to next duty (0.88-1.03)
+    insufficient_penalty: float   # Penalty for <6h sleep (0.75-1.0)
+
+
+class ReferenceResponse(BaseModel):
+    """Peer-reviewed scientific reference supporting the calculation"""
+    key: str     # e.g. 'roach_2012'
+    short: str   # e.g. 'Roach et al. (2012)'
+    full: str    # Full citation
+
+
 class SleepQualityResponse(BaseModel):
-    """Sleep quality analysis from enhanced strategic estimator"""
+    """Sleep quality analysis with scientific methodology transparency"""
     total_sleep_hours: float
     effective_sleep_hours: float
     sleep_efficiency: float
@@ -109,6 +128,12 @@ class SleepQualityResponse(BaseModel):
     sleep_end_time: Optional[str] = None    # Primary sleep end (HH:mm)
     sleep_start_iso: Optional[str] = None   # Primary sleep start (ISO format with date for chronogram)
     sleep_end_iso: Optional[str] = None     # Primary sleep end (ISO format with date for chronogram)
+
+    # Scientific methodology (new — surfaces calculation transparency)
+    explanation: Optional[str] = None              # Human-readable strategy description
+    confidence_basis: Optional[str] = None         # Why confidence is at this level
+    quality_factors: Optional[QualityFactorsResponse] = None  # Factor breakdown
+    references: List[ReferenceResponse] = []       # Supporting literature
 
 
 class DutyResponse(BaseModel):
@@ -235,6 +260,118 @@ def classify_risk(performance: Optional[float]) -> str:
         return "extreme"
 
 
+def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
+    """Shared serialization for a single duty — used by both POST and GET endpoints."""
+    import pytz
+
+    risk = classify_risk(duty_timeline.landing_performance)
+    home_tz = pytz.timezone(duty.home_base_timezone)
+
+    # Build segments
+    segments = []
+    for seg in duty.segments:
+        dep_utc = seg.scheduled_departure_utc
+        arr_utc = seg.scheduled_arrival_utc
+        dep_local = dep_utc.astimezone(home_tz)
+        arr_local = arr_utc.astimezone(home_tz)
+        segments.append(DutySegmentResponse(
+            flight_number=seg.flight_number,
+            departure=seg.departure_airport.code,
+            arrival=seg.arrival_airport.code,
+            departure_time=dep_utc.isoformat(),
+            arrival_time=arr_utc.isoformat(),
+            departure_time_local=dep_local.strftime("%H:%M"),
+            arrival_time_local=arr_local.strftime("%H:%M"),
+            block_hours=seg.block_time_hours
+        ))
+
+    # Convert report/release to home timezone for display
+    report_local = duty.report_time_utc.astimezone(home_tz)
+    release_local = duty.release_time_utc.astimezone(home_tz)
+
+    # Time validation warnings
+    time_warnings = []
+    if duty.report_time_utc >= duty.release_time_utc:
+        time_warnings.append("Invalid duty: report time >= release time")
+    if duty.duty_hours > 24:
+        time_warnings.append(f"Unusual duty length: {duty.duty_hours:.1f} hours")
+    if duty.duty_hours < 0.5:
+        time_warnings.append(f"Very short duty: {duty.duty_hours:.1f} hours")
+
+    # Sleep quality (with scientific methodology)
+    sleep_quality = None
+    if duty_timeline.sleep_quality_data:
+        sqd = duty_timeline.sleep_quality_data
+        first_block = sqd.get('sleep_blocks', [{}])[0] if sqd.get('sleep_blocks') else {}
+        sleep_quality = SleepQualityResponse(
+            total_sleep_hours=sqd.get('total_sleep_hours', 0.0),
+            effective_sleep_hours=sqd.get('effective_sleep_hours', 0.0),
+            sleep_efficiency=sqd.get('sleep_efficiency', 0.0),
+            wocl_overlap_hours=sqd.get('wocl_overlap_hours', 0.0),
+            sleep_strategy=sqd.get('strategy_type', 'unknown'),
+            confidence=sqd.get('confidence', 0.0),
+            warnings=sqd.get('warnings', []),
+            sleep_blocks=sqd.get('sleep_blocks', []),
+            sleep_start_time=sqd.get('sleep_start_time'),
+            sleep_end_time=sqd.get('sleep_end_time'),
+            # Scientific methodology
+            explanation=sqd.get('explanation'),
+            confidence_basis=sqd.get('confidence_basis'),
+            quality_factors=sqd.get('quality_factors'),
+            references=sqd.get('references', []),
+            # Chronogram positioning from first sleep block
+            sleep_start_iso=first_block.get('sleep_start_iso'),
+            sleep_end_iso=first_block.get('sleep_end_iso'),
+            sleep_start_day=first_block.get('sleep_start_day'),
+            sleep_start_hour=first_block.get('sleep_start_hour'),
+            sleep_end_day=first_block.get('sleep_end_day'),
+            sleep_end_hour=first_block.get('sleep_end_hour'),
+        )
+
+    return DutyResponse(
+        duty_id=duty_timeline.duty_id,
+        date=duty_timeline.duty_date.strftime("%Y-%m-%d"),
+        report_time_utc=duty.report_time_utc.isoformat(),
+        release_time_utc=duty.release_time_utc.isoformat(),
+        report_time_local=report_local.strftime("%H:%M"),
+        release_time_local=release_local.strftime("%H:%M"),
+        duty_hours=duty.duty_hours,
+        sectors=len(duty.segments),
+        segments=segments,
+        min_performance=duty_timeline.min_performance,
+        avg_performance=duty_timeline.average_performance,
+        landing_performance=duty_timeline.landing_performance,
+        sleep_debt=duty_timeline.cumulative_sleep_debt,
+        wocl_hours=duty_timeline.wocl_encroachment_hours,
+        prior_sleep=duty_timeline.prior_sleep_hours,
+        risk_level=risk,
+        is_reportable=(risk in ["critical", "extreme"]),
+        pinch_events=len(duty_timeline.pinch_events),
+        max_fdp_hours=duty.max_fdp_hours,
+        extended_fdp_hours=duty.extended_fdp_hours,
+        used_discretion=duty.used_discretion,
+        time_validation_warnings=time_warnings,
+        sleep_quality=sleep_quality,
+    )
+
+
+def _build_rest_days_sleep(sleep_strategies: dict) -> List[RestDaySleepResponse]:
+    """Extract rest-day sleep entries from sleep_strategies dict."""
+    rest_days = []
+    for key, data in sleep_strategies.items():
+        if key.startswith('rest_'):
+            rest_days.append(RestDaySleepResponse(
+                date=key.replace('rest_', ''),
+                sleep_blocks=data.get('sleep_blocks', []),
+                total_sleep_hours=data.get('total_sleep_hours', 0.0),
+                effective_sleep_hours=data.get('effective_sleep_hours', 0.0),
+                sleep_efficiency=data.get('sleep_efficiency', 0.0),
+                strategy_type=data.get('strategy_type', 'recovery'),
+                confidence=data.get('confidence', 0.0),
+            ))
+    return rest_days
+
+
 # ============================================================================
 # ENDPOINTS
 # ============================================================================
@@ -328,125 +465,20 @@ async def analyze_roster(
         # Generate analysis ID
         analysis_id = f"{pilot_id}_{month}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         
-        # Store for later retrieval
-        analysis_store[analysis_id] = (monthly_analysis, roster)
+        # Store for later retrieval (include sleep_strategies for GET endpoint)
+        analysis_store[analysis_id] = (monthly_analysis, roster, model.sleep_strategies)
         
-        # Build response
+        # Build response using shared helper
         duties_response = []
-        
         for duty_timeline in monthly_analysis.duty_timelines:
             duty_idx = roster.get_duty_index(duty_timeline.duty_id)
             if duty_idx is None:
                 continue
-            duty = roster.duties[duty_idx]
-            
-            # Classify risk
-            risk = classify_risk(duty_timeline.landing_performance)
-            
-            # Get home base timezone for local time conversion
-            import pytz
-            home_tz = pytz.timezone(duty.home_base_timezone)
-            
-            # Build segments
-            segments = []
-            for seg in duty.segments:
-                # Convert UTC times to home base local time
-                dep_utc = seg.scheduled_departure_utc
-                arr_utc = seg.scheduled_arrival_utc
-                dep_local = dep_utc.astimezone(home_tz)
-                arr_local = arr_utc.astimezone(home_tz)
-                
-                segments.append(DutySegmentResponse(
-                    flight_number=seg.flight_number,
-                    departure=seg.departure_airport.code,
-                    arrival=seg.arrival_airport.code,
-                    departure_time=dep_utc.isoformat(),
-                    arrival_time=arr_utc.isoformat(),
-                    departure_time_local=dep_local.strftime("%H:%M"),
-                    arrival_time_local=arr_local.strftime("%H:%M"),
-                    block_hours=seg.block_time_hours
-                ))
-            
-            # Check for time validation warnings
-            time_warnings = []
-            if duty.report_time_utc >= duty.release_time_utc:
-                time_warnings.append("Invalid duty: report time >= release time")
-            if duty.duty_hours > 24:
-                time_warnings.append(f"Unusual duty length: {duty.duty_hours:.1f} hours")
-            if duty.duty_hours < 0.5:
-                time_warnings.append(f"Very short duty: {duty.duty_hours:.1f} hours")
-            
-            # Convert report/release to home timezone for display
-            report_local = duty.report_time_utc.astimezone(home_tz)
-            release_local = duty.release_time_utc.astimezone(home_tz)
-            
-            duties_response.append(DutyResponse(
-                duty_id=duty_timeline.duty_id,
-                date=duty_timeline.duty_date.strftime("%Y-%m-%d"),
-                report_time_utc=duty.report_time_utc.isoformat(),
-                release_time_utc=duty.release_time_utc.isoformat(),
-                report_time_local=report_local.strftime("%H:%M"),
-                release_time_local=release_local.strftime("%H:%M"),
-                duty_hours=duty.duty_hours,
-                sectors=len(duty.segments),
-                segments=segments,
-                min_performance=duty_timeline.min_performance,
-                avg_performance=duty_timeline.average_performance,
-                landing_performance=duty_timeline.landing_performance,
-                sleep_debt=duty_timeline.cumulative_sleep_debt,
-                wocl_hours=duty_timeline.wocl_encroachment_hours,
-                prior_sleep=duty_timeline.prior_sleep_hours,
-                risk_level=risk,
-                is_reportable=(risk in ["critical", "extreme"]),
-                pinch_events=len(duty_timeline.pinch_events),
-                max_fdp_hours=duty.max_fdp_hours,
-                extended_fdp_hours=duty.extended_fdp_hours,
-                used_discretion=duty.used_discretion,
-                time_validation_warnings=time_warnings,
-                sleep_quality=SleepQualityResponse(
-                    total_sleep_hours=duty_timeline.sleep_quality_data.get('total_sleep_hours', 0.0),
-                    effective_sleep_hours=duty_timeline.sleep_quality_data.get('effective_sleep_hours', 0.0),
-                    sleep_efficiency=duty_timeline.sleep_quality_data.get('sleep_efficiency', 0.0),
-                    wocl_overlap_hours=duty_timeline.sleep_quality_data.get('wocl_overlap_hours', 0.0),
-                    sleep_strategy=duty_timeline.sleep_quality_data.get('strategy_type', 'unknown'),
-                    confidence=duty_timeline.sleep_quality_data.get('confidence', 0.0),
-                    warnings=duty_timeline.sleep_quality_data.get('warnings', []),
-                    sleep_blocks=duty_timeline.sleep_quality_data.get('sleep_blocks', []),
-                    sleep_start_time=duty_timeline.sleep_quality_data.get('sleep_start_time'),
-                    sleep_end_time=duty_timeline.sleep_quality_data.get('sleep_end_time'),
-                    # Extract top-level fields from FIRST sleep block for frontend Chronogram positioning
-                    sleep_start_iso=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[0].get('sleep_start_iso') 
-                                     if duty_timeline.sleep_quality_data.get('sleep_blocks') else None),
-                    sleep_end_iso=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[0].get('sleep_end_iso') 
-                                   if duty_timeline.sleep_quality_data.get('sleep_blocks') else None),
-                    # Pre-computed day/hour for timezone-safe chronogram positioning
-                    sleep_start_day=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[0].get('sleep_start_day') 
-                                     if duty_timeline.sleep_quality_data.get('sleep_blocks') else None),
-                    sleep_start_hour=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[0].get('sleep_start_hour') 
-                                      if duty_timeline.sleep_quality_data.get('sleep_blocks') else None),
-                    sleep_end_day=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[0].get('sleep_end_day') 
-                                   if duty_timeline.sleep_quality_data.get('sleep_blocks') else None),
-                    sleep_end_hour=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[0].get('sleep_end_hour') 
-                                    if duty_timeline.sleep_quality_data.get('sleep_blocks') else None)
-                ) if duty_timeline.sleep_quality_data else None
-            ))
-        
-        # Extract rest days sleep from sleep_strategies
-        rest_days_sleep = []
-        for key, strategy_data in model.sleep_strategies.items():
-            if key.startswith('rest_'):
-                # Format: rest_YYYY-MM-DD
-                rest_date = key.replace('rest_', '')
-                rest_day_response = RestDaySleepResponse(
-                    date=rest_date,
-                    sleep_blocks=strategy_data.get('sleep_blocks', []),
-                    total_sleep_hours=strategy_data.get('total_sleep_hours', 0.0),
-                    effective_sleep_hours=strategy_data.get('effective_sleep_hours', 0.0),
-                    sleep_efficiency=strategy_data.get('sleep_efficiency', 0.0),
-                    strategy_type=strategy_data.get('strategy_type', 'recovery'),
-                    confidence=strategy_data.get('confidence', 0.0)
-                )
-                rest_days_sleep.append(rest_day_response)
+            duties_response.append(
+                _build_duty_response(duty_timeline, roster.duties[duty_idx], roster)
+            )
+
+        rest_days_sleep = _build_rest_days_sleep(model.sleep_strategies)
         
         return AnalysisResponse(
             analysis_id=analysis_id,
@@ -478,81 +510,46 @@ async def analyze_roster(
 @app.get("/api/analysis/{analysis_id}")
 async def get_analysis(analysis_id: str):
     """Retrieve stored analysis by ID"""
-    
+
     if analysis_id not in analysis_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
-    monthly_analysis, roster = analysis_store[analysis_id]
-    
-    # Build duties response
+
+    monthly_analysis, roster, sleep_strategies = analysis_store[analysis_id]
+
+    # Build duties response using shared helper
     duties_response = []
     for duty_timeline in monthly_analysis.duty_timelines:
         duty_idx = roster.get_duty_index(duty_timeline.duty_id)
         if duty_idx is None:
             continue
-        duty = roster.duties[duty_idx]
-        risk = classify_risk(duty_timeline.landing_performance)
-        
-        # Get home base timezone for local time conversion
-        import pytz
-        home_tz = pytz.timezone(duty.home_base_timezone)
-        
-        segments = []
-        for seg in duty.segments:
-            # Convert UTC times to home base local time
-            dep_utc = seg.scheduled_departure_utc
-            arr_utc = seg.scheduled_arrival_utc
-            dep_local = dep_utc.astimezone(home_tz)
-            arr_local = arr_utc.astimezone(home_tz)
-            
-            segments.append({
-                "flight_number": seg.flight_number,
-                "departure": seg.departure_airport.code,
-                "arrival": seg.arrival_airport.code,
-                "departure_time": dep_utc.isoformat(),
-                "arrival_time": arr_utc.isoformat(),
-                "departure_time_local": dep_local.strftime("%H:%M"),
-                "arrival_time_local": arr_local.strftime("%H:%M"),
-                "block_hours": seg.block_time_hours
-            })
-        
-        duties_response.append({
-            "duty_id": duty_timeline.duty_id,
-            "date": duty_timeline.duty_date.strftime("%Y-%m-%d"),
-            "report_time_utc": duty.report_time_utc.isoformat(),
-            "release_time_utc": duty.release_time_utc.isoformat(),
-            "duty_hours": duty.duty_hours,
-            "sectors": len(duty.segments),
-            "segments": segments,
-            "min_performance": duty_timeline.min_performance,
-            "avg_performance": duty_timeline.average_performance,
-            "landing_performance": duty_timeline.landing_performance,
-            "sleep_debt": duty_timeline.cumulative_sleep_debt,
-            "wocl_hours": duty_timeline.wocl_encroachment_hours,
-            "prior_sleep": duty_timeline.prior_sleep_hours,
-            "risk_level": risk,
-            "is_reportable": risk in ["critical", "extreme"],
-            "pinch_events": len(duty_timeline.pinch_events)
-        })
-    
-    return {
-        "analysis_id": analysis_id,
-        "roster_id": roster.roster_id,
-        "pilot_id": roster.pilot_id,
-        "month": roster.month,
-        "total_duties": roster.total_duties,
-        "total_sectors": roster.total_sectors,
-        "total_duty_hours": roster.total_duty_hours,
-        "total_block_hours": roster.total_block_hours,
-        "high_risk_duties": monthly_analysis.high_risk_duties,
-        "critical_risk_duties": monthly_analysis.critical_risk_duties,
-        "total_pinch_events": monthly_analysis.total_pinch_events,
-        "avg_sleep_per_night": monthly_analysis.average_sleep_per_night,
-        "max_sleep_debt": monthly_analysis.max_sleep_debt,
-        "worst_duty_id": monthly_analysis.lowest_performance_duty,
-        "worst_performance": monthly_analysis.lowest_performance_value,
-        "duties": duties_response
-    }
+        duties_response.append(
+            _build_duty_response(duty_timeline, roster.duties[duty_idx], roster)
+        )
+
+    rest_days_sleep = _build_rest_days_sleep(sleep_strategies)
+
+    return AnalysisResponse(
+        analysis_id=analysis_id,
+        roster_id=roster.roster_id,
+        pilot_id=roster.pilot_id,
+        pilot_name=roster.pilot_name,
+        pilot_base=roster.pilot_base,
+        pilot_aircraft=roster.pilot_aircraft,
+        month=roster.month,
+        total_duties=roster.total_duties,
+        total_sectors=roster.total_sectors,
+        total_duty_hours=roster.total_duty_hours,
+        total_block_hours=roster.total_block_hours,
+        high_risk_duties=monthly_analysis.high_risk_duties,
+        critical_risk_duties=monthly_analysis.critical_risk_duties,
+        total_pinch_events=monthly_analysis.total_pinch_events,
+        avg_sleep_per_night=monthly_analysis.average_sleep_per_night,
+        max_sleep_debt=monthly_analysis.max_sleep_debt,
+        worst_duty_id=monthly_analysis.lowest_performance_duty,
+        worst_performance=monthly_analysis.lowest_performance_value,
+        duties=duties_response,
+        rest_days_sleep=rest_days_sleep
+    )
 
 
 @app.post("/api/visualize/chronogram")
@@ -565,8 +562,8 @@ async def generate_chronogram(request: ChronogramRequest):
     if request.analysis_id not in analysis_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
     
-    monthly_analysis, roster = analysis_store[request.analysis_id]
-    
+    monthly_analysis, roster, _sleep_strategies = analysis_store[request.analysis_id]
+
     try:
         chrono = FatigueChronogram(theme=request.theme)
         
@@ -600,8 +597,8 @@ async def generate_calendar(request: CalendarRequest):
     if request.analysis_id not in analysis_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
     
-    monthly_analysis, roster = analysis_store[request.analysis_id]
-    
+    monthly_analysis, roster, _sleep_strategies = analysis_store[request.analysis_id]
+
     try:
         cal = AviationCalendar(theme=request.theme)
         
@@ -632,8 +629,8 @@ async def get_duty_detail(analysis_id: str, duty_id: str):
     if analysis_id not in analysis_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
     
-    monthly_analysis, roster = analysis_store[analysis_id]
-    
+    monthly_analysis, roster, _sleep_strategies = analysis_store[analysis_id]
+
     # Find duty
     duty_timeline = None
     for dt in monthly_analysis.duty_timelines:
@@ -688,8 +685,8 @@ async def get_statistics(analysis_id: str):
     if analysis_id not in analysis_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
     
-    monthly_analysis, roster = analysis_store[analysis_id]
-    
+    monthly_analysis, roster, _sleep_strategies = analysis_store[analysis_id]
+
     # Calculate additional statistics
     all_perfs = [dt.landing_performance for dt in monthly_analysis.duty_timelines 
                  if dt.landing_performance is not None]

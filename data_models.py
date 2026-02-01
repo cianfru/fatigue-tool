@@ -413,7 +413,8 @@ class SleepBlock:
         # Base alignment bonus
         alignment_bonus = 1.0 if self.circadian_misalignment_hours < 2 else 0.85
         
-        # Inflight rest penalty (NASA studies show ~70% effectiveness)
+        # Inflight rest penalty: 70% sleep efficiency measured via PSG
+        # Reference: Signal et al. (2013) Sleep 36(1):109-118
         inflight_penalty = 0.7 if self.is_inflight_rest else 1.0
         
         return self.effective_sleep_hours * alignment_bonus * inflight_penalty
