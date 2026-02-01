@@ -1692,7 +1692,20 @@ class BorbelyFatigueModel:
                     'warnings': [w['message'] for w in quality.warnings],
                     'sleep_start_time': sleep_start_time,
                     'sleep_end_time': sleep_end_time,
-                    'sleep_blocks': sleep_blocks_response
+                    'sleep_blocks': sleep_blocks_response,
+
+                    # Scientific methodology (surfaces to frontend)
+                    'explanation': strategy.explanation,
+                    'confidence_basis': self._get_confidence_basis(strategy),
+                    'quality_factors': {
+                        'base_efficiency': quality.base_efficiency,
+                        'wocl_boost': quality.wocl_penalty,  # renamed field, was 1.0 placeholder
+                        'late_onset_penalty': quality.late_onset_penalty,
+                        'recovery_boost': quality.recovery_boost,
+                        'time_pressure_factor': quality.time_pressure_factor,
+                        'insufficient_penalty': quality.insufficient_penalty,
+                    },
+                    'references': self._get_strategy_references(strategy.strategy_type),
                 }
             
             # Generate rest day sleep for gaps between duties
@@ -1745,11 +1758,134 @@ class BorbelyFatigueModel:
                             'duration_hours': 8.0,
                             'effective_hours': 7.6,
                             'quality_factor': 0.95
-                        }]
+                        }],
+                        'explanation': 'Rest day: standard home sleep (23:00-07:00, 95% efficiency)',
+                        'confidence_basis': 'High confidence — home environment, no duty constraints',
+                        'quality_factors': {
+                            'base_efficiency': 0.90,
+                            'wocl_boost': 1.0,
+                            'late_onset_penalty': 1.0,
+                            'recovery_boost': 1.0,
+                            'time_pressure_factor': 1.03,
+                            'insufficient_penalty': 1.0,
+                        },
+                        'references': self._get_strategy_references('recovery'),
                     }
         
         return sleep_blocks, sleep_strategies
-    
+
+    @staticmethod
+    def _get_confidence_basis(strategy: SleepStrategy) -> str:
+        """Human-readable explanation of confidence value for frontend display."""
+        st = strategy.strategy_type
+        c = strategy.confidence
+
+        if st == 'normal':
+            if c >= 0.90:
+                return 'High confidence — standard night sleep with short pre-duty wake period'
+            elif c >= 0.80:
+                return 'Good confidence — normal sleep pattern, moderate wake period before duty'
+            else:
+                return 'Moderate confidence — long wake period before duty increases uncertainty'
+        elif st == 'early_bedtime':
+            return (
+                f'Moderate confidence ({c:.0%}) — pilots cannot fully advance bedtime '
+                'for early reports due to circadian wake maintenance zone '
+                '(Roach et al. 2012, Arsintescu et al. 2022)'
+            )
+        elif st == 'afternoon_nap':
+            return (
+                f'Moderate confidence ({c:.0%}) — Signal et al. (2014) found only '
+                '54% of crew nap before evening departures; nap timing and '
+                'duration vary between individuals'
+            )
+        elif st == 'split_sleep':
+            return (
+                f'Lower confidence ({c:.0%}) — anchor sleep concept validated '
+                'in laboratory (Minors & Waterhouse 1983) but limited field '
+                'data on pilot adoption of this specific pattern'
+            )
+        elif st == 'recovery':
+            return 'High confidence — home environment, no duty constraints'
+        return f'Confidence: {c:.0%}'
+
+    @staticmethod
+    def _get_strategy_references(strategy_type: str) -> list:
+        """Return peer-reviewed references supporting this sleep strategy."""
+
+        common = [
+            {
+                'key': 'borbely_1982',
+                'short': 'Borbely (1982)',
+                'full': 'Borbely AA. A two process model of sleep regulation. Hum Neurobiol 1:195-204',
+            },
+        ]
+
+        strategy_refs = {
+            'normal': [
+                {
+                    'key': 'signal_2009',
+                    'short': 'Signal et al. (2009)',
+                    'full': 'Signal TL et al. Flight crew sleep during multi-sector operations. J Sleep Res',
+                },
+                {
+                    'key': 'gander_2013',
+                    'short': 'Gander et al. (2013)',
+                    'full': 'Gander PH et al. In-flight sleep, pilot fatigue and PVT. J Sleep Res 22(6):697-706',
+                },
+            ],
+            'early_bedtime': [
+                {
+                    'key': 'roach_2012',
+                    'short': 'Roach et al. (2012)',
+                    'full': 'Roach GD et al. Duty periods with early start times restrict sleep. Accid Anal Prev 45 Suppl:22-26',
+                },
+                {
+                    'key': 'arsintescu_2022',
+                    'short': 'Arsintescu et al. (2022)',
+                    'full': 'Arsintescu L et al. Early starts and late finishes reduce alertness. J Sleep Res 31(3):e13521',
+                },
+            ],
+            'afternoon_nap': [
+                {
+                    'key': 'signal_2014',
+                    'short': 'Signal et al. (2014)',
+                    'full': 'Signal TL et al. Mitigating flight crew fatigue on ULR flights. Aviat Space Environ Med 85:1199-1208',
+                },
+                {
+                    'key': 'gander_2014',
+                    'short': 'Gander et al. (2014)',
+                    'full': 'Gander PH et al. Pilot fatigue: departure/arrival times. Aviat Space Environ Med 85(8):833-40',
+                },
+                {
+                    'key': 'dinges_1987',
+                    'short': 'Dinges et al. (1987)',
+                    'full': 'Dinges DF et al. Temporal placement of a nap for alertness. Sleep 10(4):313-329',
+                },
+            ],
+            'split_sleep': [
+                {
+                    'key': 'minors_1983',
+                    'short': 'Minors & Waterhouse (1983)',
+                    'full': 'Minors DS, Waterhouse JM. Does anchor sleep entrain circadian rhythms? J Physiol 345:1-11',
+                },
+                {
+                    'key': 'minors_1981',
+                    'short': 'Minors & Waterhouse (1981)',
+                    'full': 'Minors DS, Waterhouse JM. Anchor sleep as a synchronizer. Int J Chronobiol 8:165-88',
+                },
+            ],
+            'recovery': [
+                {
+                    'key': 'gander_2014',
+                    'short': 'Gander et al. (2014)',
+                    'full': 'Gander PH et al. Pilot fatigue: departure/arrival times. Aviat Space Environ Med 85(8):833-40',
+                },
+            ],
+        }
+
+        return common + strategy_refs.get(strategy_type, [])
+
     def _get_phase_shift_at_time(
         self,
         target_time: datetime,

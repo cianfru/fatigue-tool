@@ -95,8 +95,27 @@ class SleepBlockResponse(BaseModel):
     quality_factor: float
 
 
+class QualityFactorsResponse(BaseModel):
+    """Breakdown of multiplicative quality factors applied to raw sleep duration.
+    Each factor is a multiplier around 1.0 (>1 = boost, <1 = penalty).
+    effective_sleep = duration * product(all factors), clamped to [0.65, 1.0]."""
+    base_efficiency: float        # Location-based: home 0.90, hotel 0.85, crew_rest 0.70
+    wocl_boost: float             # WOCL-aligned sleep consolidation boost (1.0-1.15)
+    late_onset_penalty: float     # Penalty for sleep starting after 01:00 (0.93-1.0)
+    recovery_boost: float         # Post-duty homeostatic drive boost (1.0-1.10)
+    time_pressure_factor: float   # Proximity to next duty (0.88-1.03)
+    insufficient_penalty: float   # Penalty for <6h sleep (0.75-1.0)
+
+
+class ReferenceResponse(BaseModel):
+    """Peer-reviewed scientific reference supporting the calculation"""
+    key: str     # e.g. 'roach_2012'
+    short: str   # e.g. 'Roach et al. (2012)'
+    full: str    # Full citation
+
+
 class SleepQualityResponse(BaseModel):
-    """Sleep quality analysis from enhanced strategic estimator"""
+    """Sleep quality analysis with scientific methodology transparency"""
     total_sleep_hours: float
     effective_sleep_hours: float
     sleep_efficiency: float
@@ -109,6 +128,12 @@ class SleepQualityResponse(BaseModel):
     sleep_end_time: Optional[str] = None    # Primary sleep end (HH:mm)
     sleep_start_iso: Optional[str] = None   # Primary sleep start (ISO format with date for chronogram)
     sleep_end_iso: Optional[str] = None     # Primary sleep end (ISO format with date for chronogram)
+
+    # Scientific methodology (new — surfaces calculation transparency)
+    explanation: Optional[str] = None              # Human-readable strategy description
+    confidence_basis: Optional[str] = None         # Why confidence is at this level
+    quality_factors: Optional[QualityFactorsResponse] = None  # Factor breakdown
+    references: List[ReferenceResponse] = []       # Supporting literature
 
 
 class DutyResponse(BaseModel):
@@ -405,6 +430,11 @@ async def analyze_roster(
                     sleep_blocks=duty_timeline.sleep_quality_data.get('sleep_blocks', []),
                     sleep_start_time=duty_timeline.sleep_quality_data.get('sleep_start_time'),
                     sleep_end_time=duty_timeline.sleep_quality_data.get('sleep_end_time'),
+                    # Scientific methodology
+                    explanation=duty_timeline.sleep_quality_data.get('explanation'),
+                    confidence_basis=duty_timeline.sleep_quality_data.get('confidence_basis'),
+                    quality_factors=duty_timeline.sleep_quality_data.get('quality_factors'),
+                    references=duty_timeline.sleep_quality_data.get('references', []),
                     # Extract top-level fields from FIRST sleep block for frontend Chronogram positioning
                     sleep_start_iso=(duty_timeline.sleep_quality_data.get('sleep_blocks', [{}])[0].get('sleep_start_iso') 
                                      if duty_timeline.sleep_quality_data.get('sleep_blocks') else None),
