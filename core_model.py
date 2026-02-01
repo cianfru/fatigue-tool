@@ -1445,11 +1445,11 @@ class BorbelyFatigueModel:
         """
         pinch_events = []
         
-        # Stricter thresholds to reduce false positives
-        # C < 0.35 = deep circadian low (roughly 02:00-05:00)
-        # S > 0.75 = high sleep pressure (~12+ hours awake or significant sleep debt)
-        CIRCADIAN_THRESHOLD = 0.35
-        SLEEP_PRESSURE_THRESHOLD = 0.75
+        # Balanced thresholds - scientifically calibrated but not overly strict
+        # C < 0.40 = circadian low period (roughly 23:00-08:00)
+        # S > 0.70 = elevated sleep pressure (~10+ hours awake)
+        CIRCADIAN_THRESHOLD = 0.40
+        SLEEP_PRESSURE_THRESHOLD = 0.70
         
         for point in timeline:
             if point.is_critical_phase:
