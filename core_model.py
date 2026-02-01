@@ -82,7 +82,10 @@ class BorbelyParameters:
     circadian_period_hours: float = 24.0
     circadian_acrophase_hours: float = 17.0  # Peak alertness time
     
-    # Performance integration
+    # Performance integration — operational weighting choice.
+    # The Åkerstedt-Folkard three-process model uses additive S+C
+    # combination; these explicit weights are an operational adaptation,
+    # not directly from the literature. Research config uses 50/50.
     weight_circadian: float = 0.4
     weight_homeostatic: float = 0.6
     interaction_exponent: float = 1.5
@@ -91,7 +94,12 @@ class BorbelyParameters:
     inertia_duration_minutes: float = 30.0
     inertia_max_magnitude: float = 0.30
     
-    # Sleep debt (Van Dongen 2003)
+    # Sleep debt
+    # Baseline 8h need: Van Dongen et al. (2003) Sleep 26(2):117-126
+    # Decay rate 0.25: operational estimate for exponential debt recovery;
+    # Van Dongen (2003) demonstrated cumulative deficits but did not
+    # specify an exponential decay rate. Value may derive from SAFTE/FAST
+    # model family (Hursh et al. 2004).
     baseline_sleep_need_hours: float = 8.0
     sleep_debt_decay_rate: float = 0.25
 
@@ -100,15 +108,21 @@ class BorbelyParameters:
 class SleepQualityParameters:
     """
     Sleep quality multipliers by environment
-    References: Åkerstedt (2003), Signal (2013), Roach (2012)
+
+    Primary reference: Signal et al. (2013) Sleep 36(1):109-118
+    — PSG-measured hotel efficiency 88%, inflight bunk 70%.
+    Values below are operational estimates calibrated to Signal (2013).
+    Note: Åkerstedt (2003) Occup Med 53:89-94 covers shift-work sleep
+    disruption but does not provide hotel-specific efficiency values.
     """
-    
-    # Environment quality factors
+
+    # Environment quality factors (aligned with LOCATION_EFFICIENCY in
+    # UnifiedSleepCalculator to avoid duplicate definitions)
     quality_home: float = 1.0
-    quality_hotel_quiet: float = 0.85
-    quality_hotel_typical: float = 0.80
-    quality_hotel_airport: float = 0.75
-    quality_crew_rest_facility: float = 0.65
+    quality_hotel_quiet: float = 0.88   # Signal et al. (2013) PSG: 88%
+    quality_hotel_typical: float = 0.85
+    quality_hotel_airport: float = 0.82
+    quality_crew_rest_facility: float = 0.70  # Signal et al. (2013) PSG: 70%
     
     # Circadian timing penalties
     max_circadian_quality_penalty: float = 0.25
@@ -339,7 +353,12 @@ class UnifiedSleepCalculator:
     def __init__(self, config: ModelConfig = None):
         self.config = config or ModelConfig.default_easa_config()
         
-        # Sleep timing parameters (Roenneberg et al. 2007)
+        # Sleep timing parameters — operational defaults for working-age pilots.
+        # Roenneberg et al. (2007) Sleep Med Rev 11:429-438 characterised
+        # chronotype distributions (avg free-day mid-sleep ~04:00-05:00);
+        # the 23:00 bedtime here reflects alarm-constrained workday timing,
+        # consistent with pilot actigraphy in Signal et al. (2009) and
+        # Gander et al. (2013).
         self.NORMAL_BEDTIME_HOUR = 23
         self.NORMAL_WAKE_HOUR = 7
         self.NORMAL_SLEEP_DURATION = 8.0
@@ -348,15 +367,18 @@ class UnifiedSleepCalculator:
         self.NIGHT_FLIGHT_THRESHOLD = 20  # EASA late-type duty
         self.EARLY_REPORT_THRESHOLD = 7
         
-        # WOCL definition
-        self.WOCL_START = 2
-        self.WOCL_END = 6
+        # WOCL definition — aligned with EASAFatigueFramework (02:00-05:59)
+        # per EASA ORO.FTL.105(28). Using 6.0 as float boundary so that
+        # hour < 6.0 covers 02:00-05:59 correctly in overlap calculations.
+        self.WOCL_START = self.config.easa_framework.wocl_start_hour  # 2
+        self.WOCL_END = self.config.easa_framework.wocl_end_hour + 1  # 6 (exclusive upper bound)
         
-        # Base efficiency by location
+        # Base efficiency by location — aligned with SleepQualityParameters.
+        # Hotel value calibrated to Signal et al. (2013) PSG data (88% layover).
         self.LOCATION_EFFICIENCY = {
             'home': 0.90,
             'hotel': 0.85,
-            'crew_rest': 0.88,
+            'crew_rest': 0.70,       # Signal et al. (2013): 70% inflight bunk
             'airport_hotel': 0.82,
             'crew_house': 0.87
         }
@@ -414,11 +436,17 @@ class UnifiedSleepCalculator:
         # 3. Base efficiency by location
         base_efficiency = self.LOCATION_EFFICIENCY.get(location, 0.85)
         if is_nap:
+            # Operational estimate: naps contain less SWS per unit time than
+            # anchor sleep. Dinges et al. (1987) Sleep 10:313 found total sleep
+            # quantity matters more than division, but brief naps are lighter
+            # (Stage 1-2 dominant). The 12% penalty is a modelling choice.
             base_efficiency *= 0.88
         
         # 4. WOCL overlap boost (sleep during biological night enhances recovery)
         # Scientific basis: Dijk & Czeisler (1995), Borbély (1999)
-        # Sleep during WOCL is circadian-aligned → enhanced slow-wave sleep
+        # Sleep during WOCL is circadian-aligned → improved sleep consolidation
+        # (fewer awakenings, higher efficiency). Note: SWA is primarily
+        # homeostatic, not circadian — Dijk & Czeisler (1995) J Neurosci 15:3526
         wocl_overlap = self._calculate_wocl_overlap(sleep_start, sleep_end, location_timezone)
         wocl_boost = 1.0 + (wocl_overlap * 0.03)  # 3% boost per hour
         wocl_boost = min(1.15, wocl_boost)  # Cap at 15%
@@ -435,7 +463,11 @@ class UnifiedSleepCalculator:
         else:
             late_onset_penalty = 1.0
         
-        # 6. Recovery sleep boost
+        # 6. Recovery sleep boost — operational estimate.
+        # Post-duty sleep with high homeostatic drive shows enhanced SWA
+        # rebound (Borbély 1982), faster onset, and fewer awakenings.
+        # The 10% boost and 3h threshold are modelling choices, not from
+        # a specific published value.
         if previous_duty_end:
             hours_since_duty = (sleep_start - previous_duty_end).total_seconds() / 3600
             recovery_boost = 1.10 if hours_since_duty < 3 and not is_nap else 1.0
@@ -601,13 +633,23 @@ class UnifiedSleepCalculator:
         duty: Duty,
         previous_duty: Optional[Duty]
     ) -> SleepStrategy:
-        """Night flight strategy: afternoon nap + morning sleep"""
-        
+        """
+        Night flight strategy: morning sleep + pre-duty nap
+
+        Signal et al. (2014) found 54% of crew napped before evening
+        departures, with typical nap durations of 1-2 hours. Gander et al.
+        (2014) reported ~7.8h total pre-trip sleep (including naps).
+
+        References:
+            Signal et al. (2014) Aviat Space Environ Med 85:1199-1208
+            Gander et al. (2014) Aviat Space Environ Med 85(8):833-40
+        """
+
         report_local = duty.report_time_utc.astimezone(self.home_tz)
-        
-        # Morning sleep
+
+        # Morning sleep (23:00-07:00, standard 8h window)
         morning_sleep_start = report_local.replace(hour=self.NORMAL_BEDTIME_HOUR, minute=0) - timedelta(days=1)
-        morning_sleep_end = report_local.replace(hour=8, minute=0)
+        morning_sleep_end = report_local.replace(hour=7, minute=0)
         
         morning_sleep_start_utc, morning_sleep_end_utc, morning_warnings = self._validate_sleep_no_overlap(
             morning_sleep_start.astimezone(pytz.utc), morning_sleep_end.astimezone(pytz.utc), duty, previous_duty
@@ -638,9 +680,10 @@ class UnifiedSleepCalculator:
             sleep_end_hour=morning_sleep_end.hour + morning_sleep_end.minute / 60.0
         )
         
-        # Afternoon nap
+        # Pre-duty nap: 2h duration (Signal 2014 found typical naps 1-2h;
+        # only 54% of crew napped, so confidence is reduced accordingly)
         nap_end = report_local - timedelta(hours=1.5)
-        nap_start = nap_end - timedelta(hours=3.5)
+        nap_start = nap_end - timedelta(hours=2.0)
         
         nap_start_utc, nap_end_utc, nap_warnings = self._validate_sleep_no_overlap(
             nap_start.astimezone(pytz.utc), nap_end.astimezone(pytz.utc), duty, previous_duty
@@ -674,7 +717,8 @@ class UnifiedSleepCalculator:
         )
         
         total_effective = morning_quality.effective_sleep_hours + nap_quality.effective_sleep_hours
-        confidence = 0.70 if not (morning_warnings or nap_warnings) else 0.50
+        # Confidence lowered: Signal (2014) found only 54% of crew nap
+        confidence = 0.60 if not (morning_warnings or nap_warnings) else 0.45
         
         return SleepStrategy(
             strategy_type='afternoon_nap',
@@ -690,14 +734,33 @@ class UnifiedSleepCalculator:
         duty: Duty,
         previous_duty: Optional[Duty]
     ) -> SleepStrategy:
-        """Early report strategy: early bedtime"""
-        
+        """
+        Early report strategy: constrained early bedtime
+
+        Pilots cannot fully compensate for early report times by advancing
+        bedtime, due to the circadian wake maintenance zone (peak alerting
+        ~17:00-19:00). Actigraphy data shows ~15 min sleep lost per hour
+        of duty advance before 09:00.
+
+        References:
+            Roach et al. (2012) Accid Anal Prev 45 Suppl:22-26
+            Arsintescu et al. (2022) J Sleep Res 31(3):e13521
+        """
+
         report_local = duty.report_time_utc.astimezone(self.home_tz)
-        
+
+        # Roach et al. (2012): pilots lose ~15 min sleep per hour of duty
+        # advance before 09:00. Baseline 6.6h at 09:00 report.
+        # Formula: sleep_hours ≈ 6.6 - 0.25 * max(0, 9 - report_hour)
+        report_hour = report_local.hour + report_local.minute / 60.0
+        sleep_duration = max(4.0, 6.6 - 0.25 * max(0, 9.0 - report_hour))
+
+        # Earliest realistic bedtime is ~21:30 (circadian opposition before this)
+        # Arsintescu et al. (2022): pilots do not sufficiently advance bedtime
         wake_time = report_local - timedelta(hours=1)
-        sleep_duration = 8.0
         sleep_end = wake_time
-        sleep_start = sleep_end - timedelta(hours=sleep_duration)
+        earliest_bedtime = report_local.replace(hour=21, minute=30) - timedelta(days=1)
+        sleep_start = max(earliest_bedtime, sleep_end - timedelta(hours=sleep_duration))
         
         sleep_start_utc, sleep_end_utc, sleep_warnings = self._validate_sleep_no_overlap(
             sleep_start.astimezone(pytz.utc), sleep_end.astimezone(pytz.utc), duty, previous_duty
@@ -728,13 +791,16 @@ class UnifiedSleepCalculator:
             sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
         )
         
-        confidence = 0.60 if not sleep_warnings else 0.45
-        
+        # Lower confidence reflects Roach (2012) finding of high variability
+        # in early-start sleep; individual differences in circadian tolerance
+        confidence = 0.55 if not sleep_warnings else 0.40
+
         return SleepStrategy(
             strategy_type='early_bedtime',
             sleep_blocks=[early_sleep],
             confidence=confidence,
-            explanation=f"Early report: Early bedtime = {sleep_quality.effective_sleep_hours:.1f}h effective",
+            explanation=f"Early report: Constrained bedtime = {sleep_quality.effective_sleep_hours:.1f}h effective "
+                       f"(Roach 2012 regression: {sleep_duration:.1f}h predicted)",
             quality_analysis=[sleep_quality]
         )
     
@@ -1111,7 +1177,13 @@ class BorbelyFatigueModel:
         self.tau_i = self.params.tau_i
         self.tau_d = self.params.tau_d
         
-        # Circadian parameters
+        # Circadian parameters — operational adjustments:
+        # Amplitude +0.05 increases circadian modulation for aviation context
+        # (higher sensitivity to WOCL performance dips).
+        # Peak shifted from configured 17:00 to 16:00 to reflect that pilot
+        # duty performance peaks tend slightly earlier than CBT acrophase
+        # (~17:00-19:00, Wright et al. 2002 Am J Physiol 283:R1370).
+        # Note: this is an operational choice, not a literature-derived value.
         self.c_amplitude = self.params.circadian_amplitude + 0.05
         self.c_peak_hour = self.params.circadian_acrophase_hours - 1.0
         
@@ -1220,7 +1292,11 @@ class BorbelyFatigueModel:
     def integrate_performance(self, c: float, s: float, w: float) -> float:
         """
         Integrate three processes into performance (0-100 scale)
-        Reference: Åkerstedt & Folkard (1997), Dawson & Reid (1997)
+
+        Inspired by Åkerstedt & Folkard (1997) three-process model and
+        Dawson & Reid (1997) performance equivalence framework. The
+        weighted-average integration (60/40 S/C) is an operational
+        adaptation — the original models use additive combination.
         """
         # Input validation with graceful clamping
         c = max(0.0, min(1.0, c))

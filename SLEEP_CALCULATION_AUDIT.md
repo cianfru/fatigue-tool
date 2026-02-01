@@ -1,23 +1,23 @@
 # Sleep Calculation Scientific Audit Report
 
-**Date:** 2026-01-31
+**Date:** 2026-02-01 (updated)
 **Scope:** Verification of sleep calculation logic, sleep type classifications, and scientific citations in `core_model.py` and `data_models.py` against peer-reviewed literature and official regulatory documents.
 
 ---
 
 ## Architecture Overview
 
-The tool implements 5 sleep types:
+The tool implements 5 sleep strategies:
 
 | Type | Trigger Condition | Pattern | Location |
 |---|---|---|---|
-| Normal | Report 07:00-19:59, no WOCL crossing | 23:00-07:00 (8h) | `core_model.py:792-862` |
-| Night Departure | Report ≥20:00 or <04:00 | Morning sleep + 3.5h nap | `core_model.py:599-686` |
-| Early Morning | Report <07:00 | 8h ending 1h before duty | `core_model.py:688-739` |
-| Anchor/WOCL | Report 07:00-19:59, crosses WOCL, >6h duty | 4.5h ending 1.5h before duty | `core_model.py:741-790` |
-| Recovery | Rest days between duties | 23:00-07:00 at 0.95 quality | `core_model.py:1630-1673` |
+| Normal | Report 07:00-19:59, no WOCL crossing | 23:00-07:00 (8h) | `core_model.py:~810-880` |
+| Night Departure | Report ≥20:00 or <04:00 | Morning sleep + **2h** pre-duty nap | `core_model.py:~599-700` |
+| Early Morning | Report <07:00 | **Roach regression** (4-6.6h), earliest bedtime 21:30 | `core_model.py:~688-760` |
+| Anchor/WOCL | Report 07:00-19:59, crosses WOCL, >6h duty | 4.5h ending 1.5h before duty | `core_model.py:~763-810` |
+| Recovery | Rest days between duties | 23:00-07:00 at 0.95 quality | `core_model.py:~1690-1740` |
 
-Sleep quality uses 7 multiplicative factors (`core_model.py:396-501`). The Borbely two-process model integrates Process S (homeostatic), C (circadian), and W (sleep inertia) into a 0-100 performance score (`core_model.py:1086-1240`).
+Sleep quality uses 7 multiplicative factors. The Borbely two-process model integrates Process S (homeostatic), C (circadian), and W (sleep inertia) into a 0-100 performance score.
 
 ---
 
@@ -27,83 +27,144 @@ Sleep quality uses 7 multiplicative factors (`core_model.py:396-501`). The Borbe
 |---|---|---|---|---|
 | tau_i (wake buildup) | 18.2h | Jewett & Kronauer (1999) | J. Biol. Rhythms 14:588-597 | **Correct** |
 | tau_d (sleep decay) | 4.2h | Jewett & Kronauer (1999) | J. Biol. Rhythms 14:588-597 | **Correct** |
-| S_max / S_min | 1.0 / 0.0 | Borbely (1982) | Hum. Neurobiol. 1:195-204 | **Correct** (standard non-dimensional form) |
+| S_max / S_min | 1.0 / 0.0 | Borbely (1982) | Hum. Neurobiol. 1:195-204 | **Correct** |
 | Baseline sleep need | 8.0h | Van Dongen et al. (2003) | Sleep 26(2):117-126 | **Correct** |
 | Sleep inertia duration | 30 min | Tassi & Muzet (2000) | Sleep Med. Rev. 4(4):341-353 | **Correct** |
 | Jet lag adaptation W/E | 1.5 / 1.0 h/day | Waterhouse et al. (2007) | Lancet 369:1117-1129 | **Correct** |
 | Circadian acrophase | 17:00 | CBT literature | Wright et al. (2002) | **Approximately correct** (17:00-19:00 range) |
 | Anchor sleep concept | 4.5h block | Minors & Waterhouse (1981, 1983) | J. Physiol. 345:1-11 | **Well supported** (≥4h validated) |
-| Inflight rest efficiency | 0.70 | Signal et al. (2013) | Sleep 36(1):109-118 | **Correct value** (attribution issue, see below) |
+| Inflight rest efficiency | 0.70 | Signal et al. (2013) | Sleep 36(1):109-118 | **Correct** |
 
 ---
 
-## Inconsistent Findings
+## Issues Found and Resolutions
 
-### HIGH SEVERITY (affects model accuracy or traceability)
+### 1. Early Morning Strategy Overestimated Sleep by 2-3 Hours [FIXED]
 
-#### 1. Sleep Debt Decay Rate Misattributed
-- **Code:** `sleep_debt_decay_rate: float = 0.25` (line 96) — comment: "Van Dongen 2003"
-- **Finding:** Van Dongen et al. (2003) is an experimental study demonstrating cumulative cognitive deficits from chronic sleep restriction. It does **not** contain a mathematical decay rate constant of 0.25. The paper showed sleep debt accumulates but did not formulate an exponential decay model with a rate parameter. This value may originate from McCauley et al. (2013) or the SAFTE/FAST model.
-- **Reference:** Van Dongen et al. (2003), *Sleep* 26(2):117-126
+**Problem:** The original code assumed 8h sleep ending 1h before report, regardless of report time. Actigraphy data shows pilots cannot advance bedtime sufficiently due to the circadian wake maintenance zone.
 
-#### 2. 60/40 Homeostatic/Circadian Weighting Not From Cited Source
-- **Code:** `weight_homeostatic: float = 0.6`, `weight_circadian: float = 0.4` (lines 86-87); citation at line 1223: "Akerstedt & Folkard (1997), Dawson & Reid (1997)"
-- **Finding:** The Akerstedt-Folkard three-process model uses an additive combination of S and C components with their amplitudes determining relative contribution — not a weighted average with explicit 60/40 split. This ratio does not appear in either cited paper. The `research_config` preset (lines 272-273) uses 50/50, implicitly acknowledging this is an operational adjustment.
-- **Reference:** Akerstedt & Folkard (1997), *Chronobiology International* 14(2):115-124
+**Evidence:**
+- Roach et al. (2012) *Accid Anal Prev* 45 Suppl:22-26 — pilots lose ~15 min sleep per hour of duty advance before 09:00. Duty start 04:00-05:00 yields only 5.4h sleep.
+- Arsintescu et al. (2022) *J Sleep Res* 31(3):e13521 — pilots do not sufficiently advance bedtime for early starts.
 
-#### 3. Effective Circadian Peak Silently Shifted to 16:00
-- **Code:** `self.c_amplitude = self.params.circadian_amplitude + 0.05` and `self.c_peak_hour = self.params.circadian_acrophase_hours - 1.0` (lines 1115-1116)
-- **Finding:** The configured acrophase of 17:00 is shifted to an effective value of 16:00 without documentation or scientific justification. Literature consensus places peak alertness at ~17:00-19:00 (Wright et al. 2002; forced desynchrony studies). The +0.05 amplitude adjustment is also undocumented.
-- **Reference:** Wright, Hull & Czeisler (2002), *Am. J. Physiol. Regul. Integr. Comp. Physiol.* 283(6):R1370-R1377
+**Fix applied:** Replaced fixed 8h with Roach (2012) regression:
+```
+sleep_hours = max(4.0, 6.6 - 0.25 * max(0, 9.0 - report_hour))
+```
+Added earliest realistic bedtime of 21:30 (circadian opposition). Confidence reduced from 0.60 to 0.55.
 
-### MEDIUM SEVERITY (incorrect scientific citations)
+### 2. Night Departure Nap Too Long [FIXED]
 
-#### 4. WOCL Sleep Quality Boost: Wrong Mechanism Cited
-- **Code:** Lines 419-421 claim "Dijk & Czeisler (1995), Borbely (1999)" support that "Sleep during WOCL is circadian-aligned → enhanced slow-wave sleep"
-- **Finding:** Dijk & Czeisler (1995) showed that slow-wave activity (SWA) has **low-amplitude circadian modulation**. SWA is primarily driven by the homeostatic process (prior wake duration), not circadian phase. The circadian system modulates **sleep consolidation** (fewer awakenings, higher sleep efficiency) and REM sleep. The direction of the boost is correct (WOCL-aligned sleep is better), but the mechanism should be cited as improved sleep consolidation, not enhanced SWS.
-- **Reference:** Dijk & Czeisler (1995), *J. Neuroscience* 15(5):3526-3538
+**Problem:** 3.5h "nap" exceeded typical pre-flight nap durations; morning sleep window extended to 08:00 (9h).
 
-#### 5. Inflight Rest 70% Misattributed to NASA
-- **Code:** Line 416 comment: "NASA studies show ~70% effectiveness"
-- **Finding:** The 70% figure comes from **Signal et al. (2013)**, who measured inflight bunk sleep efficiency at 70% via polysomnography. Rosekind et al. (1994, the "NASA Nap Study") studied 40-minute in-seat rest opportunities and reported performance outcomes (alertness improvement, microsleep elimination), not sleep efficiency percentages.
-- **Reference:** Signal et al. (2013), *Sleep* 36(1):109-118; Rosekind et al. (1994), NASA Technical Report 19950006379
+**Evidence:**
+- Signal et al. (2014) *Aviat Space Environ Med* 85:1199-1208 — only 54% of crew napped before evening departures; typical nap duration 1-2h.
+- Gander et al. (2014) *Aviat Space Environ Med* 85(8):833-40 — total pre-trip sleep ~7.8h including naps.
 
-#### 6. Roenneberg Citation Oversimplified
-- **Code:** Line 342 cites "Roenneberg et al. 2007" for `NORMAL_BEDTIME_HOUR = 23`
-- **Finding:** Roenneberg et al. (2007) analyzed >55,000 MCTQ responses to characterize **chronotype distributions**. The average mid-sleep on free days was ~04:00-05:00 AM (implying sleep onset ~midnight-01:00 AM, not 23:00). The 23:00 bedtime is a reasonable workday assumption for airline pilots but the paper is about individual variation in free-day timing, not a prescribed "normal" schedule. A more appropriate citation would be airline-specific studies (e.g., Signal et al. 2009, Gander et al. 2013).
-- **Reference:** Roenneberg et al. (2007), *Sleep Medicine Reviews* 11:429-438
+**Fix applied:** Reduced nap from 3.5h to 2.0h. Morning sleep end changed from 08:00 to 07:00. Confidence reduced from 0.70 to 0.60 (reflecting 54% nap uptake).
 
-### LOW SEVERITY (internal code consistency)
+### 3. WOCL Boost Cited Wrong Mechanism [FIXED]
 
-#### 7. WOCL End Time: Dual Definition
-- `EASAFatigueFramework` (lines 42-43): `wocl_end_hour=5, wocl_end_minute=59` → **02:00-05:59** (correct per EASA ORO.FTL.105(28))
-- `UnifiedSleepCalculator` (line 353): `self.WOCL_END = 6` → used in overlap calculations
-- The `_duty_crosses_wocl` check (`hour < 6`) is functionally equivalent to 02:00-05:59 for integer hour comparisons. However, `_calculate_wocl_overlap` uses floating-point hour comparison against 6.0, which would include the 05:59-06:00 minute outside the regulatory WOCL.
-- **Reference:** EASA ORO.FTL.105(28); UK CAA Regulatory Library
+**Problem:** Comment claimed "enhanced slow-wave sleep" during WOCL.
 
-#### 8. Duplicate Hotel Quality Definitions
-- `SleepQualityParameters.quality_hotel_typical = 0.80` (line 109)
-- `LOCATION_EFFICIENCY['hotel'] = 0.85` (line 358)
-- Two different quality values for "hotel" coexist. The `SleepQualityParameters` class appears unused in actual sleep calculation (which only uses `LOCATION_EFFICIENCY`).
+**Evidence:** Dijk & Czeisler (1995) *J. Neuroscience* 15(5):3526-3538 showed SWA is primarily homeostatic, not circadian. The circadian system modulates sleep consolidation (fewer awakenings, higher efficiency) and REM sleep.
 
-#### 9. Nap Efficiency Multiplier: Engineering Estimate
-- **Code:** `base_efficiency *= 0.88` for naps (line 417)
-- **Finding:** Dinges et al. (1987) found performance was "primarily a function of total time in bed per 24h regardless of how sleep was divided," suggesting nap sleep is roughly equivalent per hour to anchor sleep. The 12% penalty is an engineering estimate without a specific literature source. Acceptable if documented as an operational assumption.
-- **Reference:** Dinges et al. (1987), *Sleep* 10(4):313-329
+**Fix applied:** Changed comment to "improved sleep consolidation" with clarifying note.
 
-#### 10. Recovery Sleep 10% Boost: Engineering Estimate
-- **Code:** `recovery_boost = 1.10 if hours_since_duty < 3` (line 441)
-- **Finding:** SWS rebound after extended wakefulness is well-documented (Borbely 1982), supporting higher recovery efficiency conceptually. However, the specific 10% figure and 3-hour threshold are not from any published study. The magnitude depends on prior sleep debt, duty duration, and circadian timing.
+### 4. Inflight Rest 70% Misattributed to NASA [FIXED]
+
+**Problem:** Code comment said "NASA studies show ~70% effectiveness."
+
+**Evidence:** The 70% figure comes from Signal et al. (2013) *Sleep* 36(1):109-118 (PSG-measured). Rosekind et al. (1994, NASA) studied 40-minute in-seat naps and reported performance outcomes, not sleep efficiency percentages.
+
+**Fix applied:** Attribution corrected to Signal et al. (2013) in both `data_models.py` and `core_model.py`.
+
+### 5. Roenneberg Citation Oversimplified [FIXED]
+
+**Problem:** Cited "Roenneberg et al. 2007" for a single fixed 23:00 bedtime. The paper characterises chronotype distributions (avg free-day mid-sleep ~04:00-05:00), not a prescribed schedule.
+
+**Fix applied:** Expanded comment to explain that 23:00 reflects alarm-constrained workday timing for pilots, with Signal et al. (2009) and Gander et al. (2013) as more appropriate aviation-specific references.
+
+### 6. WOCL_END Dual Definition [FIXED]
+
+**Problem:** `EASAFatigueFramework.wocl_end_hour=5` (correct, 02:00-05:59) vs `UnifiedSleepCalculator.WOCL_END=6` (hardcoded).
+
+**Fix applied:** `UnifiedSleepCalculator` now derives WOCL boundaries from `EASAFatigueFramework` values. Documented that WOCL_END=6 is the exclusive upper bound (i.e., `hour < 6` = 02:00-05:59).
+
+### 7. Sleep Debt Decay Rate Misattributed [FIXED]
+
+**Problem:** `sleep_debt_decay_rate: float = 0.25` attributed to "Van Dongen 2003." That paper demonstrated cumulative deficits but did not specify an exponential decay constant.
+
+**Fix applied:** Comment updated to document this as an operational estimate, noting possible origin in SAFTE/FAST model family (Hursh et al. 2004). Van Dongen (2003) retained for baseline sleep need only.
+
+### 8. 60/40 Homeostatic/Circadian Weighting [FIXED]
+
+**Problem:** Attributed to Åkerstedt & Folkard (1997), who use additive S+C combination, not a weighted average.
+
+**Fix applied:** Documented as "operational adaptation, not directly from the literature." Performance integration docstring updated.
+
+### 9. Circadian Peak Shift Undocumented [FIXED]
+
+**Problem:** Code silently shifted acrophase from 17:00 to 16:00 and increased amplitude by 0.05, with no comment explaining why.
+
+**Fix applied:** Added documentation explaining these are operational choices for aviation context. Referenced Wright et al. (2002) *Am. J. Physiol.* 283:R1370 for CBT acrophase context.
+
+### 10. Duplicate Hotel Quality Definitions [FIXED]
+
+**Problem:** `SleepQualityParameters.quality_hotel_typical=0.80` vs `LOCATION_EFFICIENCY['hotel']=0.85`.
+
+**Fix applied:** Aligned `SleepQualityParameters` to Signal et al. (2013) PSG data: hotel quiet=0.88, typical=0.85, airport=0.82, crew rest=0.70. `LOCATION_EFFICIENCY['crew_rest']` corrected from 0.88 to 0.70 to match Signal et al. (2013).
+
+### 11. Nap Efficiency and Recovery Boost Documented [FIXED]
+
+**Problem:** Nap 0.88 multiplier and recovery 1.10 boost presented without noting they are engineering estimates.
+
+**Evidence:**
+- Dinges et al. (1987) *Sleep* 10:313-329 — found total sleep quantity matters more than division; nap sleep roughly equivalent per hour.
+- Borbely (1982) — SWS rebound after extended wakefulness is well-documented, but no specific boost percentage published.
+
+**Fix applied:** Both values documented as "operational estimates / modelling choices" in code comments, with relevant literature context.
 
 ---
 
-## Recommendations
+## Remaining Known Gaps
 
-1. **Correct the sleep debt decay rate attribution** — either find the actual source for 0.25 or document it as an operational estimate
-2. **Document the 60/40 weighting** as an operational choice rather than attributing it to Akerstedt & Folkard
-3. **Add justification for the circadian peak shift** from 17:00 to 16:00, or remove the undocumented adjustment
-4. **Fix the WOCL boost comment** — change "enhanced slow-wave sleep" to "improved sleep consolidation and efficiency"
-5. **Correct the inflight rest attribution** from "NASA studies" to "Signal et al. (2013)"
-6. **Unify the WOCL end definition** — use the `EASAFatigueFramework` values in `UnifiedSleepCalculator`
-7. **Remove or unify duplicate hotel quality parameters**
-8. **Document engineering estimates** (nap 0.88, recovery 1.10) as operational assumptions rather than implying literature derivation
+These are not inconsistencies but **missing features** identified during the audit:
+
+| Gap | Literature Support | Priority |
+|---|---|---|
+| **Layover/hotel sleep** (different TZ) | Signal et al. (2013): 88% efficiency, 7.2h/24h; timezone-dependent | High |
+| **In-flight crew rest** strategy generation | Signal et al. (2013): 70% efficiency, 3.3-4.3h in bunk | High |
+| **Split duty rest** | EASA-defined pattern, distinct from anchor sleep | Medium |
+| **Post-flight recovery nap** | Documented in Signal (2014), UPS accident investigation | Low |
+| **Chronotype variation** | Juda, Vetter & Roenneberg (2013) J Biol Rhythms 28:267-276 | Low |
+
+---
+
+## Full Reference List
+
+1. Åkerstedt T (2003). Shift work and disturbed sleep/wakefulness. *Occup Med* 53:89-94.
+2. Åkerstedt T & Folkard S (1997). The three-process model of alertness and its extension to performance. *Chronobiol Int* 14(2):115-124.
+3. Arsintescu L et al. (2022). Early starts and late finishes both reduce alertness and performance. *J Sleep Res* 31(3):e13521.
+4. Borbely AA (1982). A two process model of sleep regulation. *Hum Neurobiol* 1:195-204.
+5. Borbely AA & Achermann P (1999). Sleep homeostasis and models of sleep regulation. *J Biol Rhythms* 14:557-568.
+6. Bourgeois-Bougrine S et al. (2003). Perceived fatigue for short- and long-haul flights. *Aviat Space Environ Med* 74(10):1072-1077.
+7. Dawson D & Reid K (1997). Fatigue, alcohol and performance impairment. *Nature* 388:235.
+8. Dijk DJ & Czeisler CA (1995). Contribution of the circadian pacemaker and the sleep homeostat to sleep propensity, sleep structure, EEG slow waves, and spindle activity. *J Neurosci* 15(5):3526-3538.
+9. Dinges DF et al. (1987). Temporal placement of a nap for alertness. *Sleep* 10(4):313-329.
+10. Gander PH et al. (2013). In-flight sleep, pilot fatigue and PVT performance. *J Sleep Res* 22(6):697-706.
+11. Gander PH et al. (2014). Pilot fatigue: relationships with departure and arrival times. *Aviat Space Environ Med* 85(8):833-40.
+12. Hursh SR et al. (2004). Fatigue models for applied research in warfighting. *Aviat Space Environ Med* 75(3 Suppl):A44-53.
+13. Jewett ME & Kronauer RE (1999). Interactive mathematical models of subjective alertness and cognitive throughput. *J Biol Rhythms* 14:588-597.
+14. Juda M, Vetter C & Roenneberg T (2013). Chronotype modulates sleep duration, sleep quality, and social jet lag in shift-workers. *J Biol Rhythms* 28:267-276.
+15. Minors DS & Waterhouse JM (1981). Anchor sleep as a synchronizer. *Int J Chronobiol* 8:165-88.
+16. Minors DS & Waterhouse JM (1983). Does 'anchor sleep' entrain circadian rhythms? *J Physiol* 345:1-11.
+17. Roach GD et al. (2012). Duty periods with early start times restrict sleep. *Accid Anal Prev* 45 Suppl:22-26.
+18. Roenneberg T et al. (2007). Epidemiology of the human circadian clock. *Sleep Med Rev* 11:429-438.
+19. Rosekind MR et al. (1994). Alertness management: strategic naps in operational settings. *J Sleep Res* 3:62-66; NASA Technical Report 19950006379.
+20. Signal TL et al. (2013). In-flight sleep of flight crew during a 7-hour rest break. *Sleep* 36(1):109-118.
+21. Signal TL et al. (2014). Mitigating and monitoring flight crew fatigue on ULR flights. *Aviat Space Environ Med* 85:1199-1208.
+22. Tassi P & Muzet A (2000). Sleep inertia. *Sleep Med Rev* 4(4):341-353.
+23. Van Dongen HP et al. (2003). The cumulative cost of additional wakefulness. *Sleep* 26(2):117-126.
+24. Waterhouse J et al. (2007). Jet lag: trends and coping strategies. *Lancet* 369:1117-1129.
+25. Wright KP, Hull JT & Czeisler CA (2002). Relationship between alertness, performance, and body temperature. *Am J Physiol* 283:R1370-R1377.
