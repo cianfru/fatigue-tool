@@ -1427,13 +1427,41 @@ class BorbelyFatigueModel:
         )
     
     def _detect_pinch_events(self, timeline: List[PerformancePoint]) -> List[PinchEvent]:
-        """Detect high-risk moments (high S + low C during critical phases)"""
+        """
+        Detect high-risk moments (high sleep pressure + low circadian during critical phases)
+        
+        A "pinch" is a scientifically-defined convergence of:
+        1. Critical flight phase (takeoff, approach, landing)
+        2. High homeostatic sleep pressure (S > 0.75 = ~12+ hours awake or sleep-deprived)
+        3. Low circadian alertness (C < 0.35 = deep in WOCL, 02:00-06:00)
+        
+        These thresholds are based on:
+        - Dawson & Reid (1997): Performance impairment equivalent to 0.05% BAC
+        - EASA AMC1 ORO.FTL.105(10): WOCL 02:00-05:59
+        - Van Dongen et al. (2003): Cumulative effects of sleep restriction
+        
+        We also require BOTH conditions to be significantly exceeded to avoid
+        false positives from normal night operations with adequate rest.
+        """
         pinch_events = []
+        
+        # Stricter thresholds to reduce false positives
+        # C < 0.35 = deep circadian low (roughly 02:00-05:00)
+        # S > 0.75 = high sleep pressure (~12+ hours awake or significant sleep debt)
+        CIRCADIAN_THRESHOLD = 0.35
+        SLEEP_PRESSURE_THRESHOLD = 0.75
         
         for point in timeline:
             if point.is_critical_phase:
-                if point.circadian_component < 0.4 and point.homeostatic_component > 0.6:
-                    severity = 'critical' if point.raw_performance < 50 else 'high'
+                # Both conditions must be met for a true pinch event
+                if point.circadian_component < CIRCADIAN_THRESHOLD and point.homeostatic_component > SLEEP_PRESSURE_THRESHOLD:
+                    # Severity based on performance score
+                    if point.raw_performance < 45:
+                        severity = 'critical'
+                    elif point.raw_performance < 55:
+                        severity = 'high'
+                    else:
+                        severity = 'moderate'
                     
                     pinch_events.append(PinchEvent(
                         time_utc=point.timestamp_utc,
