@@ -44,6 +44,8 @@ export interface Duty {
   sleep_debt: number;
   wocl_hours: number;
   prior_sleep: number;
+  /** Hours awake before report — Dawson & Reid (1997): 17h ≈ 0.05% BAC */
+  pre_duty_awake_hours: number;
 
   // Risk
   risk_level: 'low' | 'moderate' | 'high' | 'critical' | 'extreme' | 'unknown';
@@ -173,8 +175,13 @@ export interface TimelinePoint {
   timestamp: string;
   timestamp_local: string;
   performance: number;
-  sleep_pressure: number;
-  circadian: number;
+  sleep_pressure: number;       // Process S — homeostatic (0-1)
+  circadian: number;            // Process C — circadian (0-1)
+  sleep_inertia: number;        // Process W — sleep inertia (0-1)
+  /** Hours elapsed since duty report — Folkard & Åkerstedt (1999) */
+  hours_on_duty: number;
+  /** Linear alertness decrement from time on task (~0.008/h) */
+  time_on_task_penalty: number;
   flight_phase: string | null;
   is_critical: boolean;
 }
@@ -195,6 +202,7 @@ export interface DutyDetail {
     landing_performance: number | null;
     wocl_hours: number;
     prior_sleep: number;
+    pre_duty_awake_hours: number;
     sleep_debt: number;
   };
   pinch_events: PinchEvent[];

@@ -468,6 +468,10 @@ class PerformancePoint:
     # Integrated performance (0-100)
     raw_performance: float
     
+    # Time-on-task (Folkard & Åkerstedt 1999)
+    hours_on_duty: float = 0.0            # hours since report
+    time_on_task_penalty: float = 0.0     # linear alertness decrement
+
     # Context
     current_flight_phase: Optional[FlightPhase] = None
     is_critical_phase: bool = False
@@ -575,6 +579,9 @@ class DutyTimeline:
     pinch_events: List[PinchEvent] = field(default_factory=list)
     circadian_phase_shift: float = 0.0
     
+    # Pre-duty context
+    pre_duty_awake_hours: float = 0.0  # hours awake before report
+
     # OPTIMIZATION: Cache final state to avoid recomputation in next duty
     final_circadian_state: Optional['CircadianState'] = None
     final_process_s: float = 0.0

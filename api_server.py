@@ -157,6 +157,7 @@ class DutyResponse(BaseModel):
     sleep_debt: float
     wocl_hours: float
     prior_sleep: float
+    pre_duty_awake_hours: float = 0.0  # hours awake before report
     
     # Risk
     risk_level: str  # "low", "moderate", "high", "critical", "extreme"
@@ -344,6 +345,7 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
         sleep_debt=duty_timeline.cumulative_sleep_debt,
         wocl_hours=duty_timeline.wocl_encroachment_hours,
         prior_sleep=duty_timeline.prior_sleep_hours,
+        pre_duty_awake_hours=duty_timeline.pre_duty_awake_hours,
         risk_level=risk,
         is_reportable=(risk in ["critical", "extreme"]),
         pinch_events=len(duty_timeline.pinch_events),
@@ -651,10 +653,13 @@ async def get_duty_detail(analysis_id: str, duty_id: str):
             "performance": point.raw_performance,
             "sleep_pressure": point.homeostatic_component,
             "circadian": point.circadian_component,
+            "sleep_inertia": point.sleep_inertia_component,
+            "hours_on_duty": point.hours_on_duty,
+            "time_on_task_penalty": point.time_on_task_penalty,
             "flight_phase": point.current_flight_phase.value if point.current_flight_phase else None,
             "is_critical": point.is_critical_phase
         })
-    
+
     return {
         "duty_id": duty_id,
         "timeline": timeline_data,
@@ -664,6 +669,7 @@ async def get_duty_detail(analysis_id: str, duty_id: str):
             "landing_performance": duty_timeline.landing_performance,
             "wocl_hours": duty_timeline.wocl_encroachment_hours,
             "prior_sleep": duty_timeline.prior_sleep_hours,
+            "pre_duty_awake_hours": duty_timeline.pre_duty_awake_hours,
             "sleep_debt": duty_timeline.cumulative_sleep_debt
         },
         "pinch_events": [

@@ -125,6 +125,46 @@ Added earliest realistic bedtime of 21:30 (circadian opposition). Confidence red
 
 **Fix applied:** Both values documented as "operational estimates / modelling choices" in code comments, with relevant literature context.
 
+### 12. WOCL Boost Inflated Effective Sleep — Double-counted Nighttime Advantage [FIXED]
+
+**Problem:** A 3%/h WOCL overlap boost (capped at 15%) was applied ON TOP of `LOCATION_EFFICIENCY` values that already assume normal nighttime sleep. Normal home sleep: 0.90 × 1.15 = 1.035, clamped to 1.0 — making all nighttime home sleep "perfect."
+
+**Evidence:**
+- Dijk & Czeisler (1995) *J Neurosci* 15:3526 — SWA is primarily homeostatic; circadian modulation of SWS amplitude is low.
+- Dijk & Czeisler (1994) *J Neurosci* 14:3522 — sleep consolidation is circadian: ~95% efficiency during biological night vs 80-85% during circadian day.
+
+**Fix applied:** Replaced boost with circadian misalignment *penalty* — sleep outside the WOCL window is penalized up to 15% (fully daytime sleep), while WOCL-aligned sleep gets no modifier (it IS the baseline).
+
+### 13. Recovery Boost Too High and Not Graded [FIXED]
+
+**Problem:** Flat 10% boost for any sleep starting <3h after duty end. Not from a published value.
+
+**Fix applied:** Graded: 5% if <2h post-duty, 3% if <4h, 0% otherwise. Capped to prevent combined efficiency exceeding 1.0.
+
+### 14. Time Pressure Factor Bonus Inflated Quality [FIXED]
+
+**Problem:** `time_pressure_factor = 1.03` for >6h until duty acted as a bonus, pushing combined efficiency above 1.0 before clamping.
+
+**Fix applied:** Changed to 1.0 (neutral) for ≥6h. Penalties for imminent duty retained. Reference added: Kecklund & Åkerstedt (2004) *J Sleep Res* 13:1-6.
+
+### 15. Pre-Duty Wakefulness Ignored in simulate_duty [FIXED]
+
+**Problem:** `effective_wake_hours` started at 0.0 at duty report, regardless of how long the pilot had been awake. A pilot awake for 4h before report had the same homeostatic pressure as one who just woke up.
+
+**Evidence:**
+- Dawson & Reid (1997) *Nature* 388:235 — 17h awake ≈ 0.05% BAC equivalent. Pre-duty wake hours are critical.
+
+**Fix applied:** `effective_wake_hours` now initializes with `(report_time - wake_time)`. Process S at duty start reflects actual time since last sleep.
+
+### 16. Time-on-Task Linear Decrement Missing [FIXED]
+
+**Problem:** No separate time-on-duty performance penalty. The model only had exponential homeostatic buildup, which saturates. Folkard & Åkerstedt (1999) identified a linear "time on shift" effect independent of S and C.
+
+**Evidence:**
+- Folkard et al. (1999) *J Biol Rhythms* 14(6):577-587 — ~0.7%/h decline in subjective alertness across 12-h shifts.
+
+**Fix applied:** Added `time_on_task_rate = 0.008/h` (0.64%/h on the 20-100 scale) as a linear decrement in `integrate_performance()`, independent of homeostatic and circadian components.
+
 ---
 
 ## Remaining Known Gaps
@@ -150,12 +190,15 @@ These are not inconsistencies but **missing features** identified during the aud
 5. Borbely AA & Achermann P (1999). Sleep homeostasis and models of sleep regulation. *J Biol Rhythms* 14:557-568.
 6. Bourgeois-Bougrine S et al. (2003). Perceived fatigue for short- and long-haul flights. *Aviat Space Environ Med* 74(10):1072-1077.
 7. Dawson D & Reid K (1997). Fatigue, alcohol and performance impairment. *Nature* 388:235.
-8. Dijk DJ & Czeisler CA (1995). Contribution of the circadian pacemaker and the sleep homeostat to sleep propensity, sleep structure, EEG slow waves, and spindle activity. *J Neurosci* 15(5):3526-3538.
+8. Dijk DJ & Czeisler CA (1994). Direct evidence for independent circadian and sleep-dependent regulation. *J Neurosci* 14:3522-3530.
+9. Dijk DJ & Czeisler CA (1995). Contribution of the circadian pacemaker and the sleep homeostat to sleep propensity, sleep structure, EEG slow waves, and spindle activity. *J Neurosci* 15(5):3526-3538.
 9. Dinges DF et al. (1987). Temporal placement of a nap for alertness. *Sleep* 10(4):313-329.
 10. Gander PH et al. (2013). In-flight sleep, pilot fatigue and PVT performance. *J Sleep Res* 22(6):697-706.
 11. Gander PH et al. (2014). Pilot fatigue: relationships with departure and arrival times. *Aviat Space Environ Med* 85(8):833-40.
-12. Hursh SR et al. (2004). Fatigue models for applied research in warfighting. *Aviat Space Environ Med* 75(3 Suppl):A44-53.
-13. Jewett ME & Kronauer RE (1999). Interactive mathematical models of subjective alertness and cognitive throughput. *J Biol Rhythms* 14:588-597.
+12. Folkard S, Åkerstedt T, Macdonald I, Tucker P & Spencer MB (1999). Beyond the three-process model of alertness: estimating phase, time on shift, and successive night effects. *J Biol Rhythms* 14(6):577-587.
+13. Hursh SR et al. (2004). Fatigue models for applied research in warfighting. *Aviat Space Environ Med* 75(3 Suppl):A44-53.
+14. Kecklund G & Åkerstedt T (2004). Apprehension of the subsequent working day is associated with a low amount of slow wave sleep. *J Sleep Res* 13:1-6.
+15. Jewett ME & Kronauer RE (1999). Interactive mathematical models of subjective alertness and cognitive throughput. *J Biol Rhythms* 14:588-597.
 14. Juda M, Vetter C & Roenneberg T (2013). Chronotype modulates sleep duration, sleep quality, and social jet lag in shift-workers. *J Biol Rhythms* 28:267-276.
 15. Minors DS & Waterhouse JM (1981). Anchor sleep as a synchronizer. *Int J Chronobiol* 8:165-88.
 16. Minors DS & Waterhouse JM (1983). Does 'anchor sleep' entrain circadian rhythms? *J Physiol* 345:1-11.
