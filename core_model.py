@@ -94,6 +94,13 @@ class BorbelyParameters:
     inertia_duration_minutes: float = 30.0
     inertia_max_magnitude: float = 0.30
     
+    # Time-on-task (Folkard & Åkerstedt 1999, J Biol Rhythms 14:577)
+    # Linear alertness decrement per hour on shift, independent of S & C.
+    # Folkard (1999) identified ~0.7 % / h decline in subjective alertness
+    # ratings across 12-h shifts. We use 0.008 / h on a 0-1 scale
+    # (≈ 0.64 % performance / h on the 20-100 scale), which is conservative.
+    time_on_task_rate: float = 0.008  # per hour on duty
+
     # Sleep debt
     # Baseline 8h need: Van Dongen et al. (2003) Sleep 26(2):117-126
     # Decay rate 0.25: operational estimate for exponential debt recovery;
@@ -442,14 +449,27 @@ class UnifiedSleepCalculator:
             # (Stage 1-2 dominant). The 12% penalty is a modelling choice.
             base_efficiency *= 0.88
         
-        # 4. WOCL overlap boost (sleep during biological night enhances recovery)
-        # Scientific basis: Dijk & Czeisler (1995), Borbély (1999)
-        # Sleep during WOCL is circadian-aligned → improved sleep consolidation
-        # (fewer awakenings, higher efficiency). Note: SWA is primarily
-        # homeostatic, not circadian — Dijk & Czeisler (1995) J Neurosci 15:3526
+        # 4. Circadian alignment factor
+        # Dijk & Czeisler (1995) J Neurosci 15:3526 showed that SWA is
+        # primarily homeostatic — circadian modulation of SWS amplitude
+        # is low.  However, sleep *consolidation* (fewer awakenings,
+        # higher efficiency) is strongly circadian: sleep efficiency is
+        # ~95 % during the biological night vs ~80-85 % during circadian
+        # day (Dijk & Czeisler 1994, J Neurosci 14:3522).
+        #
+        # The base LOCATION_EFFICIENCY values already assume normal
+        # night-time sleep; adding a boost on top would double-count.
+        # Instead, we apply a PENALTY when sleep falls outside the
+        # biological night (WOCL window), reflecting reduced consolidation.
+        #
+        # Penalty: up to 15 % for fully daytime sleep (0 h WOCL overlap).
+        # WOCL window is ~6 h; full overlap → no penalty (1.0).
         wocl_overlap = self._calculate_wocl_overlap(sleep_start, sleep_end, location_timezone)
-        wocl_boost = 1.0 + (wocl_overlap * 0.03)  # 3% boost per hour
-        wocl_boost = min(1.15, wocl_boost)  # Cap at 15%
+        wocl_window_hours = float(self.WOCL_END - self.WOCL_START)
+        # Fraction of sleep that aligns with WOCL (0 = fully daytime, 1 = fully nighttime)
+        alignment_ratio = min(1.0, wocl_overlap / max(1.0, min(actual_duration, wocl_window_hours)))
+        # Max 15 % penalty for fully misaligned sleep
+        wocl_boost = 1.0 - 0.15 * (1.0 - alignment_ratio) if actual_duration > 0.5 else 1.0
         
         # 5. Late sleep onset penalty
         tz = pytz.timezone(location_timezone)
@@ -463,21 +483,33 @@ class UnifiedSleepCalculator:
         else:
             late_onset_penalty = 1.0
         
-        # 6. Recovery sleep boost — operational estimate.
+        # 6. Recovery sleep boost — graded by recency of duty.
         # Post-duty sleep with high homeostatic drive shows enhanced SWA
-        # rebound (Borbély 1982), faster onset, and fewer awakenings.
-        # The 10% boost and 3h threshold are modelling choices, not from
-        # a specific published value.
+        # rebound (Borbély 1982) and shorter onset latency. The effect
+        # is graded, not binary: strongest immediately post-duty,
+        # diminishing as the interval grows. Capped at 5 % to avoid
+        # inflating combined efficiency above 1.0 after multiplication.
+        # Reference: Borbély (1982) Human Neurobiol 1:195-204
         if previous_duty_end:
             hours_since_duty = (sleep_start - previous_duty_end).total_seconds() / 3600
-            recovery_boost = 1.10 if hours_since_duty < 3 and not is_nap else 1.0
+            if hours_since_duty < 2 and not is_nap:
+                recovery_boost = 1.05
+            elif hours_since_duty < 4 and not is_nap:
+                recovery_boost = 1.03
+            else:
+                recovery_boost = 1.0
         else:
             recovery_boost = 1.0
             hours_since_duty = None
         
-        # 7. Time pressure factor
+        # 7. Time pressure factor — penalties only
+        # Anticipatory stress disrupts sleep when the next event is
+        # imminent. Kecklund & Åkerstedt (2004) J Sleep Res 13:1-6
+        # documented reduced sleep quality before early-morning shifts.
+        # Having ample time is the BASELINE (1.0), not a bonus — the
+        # previous 1.03 bonus inflated combined efficiency above 1.0.
         hours_until_duty = (next_event - sleep_end).total_seconds() / 3600
-        
+
         if hours_until_duty < 1.5:
             time_pressure_factor = 0.88
         elif hours_until_duty < 3:
@@ -485,7 +517,7 @@ class UnifiedSleepCalculator:
         elif hours_until_duty < 6:
             time_pressure_factor = 0.97
         else:
-            time_pressure_factor = 1.03
+            time_pressure_factor = 1.0
         
         # 8. Insufficient sleep penalty
         if actual_duration < 4 and not is_nap:
@@ -1289,29 +1321,44 @@ class BorbelyFatigueModel:
         base_alertness = s_alertness * 0.6 + c_alertness * 0.4
         return base_alertness
     
-    def integrate_performance(self, c: float, s: float, w: float) -> float:
+    def integrate_performance(
+        self, c: float, s: float, w: float, hours_on_duty: float = 0.0
+    ) -> float:
         """
-        Integrate three processes into performance (0-100 scale)
+        Integrate processes into performance (0-100 scale)
 
-        Inspired by Åkerstedt & Folkard (1997) three-process model and
-        Dawson & Reid (1997) performance equivalence framework. The
-        weighted-average integration (60/40 S/C) is an operational
-        adaptation — the original models use additive combination.
+        Components:
+          S — homeostatic sleep pressure     (Borbély 1982)
+          C — circadian rhythm               (Dijk & Czeisler 1995)
+          W — sleep inertia                  (Tassi & Muzet 2000)
+          T — time-on-task linear decrement  (Folkard & Åkerstedt 1999)
+
+        Weights (60/40 S/C) are an operational adaptation — original
+        models use additive combination.
+        References: Åkerstedt & Folkard (1997) three-process model;
+                    Dawson & Reid (1997) performance equivalence framework;
+                    Folkard et al. (1999) J Biol Rhythms 14:577-587.
         """
         # Input validation with graceful clamping
         c = max(0.0, min(1.0, c))
         s = max(0.0, min(1.0, s))
         w = max(0.0, min(1.0, w))
-        
+
         c_phase = (c * 2.0) - 1.0
         base_alertness = self.integrate_s_and_c_multiplicative(s, c_phase)
-        alertness_with_tot = base_alertness * (1.0 - w)
-        
+        alertness_with_inertia = base_alertness * (1.0 - w)
+
+        # Time-on-task: linear decrement per hour on duty
+        # Folkard & Åkerstedt (1999) found ~0.7 %/h decline in subjective
+        # alertness across 12-h shifts, independent of S and C.
+        tot_penalty = self.params.time_on_task_rate * max(0.0, hours_on_duty)
+        alertness_final = max(0.0, alertness_with_inertia - tot_penalty)
+
         # Performance floor of 20 (severe impairment, ~0.05% BAC equivalent)
         MIN_PERFORMANCE_FLOOR = 20.0
-        performance = MIN_PERFORMANCE_FLOOR + (alertness_with_tot * (100.0 - MIN_PERFORMANCE_FLOOR))
+        performance = MIN_PERFORMANCE_FLOOR + (alertness_final * (100.0 - MIN_PERFORMANCE_FLOOR))
         performance = max(MIN_PERFORMANCE_FLOOR, min(100.0, performance))
-        
+
         return performance
     
     # ========================================================================
@@ -1390,8 +1437,17 @@ class BorbelyFatigueModel:
                             sector += 1
             return sector
         
-        effective_wake_hours = 0.0
-        s_current = s_at_wake
+        # Initialize with pre-duty wakefulness so that hours already awake
+        # before report contribute to homeostatic pressure at duty start.
+        # Without this, S resets to s_at_wake regardless of how long the
+        # pilot has been awake before report — a significant underestimate.
+        # Reference: Dawson & Reid (1997) Nature 388:235 — 17 h awake ≈ 0.05 % BAC.
+        pre_duty_awake_hours = (duty.report_time_utc - wake_time).total_seconds() / 3600
+        pre_duty_awake_hours = max(0.0, pre_duty_awake_hours)
+        effective_wake_hours = pre_duty_awake_hours
+        s_current = self.params.S_max - (self.params.S_max - s_at_wake) * \
+                    math.exp(-effective_wake_hours / self.params.tau_i)
+        s_current = max(self.params.S_min, min(self.params.S_max, s_current))
         current_time = duty.report_time_utc
         
         # Ensure minimum duty length
@@ -1415,7 +1471,8 @@ class BorbelyFatigueModel:
             c = self.compute_process_c(current_time, duty.home_base_timezone, circadian_phase_shift)
             current_wake = current_time - wake_time
             w = self.compute_sleep_inertia(current_wake)
-            performance = self.integrate_performance(c, s_current, w)
+            hours_on_duty = (current_time - duty.report_time_utc).total_seconds() / 3600
+            performance = self.integrate_performance(c, s_current, w, hours_on_duty)
             
             tz = pytz.timezone(duty.home_base_timezone)
             point = PerformancePoint(
@@ -1846,6 +1903,21 @@ class BorbelyFatigueModel:
                 'key': 'borbely_1982',
                 'short': 'Borbely (1982)',
                 'full': 'Borbely AA. A two process model of sleep regulation. Hum Neurobiol 1:195-204',
+            },
+            {
+                'key': 'folkard_1999',
+                'short': 'Folkard & Åkerstedt (1999)',
+                'full': 'Folkard S et al. Beyond the three-process model of alertness. J Biol Rhythms 14(6):577-587',
+            },
+            {
+                'key': 'dawson_reid_1997',
+                'short': 'Dawson & Reid (1997)',
+                'full': 'Dawson D, Reid K. Fatigue, alcohol and performance impairment. Nature 388:235',
+            },
+            {
+                'key': 'dijk_czeisler_1995',
+                'short': 'Dijk & Czeisler (1995)',
+                'full': 'Dijk D-J, Czeisler CA. Contribution of the circadian pacemaker and the sleep homeostat. J Neurosci 15:3526-3538',
             },
         ]
 
