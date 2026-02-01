@@ -552,7 +552,7 @@ class UnifiedSleepCalculator:
             effective_sleep_hours=effective_sleep_hours,
             sleep_efficiency=combined_efficiency,
             base_efficiency=base_efficiency,
-            wocl_penalty=1.0,  # Now using wocl_boost instead
+            wocl_penalty=wocl_boost,  # circadian alignment factor (0.85-1.0)
             late_onset_penalty=late_onset_penalty,
             recovery_boost=recovery_boost,
             time_pressure_factor=time_pressure_factor,
@@ -1472,8 +1472,9 @@ class BorbelyFatigueModel:
             current_wake = current_time - wake_time
             w = self.compute_sleep_inertia(current_wake)
             hours_on_duty = (current_time - duty.report_time_utc).total_seconds() / 3600
+            tot_penalty = self.params.time_on_task_rate * max(0.0, hours_on_duty)
             performance = self.integrate_performance(c, s_current, w, hours_on_duty)
-            
+
             tz = pytz.timezone(duty.home_base_timezone)
             point = PerformancePoint(
                 timestamp_utc=current_time,
@@ -1482,6 +1483,8 @@ class BorbelyFatigueModel:
                 homeostatic_component=s_current,
                 sleep_inertia_component=w,
                 raw_performance=performance,
+                hours_on_duty=hours_on_duty,
+                time_on_task_penalty=tot_penalty,
                 current_flight_phase=phase,
                 is_critical_phase=(phase in [FlightPhase.TAKEOFF, FlightPhase.LANDING, FlightPhase.APPROACH])
             )
@@ -1491,7 +1494,8 @@ class BorbelyFatigueModel:
         
         duty_timeline = self._build_duty_timeline(duty, timeline, sleep_history, circadian_phase_shift)
         duty_timeline.final_process_s = s_current
-        
+        duty_timeline.pre_duty_awake_hours = pre_duty_awake_hours
+
         return duty_timeline
     
     def _build_duty_timeline(
