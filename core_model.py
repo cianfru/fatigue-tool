@@ -370,6 +370,12 @@ class UnifiedSleepCalculator:
         self.NORMAL_WAKE_HOUR = 7
         self.NORMAL_SLEEP_DURATION = 8.0
         
+        # Minimum pre-duty preparation buffer (hours).
+        # Conservative estimate: pilots need time for commute, briefing,
+        # personal preparation.  1 h was unrealistic for early-morning
+        # starts; 2 h gives a more representative wakefulness-at-report.
+        self.MIN_WAKE_BEFORE_REPORT = 2.0
+
         # Operational thresholds
         self.NIGHT_FLIGHT_THRESHOLD = 20  # EASA late-type duty
         self.EARLY_REPORT_THRESHOLD = 7
@@ -714,7 +720,7 @@ class UnifiedSleepCalculator:
         
         # Pre-duty nap: 2h duration (Signal 2014 found typical naps 1-2h;
         # only 54% of crew napped, so confidence is reduced accordingly)
-        nap_end = report_local - timedelta(hours=1.5)
+        nap_end = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
         nap_start = nap_end - timedelta(hours=2.0)
         
         nap_start_utc, nap_end_utc, nap_warnings = self._validate_sleep_no_overlap(
@@ -789,7 +795,7 @@ class UnifiedSleepCalculator:
 
         # Earliest realistic bedtime is ~21:30 (circadian opposition before this)
         # Arsintescu et al. (2022): pilots do not sufficiently advance bedtime
-        wake_time = report_local - timedelta(hours=1)
+        wake_time = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
         sleep_end = wake_time
         earliest_bedtime = report_local.replace(hour=21, minute=30) - timedelta(days=1)
         sleep_start = max(earliest_bedtime, sleep_end - timedelta(hours=sleep_duration))
@@ -845,7 +851,7 @@ class UnifiedSleepCalculator:
         
         report_local = duty.report_time_utc.astimezone(self.home_tz)
         
-        anchor_end = report_local - timedelta(hours=1.5)
+        anchor_end = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
         anchor_start = anchor_end - timedelta(hours=4.5)
         
         anchor_start_utc, anchor_end_utc, anchor_warnings = self._validate_sleep_no_overlap(
@@ -902,9 +908,14 @@ class UnifiedSleepCalculator:
         
         report_local = duty.report_time_utc.astimezone(self.home_tz)
         
-        # All normal duties: sleep previous night, wake at normal time
+        # All normal duties: sleep previous night, wake at normal time.
+        # Ensure at least MIN_WAKE_BEFORE_REPORT hours before report —
+        # if report is 07:30 and normal wake is 07:00, that's only 30 min
+        # which is unrealistic for commute + briefing.
+        normal_wake = report_local.replace(hour=self.NORMAL_WAKE_HOUR, minute=0)
+        latest_wake = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
+        sleep_end = min(normal_wake, latest_wake)
         sleep_start = report_local.replace(hour=self.NORMAL_BEDTIME_HOUR, minute=0) - timedelta(days=1)
-        sleep_end = report_local.replace(hour=self.NORMAL_WAKE_HOUR, minute=0)
         
         sleep_start_utc, sleep_end_utc, sleep_warnings = self._validate_sleep_no_overlap(
             sleep_start.astimezone(pytz.utc), sleep_end.astimezone(pytz.utc), duty, previous_duty
