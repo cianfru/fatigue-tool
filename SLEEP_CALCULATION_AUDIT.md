@@ -165,6 +165,22 @@ Added earliest realistic bedtime of 21:30 (circadian opposition). Confidence red
 
 **Fix applied:** Added `time_on_task_rate = 0.008/h` (0.64%/h on the 20-100 scale) as a linear decrement in `integrate_performance()`, independent of homeostatic and circadian components.
 
+### 17. Sleep Debt Accumulation Model: Three Compounding Bugs [FIXED]
+
+**Problem:** Sleep debt accumulated to 31.6 h over a month with only ~15% recovery/day, producing unrealistic runaway debt. Three bugs compounded:
+1. **Phantom rest-day debt**: effective_sleep_hours (7.6 h = 8 h × 0.95 quality) was compared against 8 h need, so every rest day *added* 0.4 h of debt instead of recovering.
+2. **Double quality penalty**: quality factors reduced effective sleep for BOTH Process S recovery AND the debt model. Process S already degrades performance for poor-quality sleep — penalising debt as well double-counts.
+3. **Unscaled multi-day need**: a multi-day rest gap compared total sleep against a flat 8 h need instead of 8 h × N days.
+4. **Decay rate too slow**: 0.25/day (22 %/day) understated recovery vs. empirical data.
+
+**Fix applied:**
+- Debt now uses `duration_hours` (raw time asleep) instead of `effective_sleep_hours`.
+- Period need scales with `days_since_last` (8 h × N days).
+- Surplus sleep actively reduces existing debt 1:1.
+- Decay rate increased to 0.50/day (half-life ≈ 1.4 d), calibrated against:
+  - Kitamura et al. (2016): 1 h debt ≈ 4 d to fully recover → exp(-0.5×4) = 0.14 (86 % in 4 d)
+  - Belenky et al. (2003): 3 × 8 h recovery nights incomplete → exp(-0.5×3) = 0.22 (78 % in 3 d)
+
 ---
 
 ## Remaining Known Gaps
@@ -188,8 +204,9 @@ These are not inconsistencies but **missing features** identified during the aud
 3. Arsintescu L et al. (2022). Early starts and late finishes both reduce alertness and performance. *J Sleep Res* 31(3):e13521.
 4. Borbely AA (1982). A two process model of sleep regulation. *Hum Neurobiol* 1:195-204.
 5. Borbely AA & Achermann P (1999). Sleep homeostasis and models of sleep regulation. *J Biol Rhythms* 14:557-568.
-6. Bourgeois-Bougrine S et al. (2003). Perceived fatigue for short- and long-haul flights. *Aviat Space Environ Med* 74(10):1072-1077.
-7. Dawson D & Reid K (1997). Fatigue, alcohol and performance impairment. *Nature* 388:235.
+6. Belenky G et al. (2003). Patterns of performance degradation and restoration during sleep restriction and subsequent recovery: a sleep dose-response study. *J Sleep Res* 12:1-12.
+7. Bourgeois-Bougrine S et al. (2003). Perceived fatigue for short- and long-haul flights. *Aviat Space Environ Med* 74(10):1072-1077.
+8. Dawson D & Reid K (1997). Fatigue, alcohol and performance impairment. *Nature* 388:235.
 8. Dijk DJ & Czeisler CA (1994). Direct evidence for independent circadian and sleep-dependent regulation. *J Neurosci* 14:3522-3530.
 9. Dijk DJ & Czeisler CA (1995). Contribution of the circadian pacemaker and the sleep homeostat to sleep propensity, sleep structure, EEG slow waves, and spindle activity. *J Neurosci* 15(5):3526-3538.
 9. Dinges DF et al. (1987). Temporal placement of a nap for alertness. *Sleep* 10(4):313-329.
@@ -198,7 +215,8 @@ These are not inconsistencies but **missing features** identified during the aud
 12. Folkard S, Åkerstedt T, Macdonald I, Tucker P & Spencer MB (1999). Beyond the three-process model of alertness: estimating phase, time on shift, and successive night effects. *J Biol Rhythms* 14(6):577-587.
 13. Hursh SR et al. (2004). Fatigue models for applied research in warfighting. *Aviat Space Environ Med* 75(3 Suppl):A44-53.
 14. Kecklund G & Åkerstedt T (2004). Apprehension of the subsequent working day is associated with a low amount of slow wave sleep. *J Sleep Res* 13:1-6.
-15. Jewett ME & Kronauer RE (1999). Interactive mathematical models of subjective alertness and cognitive throughput. *J Biol Rhythms* 14:588-597.
+15. Kitamura S et al. (2016). Estimating individual optimal sleep duration and potential sleep debt. *Sci Rep* 6:35812.
+16. Jewett ME & Kronauer RE (1999). Interactive mathematical models of subjective alertness and cognitive throughput. *J Biol Rhythms* 14:588-597.
 14. Juda M, Vetter C & Roenneberg T (2013). Chronotype modulates sleep duration, sleep quality, and social jet lag in shift-workers. *J Biol Rhythms* 28:267-276.
 15. Minors DS & Waterhouse JM (1981). Anchor sleep as a synchronizer. *Int J Chronobiol* 8:165-88.
 16. Minors DS & Waterhouse JM (1983). Does 'anchor sleep' entrain circadian rhythms? *J Physiol* 345:1-11.
