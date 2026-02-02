@@ -653,9 +653,11 @@ async def get_duty_detail(analysis_id: str, duty_id: str):
             "performance": point.raw_performance,
             "sleep_pressure": point.homeostatic_component,
             "circadian": point.circadian_component,
-            "sleep_inertia": point.sleep_inertia_component,
+            # Factor form: 1.0 = no effect, <1.0 = degradation.
+            # The frontend displays (factor - 1.0) * 100 as a percentage.
+            "sleep_inertia": 1.0 - point.sleep_inertia_component,
             "hours_on_duty": point.hours_on_duty,
-            "time_on_task_penalty": point.time_on_task_penalty,
+            "time_on_task_penalty": 1.0 - point.time_on_task_penalty,
             "flight_phase": point.current_flight_phase.value if point.current_flight_phase else None,
             "is_critical": point.is_critical_phase
         })
