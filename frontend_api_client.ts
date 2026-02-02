@@ -177,10 +177,11 @@ export interface TimelinePoint {
   performance: number;
   sleep_pressure: number;       // Process S — homeostatic (0-1)
   circadian: number;            // Process C — circadian (0-1)
-  sleep_inertia: number;        // Process W — sleep inertia (0-1)
-  /** Hours elapsed since duty report — Folkard & Åkerstedt (1999) */
+  /** Process W — sleep inertia FACTOR: 1.0 = no inertia, 0.7 = just woke up */
+  sleep_inertia: number;
+  /** Hours elapsed since duty report */
   hours_on_duty: number;
-  /** Linear alertness decrement from time on task (~0.008/h) */
+  /** Time-on-task FACTOR: 1.0 = start of duty, ~0.934 at 8h — Folkard & Åkerstedt (1999) */
   time_on_task_penalty: number;
   flight_phase: string | null;
   is_critical: boolean;
