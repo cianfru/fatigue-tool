@@ -103,12 +103,16 @@ class BorbelyParameters:
 
     # Sleep debt
     # Baseline 8h need: Van Dongen et al. (2003) Sleep 26(2):117-126
-    # Decay rate 0.25: operational estimate for exponential debt recovery;
-    # Van Dongen (2003) demonstrated cumulative deficits but did not
-    # specify an exponential decay rate. Value may derive from SAFTE/FAST
-    # model family (Hursh et al. 2004).
+    # Decay rate 0.50/day ≈ half-life 1.4 days.
+    #   Kitamura et al. (2016) Sci Rep 6:35812 found 1 h of debt needs
+    #   ~4 days of optimal sleep for full recovery → exp(-0.5*4)=0.135
+    #   (87 % recovered in 4 d).  Belenky et al. (2003) J Sleep Res
+    #   12:1-12 showed substantial but incomplete recovery after 3 × 8 h
+    #   nights → exp(-0.5*3)=0.22 (78 % recovered in 3 d).
+    # Debt is calculated against RAW sleep duration (not quality-adjusted)
+    # to avoid double-penalising — quality already degrades Process S.
     baseline_sleep_need_hours: float = 8.0
-    sleep_debt_decay_rate: float = 0.25
+    sleep_debt_decay_rate: float = 0.50
 
 
 @dataclass
@@ -1689,18 +1693,51 @@ class BorbelyFatigueModel:
             duty.used_discretion = fdp_limits['used_discretion']
             
             # Track cumulative sleep debt
+            # ── Three-step model ──────────────────────────────────────
+            #  1. Exponential recovery of existing debt (time-based)
+            #  2. Compute sleep balance for the period (raw duration vs
+            #     scaled daily need) — avoids double-penalising quality
+            #     since Process S already accounts for sleep efficiency.
+            #  3. Deficit adds to debt; surplus reduces debt 1:1.
+            # References:
+            #   Van Dongen et al. (2003) Sleep 26(2):117-126
+            #   Belenky et al. (2003) J Sleep Res 12:1-12
+            #   Kitamura et al. (2016) Sci Rep 6:35812
             if previous_duty:
-                days_since_last = (duty.date - previous_duty.date).days
-                if days_since_last > 0:
-                    cumulative_sleep_debt *= math.exp(-self.params.sleep_debt_decay_rate * days_since_last)
-            
-            duty_sleep = sum(
-                s.effective_sleep_hours for s in relevant_sleep
-                if s.start_utc >= (previous_duty.release_time_utc if previous_duty else duty.report_time_utc - timedelta(days=1))
+                days_since_last = max(1, (duty.date - previous_duty.date).days)
+                cumulative_sleep_debt *= math.exp(
+                    -self.params.sleep_debt_decay_rate * days_since_last
+                )
+            else:
+                days_since_last = 1
+
+            # Use RAW duration (not effective_sleep_hours) so that
+            # quality penalties only affect Process S, not debt.
+            period_sleep = sum(
+                s.duration_hours for s in relevant_sleep
+                if s.start_utc >= (
+                    previous_duty.release_time_utc
+                    if previous_duty
+                    else duty.report_time_utc - timedelta(days=1)
+                )
             )
-            
-            daily_debt = max(0, self.params.baseline_sleep_need_hours - duty_sleep)
-            cumulative_sleep_debt += daily_debt
+
+            # Scale need by gap length so multi-day rest periods
+            # are evaluated fairly (8 h × N days, not a flat 8 h).
+            period_need = (
+                self.params.baseline_sleep_need_hours * days_since_last
+            )
+            sleep_balance = period_sleep - period_need
+
+            if sleep_balance < 0:
+                # Deficit: add shortfall to cumulative debt
+                cumulative_sleep_debt += abs(sleep_balance)
+            elif sleep_balance > 0 and cumulative_sleep_debt > 0:
+                # Surplus: actively reduce existing debt 1:1
+                cumulative_sleep_debt = max(
+                    0.0, cumulative_sleep_debt - sleep_balance
+                )
+
             timeline_obj.cumulative_sleep_debt = cumulative_sleep_debt
             
             # Attach sleep strategy data
@@ -1866,7 +1903,7 @@ class BorbelyFatigueModel:
                             'wocl_boost': 1.0,
                             'late_onset_penalty': 1.0,
                             'recovery_boost': 1.0,
-                            'time_pressure_factor': 1.03,
+                            'time_pressure_factor': 1.0,
                             'insufficient_penalty': 1.0,
                         },
                         'references': self._get_strategy_references('recovery'),
@@ -1933,6 +1970,16 @@ class BorbelyFatigueModel:
                 'key': 'dijk_czeisler_1995',
                 'short': 'Dijk & Czeisler (1995)',
                 'full': 'Dijk D-J, Czeisler CA. Contribution of the circadian pacemaker and the sleep homeostat. J Neurosci 15:3526-3538',
+            },
+            {
+                'key': 'belenky_2003',
+                'short': 'Belenky et al. (2003)',
+                'full': 'Belenky G et al. Patterns of performance degradation and restoration during sleep restriction and subsequent recovery. J Sleep Res 12:1-12',
+            },
+            {
+                'key': 'kitamura_2016',
+                'short': 'Kitamura et al. (2016)',
+                'full': 'Kitamura S et al. Estimating individual optimal sleep duration and potential sleep debt. Sci Rep 6:35812',
             },
         ]
 
