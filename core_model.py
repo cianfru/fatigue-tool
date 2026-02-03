@@ -405,23 +405,81 @@ class UnifiedSleepCalculator:
         self.MIN_SLEEP_FOR_QUALITY = 6.0
         
         self.home_tz = None
-    
+        self.home_base = None
+
+    def _detect_layover(
+        self,
+        duty: Duty,
+        previous_duty: Optional[Duty],
+        home_base: str
+    ) -> Tuple[bool, Optional[str], str]:
+        """
+        Detect if pilot is at a layover location vs. home base
+
+        Returns:
+            (is_layover, layover_timezone, environment)
+            - is_layover: True if pilot slept at layover location
+            - layover_timezone: Timezone of layover location (None if at home)
+            - environment: 'hotel' if layover, 'home' if at home base
+        """
+        if not previous_duty or not previous_duty.segments:
+            return False, None, 'home'
+
+        # Where did previous duty end?
+        prev_arrival = previous_duty.segments[-1].arrival_airport
+
+        # Where does current duty start?
+        curr_departure = duty.segments[0].departure_airport
+
+        # Check if pilot is at layover:
+        # 1. Previous duty ended at location X
+        # 2. Current duty starts at same location X
+        # 3. Location X is NOT the home base
+        if (prev_arrival.code == curr_departure.code and
+            prev_arrival.code != home_base):
+            # LAYOVER SCENARIO
+            return True, prev_arrival.timezone, 'hotel'
+
+        return False, None, 'home'
+
     def estimate_sleep_for_duty(
         self,
         duty: Duty,
         previous_duty: Optional[Duty] = None,
-        home_timezone: str = 'UTC'
+        home_timezone: str = 'UTC',
+        home_base: Optional[str] = None
     ) -> SleepStrategy:
-        """Main entry point: Estimate how pilot actually slept before duty"""
-        
+        """
+        Main entry point: Estimate how pilot actually slept before duty
+
+        Args:
+            duty: Current duty to estimate sleep for
+            previous_duty: Previous duty (for layover detection)
+            home_timezone: Pilot's home base timezone
+            home_base: Pilot's home base airport code (e.g., 'DOH')
+        """
+
         self.home_tz = pytz.timezone(home_timezone)
+        # Use provided home_base, or infer from first departure if not provided
+        self.home_base = home_base or (duty.segments[0].departure_airport.code if duty.segments else None)
+
+        # Detect layover scenario
+        is_layover, layover_tz, sleep_env = self._detect_layover(
+            duty, previous_duty, self.home_base
+        )
+
+        # Store layover info for strategy methods to use
+        self.is_layover = is_layover
+        self.layover_timezone = layover_tz
+        self.sleep_environment = sleep_env
+
         report_local = duty.report_time_utc.astimezone(self.home_tz)
         report_hour = report_local.hour
-        
+
         # Calculate duty characteristics
         duty_duration = (duty.release_time_utc - duty.report_time_utc).total_seconds() / 3600
         crosses_wocl = self._duty_crosses_wocl(duty)
-        
+
         # Decision tree: match pilot behavior patterns
         if report_hour >= self.NIGHT_FLIGHT_THRESHOLD or report_hour < 4:
             return self._night_departure_strategy(duty, previous_duty)
@@ -685,88 +743,103 @@ class UnifiedSleepCalculator:
         References:
             Signal et al. (2014) Aviat Space Environ Med 85:1199-1208
             Gander et al. (2014) Aviat Space Environ Med 85(8):833-40
+
+        NEW: Detects layover scenarios and calculates sleep at layover location.
         """
 
-        report_local = duty.report_time_utc.astimezone(self.home_tz)
+        # Determine sleep location timezone
+        if self.is_layover and self.layover_timezone:
+            sleep_tz = pytz.timezone(self.layover_timezone)
+            sleep_location = self.sleep_environment  # 'hotel'
+        else:
+            sleep_tz = self.home_tz
+            sleep_location = 'home'
+
+        report_local = duty.report_time_utc.astimezone(sleep_tz)
 
         # Morning sleep (23:00-07:00, standard 8h window)
         morning_sleep_start = report_local.replace(hour=self.NORMAL_BEDTIME_HOUR, minute=0) - timedelta(days=1)
         morning_sleep_end = report_local.replace(hour=7, minute=0)
-        
+
         morning_sleep_start_utc, morning_sleep_end_utc, morning_warnings = self._validate_sleep_no_overlap(
             morning_sleep_start.astimezone(pytz.utc), morning_sleep_end.astimezone(pytz.utc), duty, previous_duty
         )
-        morning_sleep_start = morning_sleep_start_utc.astimezone(self.home_tz)
-        morning_sleep_end = morning_sleep_end_utc.astimezone(self.home_tz)
-        
+        morning_sleep_start = morning_sleep_start_utc.astimezone(sleep_tz)
+        morning_sleep_end = morning_sleep_end_utc.astimezone(sleep_tz)
+
         morning_quality = self.calculate_sleep_quality(
             sleep_start=morning_sleep_start,
             sleep_end=morning_sleep_end,
-            location='home',
+            location=sleep_location,  # 'home' or 'hotel'
             previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
             next_event=report_local,
-            location_timezone=self.home_tz.zone
+            location_timezone=sleep_tz.zone
         )
-        
+
         morning_sleep = SleepBlock(
             start_utc=morning_sleep_start.astimezone(pytz.utc),
             end_utc=morning_sleep_end.astimezone(pytz.utc),
-            location_timezone=self.home_tz.zone,
+            location_timezone=sleep_tz.zone,
             duration_hours=morning_quality.actual_sleep_hours,
             quality_factor=morning_quality.sleep_efficiency,
             effective_sleep_hours=morning_quality.effective_sleep_hours,
-            environment='home',
+            environment=sleep_location,  # 'home' or 'hotel'
             sleep_start_day=morning_sleep_start.day,
             sleep_start_hour=morning_sleep_start.hour + morning_sleep_start.minute / 60.0,
             sleep_end_day=morning_sleep_end.day,
             sleep_end_hour=morning_sleep_end.hour + morning_sleep_end.minute / 60.0
         )
-        
+
         # Pre-duty nap: 2h duration (Signal 2014 found typical naps 1-2h;
         # only 54% of crew napped, so confidence is reduced accordingly)
         nap_end = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
         nap_start = nap_end - timedelta(hours=2.0)
-        
+
         nap_start_utc, nap_end_utc, nap_warnings = self._validate_sleep_no_overlap(
             nap_start.astimezone(pytz.utc), nap_end.astimezone(pytz.utc), duty, previous_duty
         )
-        nap_start = nap_start_utc.astimezone(self.home_tz)
-        nap_end = nap_end_utc.astimezone(self.home_tz)
-        
+        nap_start = nap_start_utc.astimezone(sleep_tz)
+        nap_end = nap_end_utc.astimezone(sleep_tz)
+
         nap_quality = self.calculate_sleep_quality(
             sleep_start=nap_start,
             sleep_end=nap_end,
-            location='home',
+            location=sleep_location,  # 'home' or 'hotel'
             previous_duty_end=morning_sleep_end.astimezone(pytz.utc),
             next_event=report_local,
             is_nap=True,
-            location_timezone=self.home_tz.zone
+            location_timezone=sleep_tz.zone
         )
-        
+
         afternoon_nap = SleepBlock(
             start_utc=nap_start.astimezone(pytz.utc),
             end_utc=nap_end.astimezone(pytz.utc),
-            location_timezone=self.home_tz.zone,
+            location_timezone=sleep_tz.zone,
             duration_hours=nap_quality.actual_sleep_hours,
             quality_factor=nap_quality.sleep_efficiency,
             effective_sleep_hours=nap_quality.effective_sleep_hours,
             is_anchor_sleep=False,
-            environment='home',
+            environment=sleep_location,  # 'home' or 'hotel'
             sleep_start_day=nap_start.day,
             sleep_start_hour=nap_start.hour + nap_start.minute / 60.0,
             sleep_end_day=nap_end.day,
             sleep_end_hour=nap_end.hour + nap_end.minute / 60.0
         )
-        
+
         total_effective = morning_quality.effective_sleep_hours + nap_quality.effective_sleep_hours
         # Confidence lowered: Signal (2014) found only 54% of crew nap
         confidence = 0.60 if not (morning_warnings or nap_warnings) else 0.45
-        
+
+        # Lower confidence for layover sleep (more variability)
+        if self.is_layover:
+            confidence *= 0.90
+
+        location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
         return SleepStrategy(
             strategy_type='afternoon_nap',
             sleep_blocks=[morning_sleep, afternoon_nap],
             confidence=confidence,
-            explanation=f"Night departure: {morning_quality.actual_sleep_hours:.1f}h + "
+            explanation=f"Night departure at {location_desc}: {morning_quality.actual_sleep_hours:.1f}h + "
                        f"{nap_quality.actual_sleep_hours:.1f}h nap = {total_effective:.1f}h effective",
             quality_analysis=[morning_quality, nap_quality]
         )
@@ -787,9 +860,19 @@ class UnifiedSleepCalculator:
         References:
             Roach et al. (2012) Accid Anal Prev 45 Suppl:22-26
             Arsintescu et al. (2022) J Sleep Res 31(3):e13521
+
+        NEW: Detects layover scenarios and calculates sleep at layover location.
         """
 
-        report_local = duty.report_time_utc.astimezone(self.home_tz)
+        # Determine sleep location timezone
+        if self.is_layover and self.layover_timezone:
+            sleep_tz = pytz.timezone(self.layover_timezone)
+            sleep_location = self.sleep_environment  # 'hotel'
+        else:
+            sleep_tz = self.home_tz
+            sleep_location = 'home'
+
+        report_local = duty.report_time_utc.astimezone(sleep_tz)
 
         # Roach et al. (2012): pilots lose ~15 min sleep per hour of duty
         # advance before 09:00. Baseline 6.6h at 09:00 report.
@@ -803,45 +886,50 @@ class UnifiedSleepCalculator:
         sleep_end = wake_time
         earliest_bedtime = report_local.replace(hour=21, minute=30) - timedelta(days=1)
         sleep_start = max(earliest_bedtime, sleep_end - timedelta(hours=sleep_duration))
-        
+
         sleep_start_utc, sleep_end_utc, sleep_warnings = self._validate_sleep_no_overlap(
             sleep_start.astimezone(pytz.utc), sleep_end.astimezone(pytz.utc), duty, previous_duty
         )
-        sleep_start = sleep_start_utc.astimezone(self.home_tz)
-        sleep_end = sleep_end_utc.astimezone(self.home_tz)
-        
+        sleep_start = sleep_start_utc.astimezone(sleep_tz)
+        sleep_end = sleep_end_utc.astimezone(sleep_tz)
+
         sleep_quality = self.calculate_sleep_quality(
             sleep_start=sleep_start,
             sleep_end=sleep_end,
-            location='home',
+            location=sleep_location,  # 'home' or 'hotel'
             previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
             next_event=report_local,
-            location_timezone=self.home_tz.zone
+            location_timezone=sleep_tz.zone
         )
-        
+
         early_sleep = SleepBlock(
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=sleep_end.astimezone(pytz.utc),
-            location_timezone=self.home_tz.zone,
+            location_timezone=sleep_tz.zone,
             duration_hours=sleep_quality.actual_sleep_hours,
             quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
-            environment='home',
+            environment=sleep_location,  # 'home' or 'hotel'
             sleep_start_day=sleep_start.day,
             sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
             sleep_end_day=sleep_end.day,
             sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
         )
-        
+
         # Lower confidence reflects Roach (2012) finding of high variability
         # in early-start sleep; individual differences in circadian tolerance
         confidence = 0.55 if not sleep_warnings else 0.40
 
+        # Lower confidence for layover sleep (more variability)
+        if self.is_layover:
+            confidence *= 0.90
+
+        location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
         return SleepStrategy(
             strategy_type='early_bedtime',
             sleep_blocks=[early_sleep],
             confidence=confidence,
-            explanation=f"Early report: Constrained bedtime = {sleep_quality.effective_sleep_hours:.1f}h effective "
+            explanation=f"Early report at {location_desc}: Constrained bedtime = {sleep_quality.effective_sleep_hours:.1f}h effective "
                        f"(Roach 2012 regression: {sleep_duration:.1f}h predicted)",
             quality_analysis=[sleep_quality]
         )
@@ -851,49 +939,66 @@ class UnifiedSleepCalculator:
         duty: Duty,
         previous_duty: Optional[Duty]
     ) -> SleepStrategy:
-        """WOCL duty strategy: anchor sleep before duty"""
-        
-        report_local = duty.report_time_utc.astimezone(self.home_tz)
-        
+        """
+        WOCL duty strategy: anchor sleep before duty
+
+        NEW: Detects layover scenarios and calculates sleep at layover location.
+        """
+
+        # Determine sleep location timezone
+        if self.is_layover and self.layover_timezone:
+            sleep_tz = pytz.timezone(self.layover_timezone)
+            sleep_location = self.sleep_environment  # 'hotel'
+        else:
+            sleep_tz = self.home_tz
+            sleep_location = 'home'
+
+        report_local = duty.report_time_utc.astimezone(sleep_tz)
+
         anchor_end = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
         anchor_start = anchor_end - timedelta(hours=4.5)
-        
+
         anchor_start_utc, anchor_end_utc, anchor_warnings = self._validate_sleep_no_overlap(
             anchor_start.astimezone(pytz.utc), anchor_end.astimezone(pytz.utc), duty, previous_duty
         )
-        anchor_start = anchor_start_utc.astimezone(self.home_tz)
-        anchor_end = anchor_end_utc.astimezone(self.home_tz)
-        
+        anchor_start = anchor_start_utc.astimezone(sleep_tz)
+        anchor_end = anchor_end_utc.astimezone(sleep_tz)
+
         anchor_quality = self.calculate_sleep_quality(
             sleep_start=anchor_start,
             sleep_end=anchor_end,
-            location='home',
+            location=sleep_location,  # 'home' or 'hotel'
             previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
             next_event=report_local,
-            location_timezone=self.home_tz.zone
+            location_timezone=sleep_tz.zone
         )
-        
+
         anchor_sleep = SleepBlock(
             start_utc=anchor_start.astimezone(pytz.utc),
             end_utc=anchor_end.astimezone(pytz.utc),
-            location_timezone=self.home_tz.zone,
+            location_timezone=sleep_tz.zone,
             duration_hours=anchor_quality.actual_sleep_hours,
             quality_factor=anchor_quality.sleep_efficiency,
             effective_sleep_hours=anchor_quality.effective_sleep_hours,
-            environment='home',
+            environment=sleep_location,  # 'home' or 'hotel'
             sleep_start_day=anchor_start.day,
             sleep_start_hour=anchor_start.hour + anchor_start.minute / 60.0,
             sleep_end_day=anchor_end.day,
             sleep_end_hour=anchor_end.hour + anchor_end.minute / 60.0
         )
-        
+
         confidence = 0.50 if not anchor_warnings else 0.35
-        
+
+        # Lower confidence for layover sleep (more variability)
+        if self.is_layover:
+            confidence *= 0.90
+
+        location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
         return SleepStrategy(
             strategy_type='split_sleep',
             sleep_blocks=[anchor_sleep],
             confidence=confidence,
-            explanation=f"WOCL duty: Split sleep = {anchor_quality.effective_sleep_hours:.1f}h effective",
+            explanation=f"WOCL duty at {location_desc}: Split sleep = {anchor_quality.effective_sleep_hours:.1f}h effective",
             quality_analysis=[anchor_quality]
         )
     
@@ -904,14 +1009,25 @@ class UnifiedSleepCalculator:
     ) -> SleepStrategy:
         """
         Normal daytime duty - standard sleep pattern
-        
+
         Pilots maintain consistent wake times (~07:00) regardless of duty start.
         They do NOT delay wake for afternoon duties.
         Performance degradation for later duties is expected and modeled.
+
+        NEW: Detects layover scenarios and calculates sleep at layover location.
         """
-        
-        report_local = duty.report_time_utc.astimezone(self.home_tz)
-        
+
+        # Determine sleep location timezone
+        if self.is_layover and self.layover_timezone:
+            sleep_tz = pytz.timezone(self.layover_timezone)
+            sleep_location = self.sleep_environment  # 'hotel'
+        else:
+            sleep_tz = self.home_tz
+            sleep_location = 'home'
+
+        # Use sleep location timezone for report time (where pilot wakes up)
+        report_local = duty.report_time_utc.astimezone(sleep_tz)
+
         # All normal duties: sleep previous night, wake at normal time.
         # Ensure at least MIN_WAKE_BEFORE_REPORT hours before report —
         # if report is 07:30 and normal wake is 07:00, that's only 30 min
@@ -920,39 +1036,39 @@ class UnifiedSleepCalculator:
         latest_wake = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
         sleep_end = min(normal_wake, latest_wake)
         sleep_start = report_local.replace(hour=self.NORMAL_BEDTIME_HOUR, minute=0) - timedelta(days=1)
-        
+
         sleep_start_utc, sleep_end_utc, sleep_warnings = self._validate_sleep_no_overlap(
             sleep_start.astimezone(pytz.utc), sleep_end.astimezone(pytz.utc), duty, previous_duty
         )
-        sleep_start = sleep_start_utc.astimezone(self.home_tz)
-        sleep_end = sleep_end_utc.astimezone(self.home_tz)
-        
+        sleep_start = sleep_start_utc.astimezone(sleep_tz)
+        sleep_end = sleep_end_utc.astimezone(sleep_tz)
+
         sleep_quality = self.calculate_sleep_quality(
             sleep_start=sleep_start,
             sleep_end=sleep_end,
-            location='home',
+            location=sleep_location,  # 'home' or 'hotel'
             previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
             next_event=report_local,
-            location_timezone=self.home_tz.zone
+            location_timezone=sleep_tz.zone
         )
-        
+
         normal_sleep = SleepBlock(
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=sleep_end.astimezone(pytz.utc),
-            location_timezone=self.home_tz.zone,
+            location_timezone=sleep_tz.zone,
             duration_hours=sleep_quality.actual_sleep_hours,
             quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
-            environment='home',
+            environment=sleep_location,  # 'home' or 'hotel'
             sleep_start_day=sleep_start.day,
             sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
             sleep_end_day=sleep_end.day,
             sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
         )
-        
+
         # Calculate awake duration
         awake_hours = (report_local - sleep_end).total_seconds() / 3600
-        
+
         # Confidence decreases with longer awake periods
         if awake_hours < 2:
             confidence = 0.95
@@ -962,15 +1078,20 @@ class UnifiedSleepCalculator:
             confidence = 0.80
         else:
             confidence = 0.70
-        
+
         if sleep_warnings:
             confidence *= 0.8
-        
+
+        # Lower confidence for layover sleep (more variability)
+        if self.is_layover:
+            confidence *= 0.90
+
+        location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
         return SleepStrategy(
             strategy_type='normal',
             sleep_blocks=[normal_sleep],
             confidence=confidence,
-            explanation=f"Normal sleep ({sleep_quality.effective_sleep_hours:.1f}h effective), {awake_hours:.1f}h awake before duty",
+            explanation=f"Normal sleep at {location_desc} ({sleep_quality.effective_sleep_hours:.1f}h effective), {awake_hours:.1f}h awake before duty",
             quality_analysis=[sleep_quality]
         )
     
@@ -1768,12 +1889,13 @@ class BorbelyFatigueModel:
         
         for i, duty in enumerate(roster.duties):
             previous_duty = roster.duties[i - 1] if i > 0 else None
-            
+
             # Use unified sleep calculator
             strategy = self.sleep_calculator.estimate_sleep_for_duty(
                 duty=duty,
                 previous_duty=previous_duty,
-                home_timezone=roster.home_base_timezone
+                home_timezone=roster.home_base_timezone,
+                home_base=roster.pilot_base  # Pass home base for layover detection
             )
             
             for sleep_block in strategy.sleep_blocks:
