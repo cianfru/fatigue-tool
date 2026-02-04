@@ -1715,6 +1715,8 @@ class BorbelyFatigueModel:
         
         We also require BOTH conditions to be significantly exceeded to avoid
         false positives from normal night operations with adequate rest.
+        
+        Only one pinch event is flagged per critical phase of flight.
         """
         pinch_events = []
         
@@ -1724,29 +1726,64 @@ class BorbelyFatigueModel:
         CIRCADIAN_THRESHOLD = 0.40
         SLEEP_PRESSURE_THRESHOLD = 0.70
         
+        current_critical_phase = None
+        current_phase_worst_point = None
+        
         for point in timeline:
             if point.is_critical_phase:
-                # Both conditions must be met for a true pinch event
+                # Check if conditions are met for a pinch event
                 if point.circadian_component < CIRCADIAN_THRESHOLD and point.homeostatic_component > SLEEP_PRESSURE_THRESHOLD:
-                    # Severity based on performance score
-                    if point.raw_performance < 45:
-                        severity = 'critical'
-                    elif point.raw_performance < 55:
-                        severity = 'high'
+                    # If this is a new critical phase, start tracking it
+                    if current_critical_phase != point.current_flight_phase:
+                        # Save the previous phase's worst point if any
+                        if current_phase_worst_point is not None:
+                            pinch_events.append(current_phase_worst_point)
+                        
+                        # Start tracking this new phase
+                        current_critical_phase = point.current_flight_phase
+                        current_phase_worst_point = self._create_pinch_event(point)
                     else:
-                        severity = 'moderate'
-                    
-                    pinch_events.append(PinchEvent(
-                        time_utc=point.timestamp_utc,
-                        time_local=point.timestamp_local,
-                        flight_phase=point.current_flight_phase,
-                        performance=point.raw_performance,
-                        circadian=point.circadian_component,
-                        sleep_pressure=point.homeostatic_component,
-                        severity=severity
-                    ))
+                        # Same phase - update if this point is worse
+                        if current_phase_worst_point and point.raw_performance < current_phase_worst_point.performance:
+                            current_phase_worst_point = self._create_pinch_event(point)
+                else:
+                    # Conditions not met, but we might be exiting a critical phase
+                    if current_phase_worst_point is not None:
+                        pinch_events.append(current_phase_worst_point)
+                        current_phase_worst_point = None
+                        current_critical_phase = None
+            else:
+                # Not in critical phase - save any pending pinch event
+                if current_phase_worst_point is not None:
+                    pinch_events.append(current_phase_worst_point)
+                    current_phase_worst_point = None
+                    current_critical_phase = None
+        
+        # Don't forget the last one if we ended during a critical phase
+        if current_phase_worst_point is not None:
+            pinch_events.append(current_phase_worst_point)
         
         return pinch_events
+    
+    def _create_pinch_event(self, point: PerformancePoint) -> PinchEvent:
+        """Helper to create a PinchEvent from a PerformancePoint"""
+        # Severity based on performance score
+        if point.raw_performance < 45:
+            severity = 'critical'
+        elif point.raw_performance < 55:
+            severity = 'high'
+        else:
+            severity = 'moderate'
+        
+        return PinchEvent(
+            time_utc=point.timestamp_utc,
+            time_local=point.timestamp_local,
+            flight_phase=point.current_flight_phase,
+            performance=point.raw_performance,
+            circadian=point.circadian_component,
+            sleep_pressure=point.homeostatic_component,
+            severity=severity
+        )
     
     # ========================================================================
     # ROSTER SIMULATION
