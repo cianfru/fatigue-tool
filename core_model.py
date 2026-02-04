@@ -1889,6 +1889,7 @@ class BorbelyFatigueModel:
         
         for i, duty in enumerate(roster.duties):
             previous_duty = roster.duties[i - 1] if i > 0 else None
+            next_duty = roster.duties[i + 1] if i < len(roster.duties) - 1 else None
 
             # Use unified sleep calculator
             strategy = self.sleep_calculator.estimate_sleep_for_duty(
@@ -1966,6 +1967,15 @@ class BorbelyFatigueModel:
                     },
                     'references': self._get_strategy_references(strategy.strategy_type),
                 }
+
+            post_duty_sleep = self._generate_post_duty_sleep(
+                duty=duty,
+                next_duty=next_duty,
+                home_timezone=roster.home_base_timezone,
+                home_base=roster.pilot_base,
+            )
+            if post_duty_sleep:
+                sleep_blocks.append(post_duty_sleep)
             
             # Generate rest day sleep for gaps between duties
             if i < len(roster.duties) - 1:
@@ -2032,6 +2042,72 @@ class BorbelyFatigueModel:
                     }
         
         return sleep_blocks, sleep_strategies
+
+    def _generate_post_duty_sleep(
+        self,
+        duty: Duty,
+        next_duty: Optional[Duty],
+        home_timezone: str,
+        home_base: Optional[str]
+    ) -> Optional[SleepBlock]:
+        """Generate post-duty recovery sleep after morning arrivals."""
+        if not duty.segments:
+            return None
+
+        arrival_airport = duty.segments[-1].arrival_airport
+        arrival_timezone = arrival_airport.timezone
+        sleep_tz = pytz.timezone(arrival_timezone)
+        is_home_base = home_base and arrival_airport.code == home_base
+
+        environment = 'home' if is_home_base else 'hotel'
+        if next_duty and next_duty.segments:
+            next_departure = next_duty.segments[0].departure_airport
+            if next_departure.code != arrival_airport.code and not is_home_base:
+                environment = 'hotel'
+
+        release_local = duty.release_time_utc.astimezone(sleep_tz)
+        if release_local.hour >= 12:
+            return None
+
+        sleep_start = release_local + timedelta(hours=2.5)
+
+        if next_duty:
+            next_report_local = next_duty.report_time_utc.astimezone(sleep_tz)
+            latest_end = next_report_local - timedelta(
+                hours=self.sleep_calculator.MIN_WAKE_BEFORE_REPORT
+            )
+        else:
+            next_report_local = sleep_start + timedelta(hours=10)
+            latest_end = sleep_start + timedelta(hours=8)
+
+        desired_duration = 6.0
+        sleep_end = min(sleep_start + timedelta(hours=desired_duration), latest_end)
+
+        if sleep_end <= sleep_start + timedelta(hours=1):
+            return None
+
+        sleep_quality = self.sleep_calculator.calculate_sleep_quality(
+            sleep_start=sleep_start,
+            sleep_end=sleep_end,
+            location=environment,
+            previous_duty_end=duty.release_time_utc,
+            next_event=next_report_local,
+            location_timezone=sleep_tz.zone
+        )
+
+        return SleepBlock(
+            start_utc=sleep_start.astimezone(pytz.utc),
+            end_utc=sleep_end.astimezone(pytz.utc),
+            location_timezone=sleep_tz.zone,
+            duration_hours=sleep_quality.actual_sleep_hours,
+            quality_factor=sleep_quality.sleep_efficiency,
+            effective_sleep_hours=sleep_quality.effective_sleep_hours,
+            environment=environment,
+            sleep_start_day=sleep_start.day,
+            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
+            sleep_end_day=sleep_end.day,
+            sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
+        )
 
     @staticmethod
     def _get_confidence_basis(strategy: SleepStrategy) -> str:
