@@ -274,14 +274,17 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
         dep_utc = seg.scheduled_departure_utc
         arr_utc = seg.scheduled_arrival_utc
 
-        # CRITICAL: Use actual airport timezones, not home base timezone
-        # Each airport has its own timezone (e.g., Asia/Kolkata for India, Asia/Qatar for Doha)
-        dep_airport_tz = pytz.timezone(seg.departure_airport.timezone)
-        arr_airport_tz = pytz.timezone(seg.arrival_airport.timezone)
-
-        # Convert to actual local times at each airport
-        dep_local = dep_utc.astimezone(dep_airport_tz)
-        arr_local = arr_utc.astimezone(arr_airport_tz)
+        # IMPORTANT: Convert to HOME BASE timezone (not airport timezone)
+        # The home-base chronogram needs all times in the same reference timezone
+        # to position duty bars correctly and calculate proper lengths.
+        #
+        # For timezone-crossing flights (e.g., DOH-CCJ-DOH), this means:
+        # - India departure 22:25Z → shows as 01:25 DOH time (not 03:55 India time)
+        # - This keeps duty bars proportional on the home-base timeline
+        #
+        # The Human Performance (Elapsed) timeline uses T=0 reference, so it's unaffected.
+        dep_local = dep_utc.astimezone(home_tz)
+        arr_local = arr_utc.astimezone(home_tz)
 
         segments.append(DutySegmentResponse(
             flight_number=seg.flight_number,
