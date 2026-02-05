@@ -1915,13 +1915,11 @@ class BorbelyFatigueModel:
             else:
                 days_since_last = 1
 
-            # Use EFFECTIVE sleep hours with recovery credit factor.
-            # Research (Van Dongen 2003, Banks & Dinges 2007) shows that
-            # quality sleep provides enhanced recovery value: 1h effective
-            # sleep ≈ 1.15h recovery credit. This creates consistency:
-            # effective hours drive both Process S recovery AND debt reduction.
-            # Recovery credit factor accounts for the biological efficiency
-            # of consolidated, quality sleep vs. fragmented sleep.
+            # Use EFFECTIVE sleep hours for debt calculation.
+            # Research (Van Dongen 2003) shows that recovering from sleep debt
+            # is LESS efficient: 1h of debt requires ~1.1-1.3h of recovery sleep.
+            # This is modeled by reducing the efficiency of debt repayment when
+            # surplus sleep is available (see debt reduction calculation below).
             period_sleep_effective = sum(
                 s.effective_sleep_hours for s in relevant_sleep
                 if s.start_utc >= (
@@ -1930,8 +1928,8 @@ class BorbelyFatigueModel:
                     else duty.report_time_utc - timedelta(days=1)
                 )
             )
-            # Apply recovery credit: quality sleep provides enhanced recovery
-            period_sleep = period_sleep_effective * 1.15
+            # Use effective sleep directly (no multiplier on obtained sleep)
+            period_sleep = period_sleep_effective
 
             # Scale need by gap length so multi-day rest periods
             # are evaluated fairly (8 h × N days, not a flat 8 h).
@@ -1944,9 +1942,12 @@ class BorbelyFatigueModel:
                 # Deficit: add shortfall to cumulative debt
                 cumulative_sleep_debt += abs(sleep_balance)
             elif sleep_balance > 0 and cumulative_sleep_debt > 0:
-                # Surplus: actively reduce existing debt 1:1
+                # Surplus: actively reduce existing debt with recovery inefficiency.
+                # Research (Van Dongen 2003) shows 1h debt requires ~1.15h sleep,
+                # so debt reduction is less efficient: divide surplus by 1.15
+                debt_reduction = sleep_balance / 1.15
                 cumulative_sleep_debt = max(
-                    0.0, cumulative_sleep_debt - sleep_balance
+                    0.0, cumulative_sleep_debt - debt_reduction
                 )
 
             timeline_obj.cumulative_sleep_debt = cumulative_sleep_debt
