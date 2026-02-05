@@ -1917,8 +1917,9 @@ class BorbelyFatigueModel:
             # Use EFFECTIVE sleep hours for sleep balance calculation.
             # Research (Van Dongen 2003) shows that recovering from sleep debt
             # is less efficient than preventing it: "One hour of debt requires
-            # ~1.1-1.3h of recovery sleep". We apply this efficiency factor only
-            # when reducing existing debt, not for baseline maintenance.
+            # ~1.1-1.3h of recovery sleep" (using 1.2h as the factor, midpoint
+            # of the research range). We apply this efficiency factor only when
+            # reducing existing debt, not for baseline maintenance.
             # This creates consistency: effective hours drive both Process S
             # recovery AND debt reduction, with appropriate efficiency for recovery.
             period_sleep_effective = sum(
@@ -1945,7 +1946,8 @@ class BorbelyFatigueModel:
             elif sleep_balance > 0 and cumulative_sleep_debt > 0:
                 # Surplus: actively reduce existing debt with recovery efficiency.
                 # Research (Van Dongen 2003): "One hour of debt requires ~1.1-1.3h
-                # of recovery sleep", so 1h surplus reduces debt by 1/1.2 ≈ 0.83h
+                # of recovery sleep" (using 1.2h, midpoint of range), so 1h surplus
+                # reduces debt by 1/1.2 ≈ 0.83h
                 debt_reduction = sleep_balance / 1.2
                 cumulative_sleep_debt = max(
                     0.0, cumulative_sleep_debt - debt_reduction

@@ -100,7 +100,7 @@ sleep_balance = period_sleep - period_need
 if sleep_balance < 0:
     cumulative_sleep_debt += abs(sleep_balance)
 elif sleep_balance > 0 and cumulative_sleep_debt > 0:
-    # Van Dongen: 1h debt requires 1.2h recovery sleep
+    # Van Dongen: 1h debt requires 1.1-1.3h recovery sleep (using 1.2h midpoint)
     debt_reduction = sleep_balance / 1.2  # Less efficient recovery
     cumulative_sleep_debt = max(0.0, cumulative_sleep_debt - debt_reduction)
 ```
