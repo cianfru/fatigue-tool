@@ -1932,11 +1932,10 @@ class BorbelyFatigueModel:
             # Use EFFECTIVE sleep hours with recovery credit factor.
             # Research (Van Dongen 2003, Banks & Dinges 2007) shows that
             # quality sleep provides enhanced recovery value: 1h effective
-            # sleep ≈ 1.10h recovery credit. Conservative adjustment from 1.15x
-            # to reduce cumulative optimistic effect. This creates consistency:
-            # effective hours drive both Process S recovery AND debt reduction.
-            # Recovery credit factor accounts for the biological efficiency
-            # of consolidated, quality sleep vs. fragmented sleep.
+            # sleep ≈ 1.10h recovery credit (conservatively adjusted from 1.15x in this PR).
+            # This creates consistency: effective hours drive both Process S recovery
+            # AND debt reduction. Recovery credit factor accounts for the biological
+            # efficiency of consolidated, quality sleep vs. fragmented sleep.
             period_sleep_effective = sum(
                 s.effective_sleep_hours for s in relevant_sleep
                 if s.start_utc >= (
