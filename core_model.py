@@ -1600,7 +1600,7 @@ class BorbelyFatigueModel:
             # Clamp ratio to reasonable bounds
             sleep_quality_ratio = max(0.3, min(1.3, sleep_quality_ratio))
             # New formula: 0.45 - (sleep_quality_ratio^1.3 * 0.42)
-            # This gives: 8h -> 0.03, 6h -> 0.15, 5.7h -> 0.18, 4h -> 0.30
+            # This gives: 8h -> 0.03, 6h -> 0.15, 5.7h -> 0.18, 4h -> 0.27
             s_at_wake = max(0.03, 0.45 - (sleep_quality_ratio ** 1.3) * 0.42)
             wake_time = last_sleep.end_utc
         else:
