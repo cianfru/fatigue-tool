@@ -31,7 +31,7 @@ from roster_parser import PDFRosterParser, CSVRosterParser
 from data_models import MonthlyAnalysis, DutyTimeline
 from chronogram import FatigueChronogram
 from aviation_calendar import AviationCalendar
-from visualization import FatigueVisualizer
+# from visualization import FatigueVisualizer  # Not used in API endpoints
 
 # ============================================================================
 # FASTAPI APP INITIALIZATION
