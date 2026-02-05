@@ -1978,68 +1978,78 @@ class BorbelyFatigueModel:
                 sleep_blocks.append(post_duty_sleep)
             
             # Generate rest day sleep for gaps between duties
+            # Only generate for days when pilot is confirmed at home base
             if i < len(roster.duties) - 1:
                 next_duty = roster.duties[i + 1]
                 duty_release = duty.release_time_utc.astimezone(home_tz)
                 next_duty_report = next_duty.report_time_utc.astimezone(home_tz)
                 
-                gap_days = (next_duty_report.date() - duty_release.date()).days
+                # Determine where pilot is during the gap
+                duty_arrival = duty.segments[-1].arrival_airport.code if duty.segments else None
+                next_duty_departure = next_duty.segments[0].departure_airport.code if next_duty.segments else None
                 
-                for rest_day_offset in range(1, gap_days):
-                    rest_date = duty_release.date() + timedelta(days=rest_day_offset)
-                    rest_day_key = f"rest_{rest_date.isoformat()}"
+                # Check if pilot returned home (duty ended at home OR next duty starts from home)
+                pilot_at_home = (duty_arrival == roster.pilot_base or next_duty_departure == roster.pilot_base)
+                
+                # Only generate rest days if pilot is at home, not at layover
+                if pilot_at_home:
+                    gap_days = (next_duty_report.date() - duty_release.date()).days
                     
-                    sleep_start = home_tz.localize(
-                        datetime.combine(rest_date - timedelta(days=1), time(23, 0))
-                    )
-                    sleep_end = home_tz.localize(
-                        datetime.combine(rest_date, time(7, 0))
-                    )
-                    
-                    recovery_block = SleepBlock(
-                        start_utc=sleep_start.astimezone(pytz.utc),
-                        end_utc=sleep_end.astimezone(pytz.utc),
-                        location_timezone=home_tz.zone,
-                        duration_hours=8.0,
-                        quality_factor=0.95,
-                        effective_sleep_hours=7.6,
-                        environment='home'
-                    )
-                    
-                    sleep_blocks.append(recovery_block)
-                    
-                    sleep_strategies[rest_day_key] = {
-                        'strategy_type': 'recovery',
-                        'confidence': 0.95,
-                        'total_sleep_hours': 8.0,
-                        'effective_sleep_hours': 7.6,
-                        'sleep_efficiency': 0.95,
-                        'wocl_overlap_hours': 0.0,
-                        'warnings': [],
-                        'sleep_start_time': '23:00',
-                        'sleep_end_time': '07:00',
-                        'sleep_blocks': [{
+                    for rest_day_offset in range(1, gap_days):
+                        rest_date = duty_release.date() + timedelta(days=rest_day_offset)
+                        rest_day_key = f"rest_{rest_date.isoformat()}"
+                        
+                        sleep_start = home_tz.localize(
+                            datetime.combine(rest_date - timedelta(days=1), time(23, 0))
+                        )
+                        sleep_end = home_tz.localize(
+                            datetime.combine(rest_date, time(7, 0))
+                        )
+                        
+                        recovery_block = SleepBlock(
+                            start_utc=sleep_start.astimezone(pytz.utc),
+                            end_utc=sleep_end.astimezone(pytz.utc),
+                            location_timezone=home_tz.zone,
+                            duration_hours=8.0,
+                            quality_factor=0.95,
+                            effective_sleep_hours=7.6,
+                            environment='home'
+                        )
+                        
+                        sleep_blocks.append(recovery_block)
+                        
+                        sleep_strategies[rest_day_key] = {
+                            'strategy_type': 'recovery',
+                            'confidence': 0.95,
+                            'total_sleep_hours': 8.0,
+                            'effective_sleep_hours': 7.6,
+                            'sleep_efficiency': 0.95,
+                            'wocl_overlap_hours': 0.0,
+                            'warnings': [],
                             'sleep_start_time': '23:00',
                             'sleep_end_time': '07:00',
-                            'sleep_start_iso': sleep_start.isoformat(),
-                            'sleep_end_iso': sleep_end.isoformat(),
-                            'sleep_type': 'main',
-                            'duration_hours': 8.0,
-                            'effective_hours': 7.6,
-                            'quality_factor': 0.95
-                        }],
-                        'explanation': 'Rest day: standard home sleep (23:00-07:00, 95% efficiency)',
-                        'confidence_basis': 'High confidence — home environment, no duty constraints',
-                        'quality_factors': {
-                            'base_efficiency': 0.90,
-                            'wocl_boost': 1.0,
-                            'late_onset_penalty': 1.0,
-                            'recovery_boost': 1.0,
-                            'time_pressure_factor': 1.0,
-                            'insufficient_penalty': 1.0,
-                        },
-                        'references': self._get_strategy_references('recovery'),
-                    }
+                            'sleep_blocks': [{
+                                'sleep_start_time': '23:00',
+                                'sleep_end_time': '07:00',
+                                'sleep_start_iso': sleep_start.isoformat(),
+                                'sleep_end_iso': sleep_end.isoformat(),
+                                'sleep_type': 'main',
+                                'duration_hours': 8.0,
+                                'effective_hours': 7.6,
+                                'quality_factor': 0.95
+                            }],
+                            'explanation': 'Rest day at home: standard sleep (23:00-07:00, 95% efficiency)',
+                            'confidence_basis': 'High confidence — home environment, no duty constraints',
+                            'quality_factors': {
+                                'base_efficiency': 0.90,
+                                'wocl_boost': 1.0,
+                                'late_onset_penalty': 1.0,
+                                'recovery_boost': 1.0,
+                                'time_pressure_factor': 1.0,
+                                'insufficient_penalty': 1.0,
+                            },
+                            'references': self._get_strategy_references('recovery'),
+                        }
         
         return sleep_blocks, sleep_strategies
 
