@@ -420,6 +420,43 @@ async def root():
     }
 
 
+@app.get("/debug/timezone-test")
+async def timezone_test():
+    """Debug endpoint to test timezone conversions"""
+    import pytz
+    from datetime import datetime
+
+    # Test case from screenshot: CCJ → DOH
+    dep_utc_str = "2026-02-01T22:25:00Z"
+    arr_utc_str = "2026-02-01T02:55:00Z"
+
+    dep_utc = datetime.fromisoformat(dep_utc_str.replace('Z', '+00:00'))
+    arr_utc = datetime.fromisoformat(arr_utc_str.replace('Z', '+00:00'))
+
+    # Convert to different timezones
+    india_tz = pytz.timezone("Asia/Kolkata")
+    qatar_tz = pytz.timezone("Asia/Qatar")
+
+    return {
+        "departure_utc": dep_utc_str,
+        "arrival_utc": arr_utc_str,
+        "conversions": {
+            "departure_india": dep_utc.astimezone(india_tz).strftime("%H:%M"),
+            "departure_qatar": dep_utc.astimezone(qatar_tz).strftime("%H:%M"),
+            "arrival_india": arr_utc.astimezone(india_tz).strftime("%H:%M"),
+            "arrival_qatar": arr_utc.astimezone(qatar_tz).strftime("%H:%M"),
+        },
+        "expected_for_home_base_chronogram": {
+            "departure": "01:25 (Qatar time)",
+            "arrival": "05:55 (Qatar time)"
+        },
+        "what_screenshot_shows": {
+            "departure": "03:55 (India time - WRONG)",
+            "arrival": "08:25 (India time - WRONG)"
+        }
+    }
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
