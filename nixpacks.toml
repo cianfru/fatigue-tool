@@ -1,6 +1,6 @@
 # Railway deployment configuration
 [phases.setup]
-nixPkgs = ["python311", "cairo", "pango", "gdk-pixbuf", "freetype", "fontconfig"]
+nixPkgs = ["python311", "python311Packages.pip", "cairo", "pango", "gdk-pixbuf", "freetype", "fontconfig"]
 
 [phases.install]
 cmds = ["python -m pip install --break-system-packages -r requirements.txt"]
