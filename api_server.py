@@ -733,18 +733,21 @@ async def get_statistics(analysis_id: str):
 if __name__ == "__main__":
     import uvicorn
     
+    # Use Railway's PORT env var or default to 8000 for local dev
+    port = int(os.environ.get("PORT", 8000))
+    
     print("=" * 70)
     print("FATIGUE ANALYSIS API SERVER")
     print("=" * 70)
     print()
     print("Starting FastAPI server...")
-    print("API will be available at: http://localhost:8000")
-    print("API docs at: http://localhost:8000/docs")
+    print(f"API will be available at: http://localhost:{port}")
+    print(f"API docs at: http://localhost:{port}/docs")
     print()
     print("Frontend can now connect to:")
-    print("  POST http://localhost:8000/api/analyze")
-    print("  POST http://localhost:8000/api/visualize/chronogram")
-    print("  GET  http://localhost:8000/api/duty/{analysis_id}/{duty_id}")
+    print(f"  POST http://localhost:{port}/api/analyze")
+    print(f"  POST http://localhost:{port}/api/visualize/chronogram")
+    print(f"  GET  http://localhost:{port}/api/duty/{{analysis_id}}/{{duty_id}}")
     print()
     
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=port, reload=True)
