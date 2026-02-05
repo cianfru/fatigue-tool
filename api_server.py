@@ -29,8 +29,8 @@ from pathlib import Path
 from core_model import BorbelyFatigueModel, ModelConfig
 from roster_parser import PDFRosterParser, CSVRosterParser
 from data_models import MonthlyAnalysis, DutyTimeline
-from chronogram import FatigueChronogram
-from aviation_calendar import AviationCalendar
+# from chronogram import FatigueChronogram  # Removed - file doesn't exist
+# from aviation_calendar import AviationCalendar  # Removed - file doesn't exist
 # from visualization import FatigueVisualizer  # Not used in API endpoints
 
 # ============================================================================
@@ -559,66 +559,26 @@ async def generate_chronogram(request: ChronogramRequest):
     """
     Generate high-resolution chronogram image
     Returns base64-encoded PNG
-    """
-    
-    if request.analysis_id not in analysis_store:
-        raise HTTPException(status_code=404, detail="Analysis not found")
-    
-    monthly_analysis, roster, _sleep_strategies = analysis_store[request.analysis_id]
 
-    try:
-        chrono = FatigueChronogram(theme=request.theme)
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
-            chrono.plot_monthly_chronogram(
-                monthly_analysis,
-                save_path=tmp.name,
-                mode=request.mode,
-                show_annotations=request.show_annotations
-            )
-            
-            # Read and encode as base64
-            with open(tmp.name, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode()
-            
-            os.unlink(tmp.name)
-        
-        return {
-            "image": f"data:image/png;base64,{image_data}",
-            "format": "png"
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Chronogram generation failed: {str(e)}")
+    NOTE: This endpoint is temporarily disabled because chronogram.py was removed.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="Chronogram visualization is temporarily unavailable. The chronogram module was removed during cleanup."
+    )
 
 
 @app.post("/api/visualize/calendar")
 async def generate_calendar(request: CalendarRequest):
-    """Generate aviation calendar image"""
-    
-    if request.analysis_id not in analysis_store:
-        raise HTTPException(status_code=404, detail="Analysis not found")
-    
-    monthly_analysis, roster, _sleep_strategies = analysis_store[request.analysis_id]
+    """
+    Generate aviation calendar image
 
-    try:
-        cal = AviationCalendar(theme=request.theme)
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
-            cal.plot_monthly_roster(monthly_analysis, save_path=tmp.name)
-            
-            with open(tmp.name, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode()
-            
-            os.unlink(tmp.name)
-        
-        return {
-            "image": f"data:image/png;base64,{image_data}",
-            "format": "png"
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Calendar generation failed: {str(e)}")
+    NOTE: This endpoint is temporarily disabled because aviation_calendar.py was removed.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="Calendar visualization is temporarily unavailable. The aviation_calendar module was removed during cleanup."
+    )
 
 
 @app.get("/api/duty/{analysis_id}/{duty_id}")
