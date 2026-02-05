@@ -1,0 +1,5 @@
+[phases.setup]
+nixPkgs = ["python39", "cairo", "pango", "gdk-pixbuf"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]

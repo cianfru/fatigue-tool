@@ -1,18 +1,25 @@
+# Core dependencies
 pytz>=2023.3
 airportsdata>=20240101
 numpy>=1.24.0
-streamlit>=1.28.0
 pandas>=2.0.0
-plotly>=5.17.0
-kaleido>=0.2.1
+
+# PDF parsing (pdfplumber only - no Java required)
 pdfplumber>=0.9.0
-tabula-py>=2.8.0
 openpyxl>=3.1.0
-folium>=0.14.0
-streamlit-folium>=0.15.0
+
+# Visualization
+plotly>=5.17.0
 matplotlib>=3.7.0
 
 # FastAPI Backend
 fastapi>=0.100.0
-uvicorn>=0.22.0
+uvicorn[standard]>=0.22.0
 python-multipart>=0.0.6
+pydantic>=2.0.0
+
+# Optional: Streamlit (not needed for API server)
+# streamlit>=1.28.0
+# kaleido>=0.2.1
+# folium>=0.14.0
+# streamlit-folium>=0.15.0
