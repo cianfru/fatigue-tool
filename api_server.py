@@ -273,8 +273,19 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
     for seg in duty.segments:
         dep_utc = seg.scheduled_departure_utc
         arr_utc = seg.scheduled_arrival_utc
+
+        # IMPORTANT: Convert to HOME BASE timezone (not airport timezone)
+        # The home-base chronogram needs all times in the same reference timezone
+        # to position duty bars correctly and calculate proper lengths.
+        #
+        # For timezone-crossing flights (e.g., DOH-CCJ-DOH), this means:
+        # - India departure 22:25Z → shows as 01:25 DOH time (not 03:55 India time)
+        # - This keeps duty bars proportional on the home-base timeline
+        #
+        # The Human Performance (Elapsed) timeline uses T=0 reference, so it's unaffected.
         dep_local = dep_utc.astimezone(home_tz)
         arr_local = arr_utc.astimezone(home_tz)
+
         segments.append(DutySegmentResponse(
             flight_number=seg.flight_number,
             departure=seg.departure_airport.code,
@@ -406,6 +417,43 @@ async def root():
         "service": "Fatigue Analysis API",
         "version": "4.2.0",
         "model": "Borbély Two-Process + Workload Integration"
+    }
+
+
+@app.get("/debug/timezone-test")
+async def timezone_test():
+    """Debug endpoint to test timezone conversions"""
+    import pytz
+    from datetime import datetime
+
+    # Test case from screenshot: CCJ → DOH
+    dep_utc_str = "2026-02-01T22:25:00Z"
+    arr_utc_str = "2026-02-01T02:55:00Z"
+
+    dep_utc = datetime.fromisoformat(dep_utc_str.replace('Z', '+00:00'))
+    arr_utc = datetime.fromisoformat(arr_utc_str.replace('Z', '+00:00'))
+
+    # Convert to different timezones
+    india_tz = pytz.timezone("Asia/Kolkata")
+    qatar_tz = pytz.timezone("Asia/Qatar")
+
+    return {
+        "departure_utc": dep_utc_str,
+        "arrival_utc": arr_utc_str,
+        "conversions": {
+            "departure_india": dep_utc.astimezone(india_tz).strftime("%H:%M"),
+            "departure_qatar": dep_utc.astimezone(qatar_tz).strftime("%H:%M"),
+            "arrival_india": arr_utc.astimezone(india_tz).strftime("%H:%M"),
+            "arrival_qatar": arr_utc.astimezone(qatar_tz).strftime("%H:%M"),
+        },
+        "expected_for_home_base_chronogram": {
+            "departure": "01:25 (Qatar time)",
+            "arrival": "05:55 (Qatar time)"
+        },
+        "what_screenshot_shows": {
+            "departure": "03:55 (India time - WRONG)",
+            "arrival": "08:25 (India time - WRONG)"
+        }
     }
 
 
