@@ -506,7 +506,20 @@ class UnifiedSleepCalculator:
         is_nap: bool = False,
         location_timezone: str = 'UTC'
     ) -> SleepQualityAnalysis:
-        """Calculate realistic sleep quality with all factors"""
+        """
+        Calculate realistic sleep quality with all factors
+        
+        VALIDATION NOTE: Model parameters have been conservatively adjusted
+        to balance research-backed optimizations with operational safety.
+        Key adjustments from aggressive PR #14 optimizations:
+        - WOCL penalty: 8% → 10% (was 15% pre-PR#14)
+        - Time pressure: 7-2% → 9-3% (was 12-3% pre-PR#14)  
+        - Sleep debt recovery: 1.15x → 1.10x credit
+        - Pilot resilience: 12% → 5% boost (already adjusted)
+        
+        These parameters require validation against operational data
+        (PVT results, incident reports) before further optimization.
+        """
         
         # 1. Calculate raw duration
         total_hours = (sleep_end - sleep_start).total_seconds() / 3600
@@ -540,12 +553,13 @@ class UnifiedSleepCalculator:
         # WOCL window is ~6 h; full overlap → no penalty (1.0).
         # Reduced from 15% based on research: circadian affects sleep consolidation
         # and onset, but quality per hour slept remains stable (Dijk & Czeisler 1995).
+        # Conservative adjustment: 10% penalty as middle ground (was 8%, originally 15%)
         wocl_overlap = self._calculate_wocl_overlap(sleep_start, sleep_end, location_timezone)
         wocl_window_hours = float(self.WOCL_END - self.WOCL_START)
         # Fraction of sleep that aligns with WOCL (0 = fully daytime, 1 = fully nighttime)
         alignment_ratio = min(1.0, wocl_overlap / max(1.0, min(actual_duration, wocl_window_hours)))
-        # Max 8% penalty for fully misaligned sleep (reduced from 15%)
-        wocl_boost = 1.0 - 0.08 * (1.0 - alignment_ratio) if actual_duration > 0.5 else 1.0
+        # Max 10% penalty for fully misaligned sleep (conservative middle ground)
+        wocl_boost = 1.0 - 0.10 * (1.0 - alignment_ratio) if actual_duration > 0.5 else 1.0
         
         # 5. Late sleep onset penalty
         tz = pytz.timezone(location_timezone)
@@ -587,11 +601,11 @@ class UnifiedSleepCalculator:
         hours_until_duty = (next_event - sleep_end).total_seconds() / 3600
 
         if hours_until_duty < 1.5:
-            time_pressure_factor = 0.93  # 7% penalty (was 12%)
+            time_pressure_factor = 0.91  # 9% penalty (conservative adjustment from 7%, was originally 12%)
         elif hours_until_duty < 3:
-            time_pressure_factor = 0.96  # 4% penalty (was 7%)
+            time_pressure_factor = 0.95  # 5% penalty (conservative adjustment from 4%, was originally 7%)
         elif hours_until_duty < 6:
-            time_pressure_factor = 0.98  # 2% penalty (was 3%)
+            time_pressure_factor = 0.97  # 3% penalty (conservative adjustment from 2%, was originally 3%)
         else:
             time_pressure_factor = 1.0
         
@@ -1918,7 +1932,8 @@ class BorbelyFatigueModel:
             # Use EFFECTIVE sleep hours with recovery credit factor.
             # Research (Van Dongen 2003, Banks & Dinges 2007) shows that
             # quality sleep provides enhanced recovery value: 1h effective
-            # sleep ≈ 1.15h recovery credit. This creates consistency:
+            # sleep ≈ 1.10h recovery credit. Conservative adjustment from 1.15x
+            # to reduce cumulative optimistic effect. This creates consistency:
             # effective hours drive both Process S recovery AND debt reduction.
             # Recovery credit factor accounts for the biological efficiency
             # of consolidated, quality sleep vs. fragmented sleep.
@@ -1931,7 +1946,8 @@ class BorbelyFatigueModel:
                 )
             )
             # Apply recovery credit: quality sleep provides enhanced recovery
-            period_sleep = period_sleep_effective * 1.15
+            # Conservative 1.10x factor (reduced from 1.15x for safety)
+            period_sleep = period_sleep_effective * 1.10
 
             # Scale need by gap length so multi-day rest periods
             # are evaluated fairly (8 h × N days, not a flat 8 h).
