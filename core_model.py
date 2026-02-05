@@ -1698,7 +1698,11 @@ class BorbelyFatigueModel:
             for sleep in reversed(sleep_history):
                 if sleep.end_utc <= duty.report_time_utc:
                     sleep_quality_ratio = sleep.effective_sleep_hours / 8.0
-                    s_estimate = max(0.1, 0.7 - (sleep_quality_ratio * 0.6))
+                    # Clamp ratio to reasonable bounds
+                    sleep_quality_ratio = max(0.3, min(1.3, sleep_quality_ratio))
+                    # New formula: 0.45 - (sleep_quality_ratio^1.3 * 0.42)
+                    # This gives: 8h -> 0.03, 6h -> 0.15, 5.7h -> 0.18, 4h -> 0.27
+                    s_estimate = max(0.03, 0.45 - (sleep_quality_ratio ** 1.3) * 0.42)
                     break
             
             c_estimate = self.compute_process_c(mid_duty_time, duty.home_base_timezone, phase_shift)
