@@ -1478,15 +1478,16 @@ class BorbelyFatigueModel:
         # Balanced 50/50 weights for better operational realism
         base_alertness = s_alertness * 0.50 + c_alertness * 0.50
         
-        # Pilot resilience factor: modest boost during moderate pressure states
+        # Pilot resilience factor: conservative boost during moderate pressure states
         # Applies to S range 0.15-0.30 (typical after 5-7h effective sleep)
-        # This represents trained pilot adaptation, not captured in base model
+        # This represents trained pilot adaptation, not captured in the base model.
+        # The boost is intentionally small to avoid masking genuine fatigue.
         if 0.15 <= s <= 0.30:
-            # Maximum 12% boost at s=0.20, tapering to 0 at boundaries
+            # Maximum 5% boost at s=0.20, tapering to 0 at boundaries
             resilience_peak = 0.20
-            resilience_width = 0.15
+            resilience_width = 0.10
             distance_from_peak = abs(s - resilience_peak) / resilience_width
-            resilience_boost = 0.12 * max(0, 1.0 - distance_from_peak)
+            resilience_boost = 0.05 * max(0.0, 1.0 - distance_from_peak)
             base_alertness = min(1.0, base_alertness * (1.0 + resilience_boost))
         
         return base_alertness
