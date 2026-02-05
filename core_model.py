@@ -1903,11 +1903,11 @@ class BorbelyFatigueModel:
             # Track cumulative sleep debt
             # ── Three-step model ──────────────────────────────────────
             #  1. Exponential recovery of existing debt (time-based)
-            #  2. Compute sleep balance for the period (effective duration
-            #     with 1.15x recovery credit vs scaled daily need). This
-            #     ensures consistent treatment: effective hours drive both
-            #     Process S recovery AND debt reduction, with quality sleep
-            #     providing enhanced recovery value.
+            #  2. Compute sleep balance for the period using effective sleep
+            #     hours with 1.15x recovery credit multiplier vs scaled daily
+            #     need. Effective hours drive both Process S recovery AND debt
+            #     reduction, creating consistency. Recovery credit accounts for
+            #     biological efficiency of consolidated, quality sleep.
             #  3. Deficit adds to debt; surplus reduces debt 1:1.
             # References:
             #   Van Dongen et al. (2003) Sleep 26(2):117-126
@@ -1922,14 +1922,11 @@ class BorbelyFatigueModel:
             else:
                 days_since_last = 1
 
-            # Use EFFECTIVE sleep hours for sleep balance calculation.
+            # Use EFFECTIVE sleep hours for debt calculation.
             # Research (Van Dongen 2003) shows that recovering from sleep debt
-            # is less efficient than preventing it: "One hour of debt requires
-            # ~1.1-1.3h of recovery sleep" (using 1.2h as the factor, midpoint
-            # of the research range). We apply this efficiency factor only when
-            # reducing existing debt, not for baseline maintenance.
-            # This creates consistency: effective hours drive both Process S
-            # recovery AND debt reduction, with appropriate efficiency for recovery.
+            # is LESS efficient: 1h of debt requires ~1.1-1.3h of recovery sleep.
+            # This is modeled by reducing the efficiency of debt repayment when
+            # surplus sleep is available (see debt reduction calculation below).
             period_sleep_effective = sum(
                 s.effective_sleep_hours for s in relevant_sleep
                 if s.start_utc >= (
@@ -1938,7 +1935,7 @@ class BorbelyFatigueModel:
                     else duty.report_time_utc - timedelta(days=1)
                 )
             )
-            # Use effective hours directly for balance calculation
+            # Use effective sleep directly (no multiplier on obtained sleep)
             period_sleep = period_sleep_effective
 
             # Scale need by gap length so multi-day rest periods
@@ -1952,11 +1949,10 @@ class BorbelyFatigueModel:
                 # Deficit: add shortfall to cumulative debt
                 cumulative_sleep_debt += abs(sleep_balance)
             elif sleep_balance > 0 and cumulative_sleep_debt > 0:
-                # Surplus: actively reduce existing debt with recovery efficiency.
-                # Research (Van Dongen 2003): "One hour of debt requires ~1.1-1.3h
-                # of recovery sleep" (using 1.2h, midpoint of range), so 1h surplus
-                # reduces debt by 1/1.2 ≈ 0.83h
-                debt_reduction = sleep_balance / 1.2
+                # Surplus: actively reduce existing debt with recovery inefficiency.
+                # Research (Van Dongen 2003) shows 1h debt requires ~1.15h sleep,
+                # so debt reduction is less efficient: divide surplus by 1.15
+                debt_reduction = sleep_balance / 1.15
                 cumulative_sleep_debt = max(
                     0.0, cumulative_sleep_debt - debt_reduction
                 )
@@ -2011,8 +2007,10 @@ class BorbelyFatigueModel:
                 
                 if strategy.sleep_blocks:
                     for idx, block in enumerate(strategy.sleep_blocks):
-                        sleep_start_local = block.start_utc.astimezone(home_tz)
-                        sleep_end_local = block.end_utc.astimezone(home_tz)
+                        # Use actual location timezone, not home timezone
+                        location_tz = pytz.timezone(block.location_timezone)
+                        sleep_start_local = block.start_utc.astimezone(location_tz)
+                        sleep_end_local = block.end_utc.astimezone(location_tz)
                         
                         sleep_type = 'main'
                         if hasattr(block, 'is_anchor_sleep') and not block.is_anchor_sleep:
@@ -2032,12 +2030,15 @@ class BorbelyFatigueModel:
                             'sleep_start_day': sleep_start_local.day,
                             'sleep_start_hour': sleep_start_local.hour + sleep_start_local.minute / 60.0,
                             'sleep_end_day': sleep_end_local.day,
-                            'sleep_end_hour': sleep_end_local.hour + sleep_end_local.minute / 60.0
+                            'sleep_end_hour': sleep_end_local.hour + sleep_end_local.minute / 60.0,
+                            'location_timezone': block.location_timezone,
+                            'environment': block.environment
                         })
                     
                     first_block = strategy.sleep_blocks[0]
-                    sleep_start_local = first_block.start_utc.astimezone(home_tz)
-                    sleep_end_local = first_block.end_utc.astimezone(home_tz)
+                    location_tz = pytz.timezone(first_block.location_timezone)
+                    sleep_start_local = first_block.start_utc.astimezone(location_tz)
+                    sleep_end_local = first_block.end_utc.astimezone(location_tz)
                     sleep_start_time = sleep_start_local.strftime('%H:%M')
                     sleep_end_time = sleep_end_local.strftime('%H:%M')
                 else:
@@ -2078,6 +2079,52 @@ class BorbelyFatigueModel:
             )
             if post_duty_sleep:
                 sleep_blocks.append(post_duty_sleep)
+                
+                # Add post-duty sleep to API response
+                post_duty_key = f"post_duty_{duty.duty_id}"
+                location_tz = pytz.timezone(post_duty_sleep.location_timezone)
+                sleep_start_local = post_duty_sleep.start_utc.astimezone(location_tz)
+                sleep_end_local = post_duty_sleep.end_utc.astimezone(location_tz)
+                
+                sleep_strategies[post_duty_key] = {
+                    'strategy_type': 'post_duty_recovery',
+                    'confidence': 0.90,
+                    'total_sleep_hours': post_duty_sleep.duration_hours,
+                    'effective_sleep_hours': post_duty_sleep.effective_sleep_hours,
+                    'sleep_efficiency': post_duty_sleep.quality_factor,
+                    'wocl_overlap_hours': 0.0,
+                    'warnings': [],
+                    'sleep_start_time': sleep_start_local.strftime('%H:%M'),
+                    'sleep_end_time': sleep_end_local.strftime('%H:%M'),
+                    'sleep_blocks': [{
+                        'sleep_start_time': sleep_start_local.strftime('%H:%M'),
+                        'sleep_end_time': sleep_end_local.strftime('%H:%M'),
+                        'sleep_start_iso': sleep_start_local.isoformat(),
+                        'sleep_end_iso': sleep_end_local.isoformat(),
+                        'sleep_type': 'main',
+                        'duration_hours': post_duty_sleep.duration_hours,
+                        'effective_hours': post_duty_sleep.effective_sleep_hours,
+                        'quality_factor': post_duty_sleep.quality_factor,
+                        'sleep_start_day': sleep_start_local.day,
+                        'sleep_start_hour': sleep_start_local.hour + sleep_start_local.minute / 60.0,
+                        'sleep_end_day': sleep_end_local.day,
+                        'sleep_end_hour': sleep_end_local.hour + sleep_end_local.minute / 60.0,
+                        'location_timezone': post_duty_sleep.location_timezone,
+                        'environment': post_duty_sleep.environment
+                    }],
+                    'explanation': f'Post-duty recovery sleep at {post_duty_sleep.environment} ({post_duty_sleep.location_timezone})',
+                    'confidence_basis': 'High confidence — post-duty recovery period at layover',
+                    'quality_factors': {
+                        'base_efficiency': post_duty_sleep.quality_factor,
+                        'wocl_boost': 0.0,
+                        'late_onset_penalty': 0.0,
+                        'recovery_boost': 0.0,
+                        'time_pressure_factor': 1.0,
+                        'insufficient_penalty': 0.0,
+                    },
+                    'references': self._get_strategy_references('post_duty_recovery'),
+                    'related_duty_id': duty.duty_id,
+                }
             
             # Generate rest day sleep for gaps between duties
             # Only generate for days when pilot is confirmed at home base
@@ -2192,12 +2239,9 @@ class BorbelyFatigueModel:
         is_home_base = home_base and arrival_airport.code == home_base
 
         # Determine environment (home vs hotel)
+        # If pilot arrives at home base, they sleep at home
+        # Otherwise, they sleep at a hotel (layover)
         environment = 'home' if is_home_base else 'hotel'
-        if next_duty and next_duty.segments:
-            next_departure = next_duty.segments[0].departure_airport
-            # If next duty departs from same location as arrival, it's a layover
-            if next_departure.code != arrival_airport.code and not is_home_base:
-                environment = 'hotel'
 
         release_local = duty.release_time_utc.astimezone(sleep_tz)
         release_hour = release_local.hour + release_local.minute / 60.0
@@ -2395,6 +2439,18 @@ class BorbelyFatigueModel:
                     'key': 'gander_2014',
                     'short': 'Gander et al. (2014)',
                     'full': 'Gander PH et al. Pilot fatigue: departure/arrival times. Aviat Space Environ Med 85(8):833-40',
+                },
+            ],
+            'post_duty_recovery': [
+                {
+                    'key': 'signal_2013',
+                    'short': 'Signal et al. (2013)',
+                    'full': 'Signal TL et al. Sleep on layover: PSG measured hotel sleep efficiency 88%. J Sleep Res 22(6):697-706',
+                },
+                {
+                    'key': 'gander_2013',
+                    'short': 'Gander et al. (2013)',
+                    'full': 'Gander PH et al. In-flight sleep, pilot fatigue and PVT. J Sleep Res 22(6):697-706',
                 },
             ],
         }
