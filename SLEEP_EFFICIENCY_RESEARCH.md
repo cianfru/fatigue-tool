@@ -91,19 +91,21 @@ sleep_balance = period_sleep - period_need
 
 **Proposed (consistent):**
 ```python
-# Option A: Use effective hours for BOTH
+# Option A: Use effective hours with appropriate need baseline
 period_sleep = sum(s.effective_sleep_hours)  # EFFECTIVE
-period_need = 7.5 * days  # Reduced need (research: 7.5-8h sufficient)
+period_need = 8.0 * days  # Keep 8h baseline
 sleep_balance = period_sleep - period_need
 
-# Option B: Use recovery ratio
-# 1h effective provides ~1.1h recovery value
-period_sleep = sum(s.effective_sleep_hours * 1.15)  # Recovery credit
-period_need = 8.0 * days
-sleep_balance = period_sleep - period_need
+# Apply recovery efficiency only when reducing existing debt
+if sleep_balance < 0:
+    cumulative_sleep_debt += abs(sleep_balance)
+elif sleep_balance > 0 and cumulative_sleep_debt > 0:
+    # Van Dongen: 1h debt requires 1.1-1.3h recovery sleep (using 1.2h midpoint)
+    debt_reduction = sleep_balance / 1.2  # Less efficient recovery
+    cumulative_sleep_debt = max(0.0, cumulative_sleep_debt - debt_reduction)
 ```
 
-**Recommendation: Option B** - Gives credit for sleep quality while maintaining 8h baseline
+**Recommendation: Option A** - Use effective hours with recovery efficiency applied only to debt reduction
 
 ## Expected Impact
 
@@ -113,9 +115,10 @@ sleep_balance = period_sleep - period_need
 - Monthly debt: 11h (unsustainable)
 
 ### After Proposed Changes:
-- Home 8h → **7.8h effective** × 1.15 = **9.0h recovery** → **+1.0h surplus**
-- Hotel 8h → **7.3h effective** × 1.15 = **8.4h recovery** → **+0.4h surplus**
-- Monthly debt: **~2-3h** (sustainable)
+- Home 8h → **7.8h effective** vs 8h need → **-0.2h deficit per day**
+- Hotel 8h → **7.3h effective** vs 8h need → **-0.7h deficit per day**
+- When recovering: 1h surplus reduces debt by 0.83h (less efficient recovery)
+- Monthly debt: **~5-8h** (realistic and sustainable with recovery periods)
 
 ### Performance Impact:
 - s_at_wake will be lower (better recovery)
