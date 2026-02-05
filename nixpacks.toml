@@ -1,5 +1,8 @@
 [phases.setup]
-nixPkgs = ["python39", "cairo", "pango", "gdk-pixbuf"]
+nixPkgs = ["python311", "cairo", "pango", "gdk-pixbuf", "freetype", "fontconfig"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = ["python -m pip install --upgrade pip", "pip install -r requirements.txt"]
+
+[start]
+cmd = "uvicorn api_server:app --host 0.0.0.0 --port $PORT"
