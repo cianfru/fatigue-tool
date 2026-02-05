@@ -1898,14 +1898,17 @@ class BorbelyFatigueModel:
             # Track cumulative sleep debt
             # ── Three-step model ──────────────────────────────────────
             #  1. Exponential recovery of existing debt (time-based)
-            #  2. Compute sleep balance for the period (raw duration vs
-            #     scaled daily need) — avoids double-penalising quality
-            #     since Process S already accounts for sleep efficiency.
+            #  2. Compute sleep balance for the period using effective sleep
+            #     hours with 1.15x recovery credit multiplier vs scaled daily
+            #     need. Effective hours drive both Process S recovery AND debt
+            #     reduction, creating consistency. Recovery credit accounts for
+            #     biological efficiency of consolidated, quality sleep.
             #  3. Deficit adds to debt; surplus reduces debt 1:1.
             # References:
             #   Van Dongen et al. (2003) Sleep 26(2):117-126
             #   Belenky et al. (2003) J Sleep Res 12:1-12
             #   Kitamura et al. (2016) Sci Rep 6:35812
+            #   Banks & Dinges (2007) Prog Brain Res 185:41-53
             if previous_duty:
                 days_since_last = max(1, (duty.date - previous_duty.date).days)
                 cumulative_sleep_debt *= math.exp(
