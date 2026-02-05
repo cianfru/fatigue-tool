@@ -75,12 +75,17 @@ class AnalysisRequest(BaseModel):
 class DutySegmentResponse(BaseModel):
     flight_number: str
     departure: str
+    departure_timezone: str  # IANA timezone (e.g., "Asia/Kolkata")
     arrival: str
-    departure_time: str  # UTC ISO format
-    arrival_time: str    # UTC ISO format
-    departure_time_local: str  # Home base local time in HH:mm format
-    arrival_time_local: str    # Home base local time in HH:mm format
+    arrival_timezone: str    # IANA timezone (e.g., "Asia/Qatar")
+    departure_time: str  # UTC ISO format (e.g., "2026-02-01T22:25:00Z")
+    arrival_time: str    # UTC ISO format (e.g., "2026-02-02T02:55:00Z")
     block_hours: float
+
+    # Frontend is responsible for timezone conversions:
+    # - Home-base chronogram: convert all to home base timezone
+    # - Tooltips/details: convert each to its airport timezone
+    # - This eliminates ambiguity about what timezone "local" times are in
 
 
 class SleepBlockResponse(BaseModel):
@@ -192,7 +197,8 @@ class AnalysisResponse(BaseModel):
     roster_id: str
     pilot_id: str
     pilot_name: Optional[str]  # Extracted from PDF
-    pilot_base: Optional[str]  # Home base airport
+    pilot_base: Optional[str]  # Home base airport (IATA code)
+    home_base_timezone: str  # IANA timezone (e.g., "Asia/Qatar") for home-base chronogram
     pilot_aircraft: Optional[str]  # Aircraft type
     month: str
     
@@ -268,32 +274,21 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
     risk = classify_risk(duty_timeline.landing_performance)
     home_tz = pytz.timezone(duty.home_base_timezone)
 
-    # Build segments
+    # Build segments - send UTC times + timezone metadata only
+    # Frontend is responsible for all timezone conversions based on context
     segments = []
     for seg in duty.segments:
         dep_utc = seg.scheduled_departure_utc
         arr_utc = seg.scheduled_arrival_utc
 
-        # IMPORTANT: Convert to HOME BASE timezone (not airport timezone)
-        # The home-base chronogram needs all times in the same reference timezone
-        # to position duty bars correctly and calculate proper lengths.
-        #
-        # For timezone-crossing flights (e.g., DOH-CCJ-DOH), this means:
-        # - India departure 22:25Z → shows as 01:25 DOH time (not 03:55 India time)
-        # - This keeps duty bars proportional on the home-base timeline
-        #
-        # The Human Performance (Elapsed) timeline uses T=0 reference, so it's unaffected.
-        dep_local = dep_utc.astimezone(home_tz)
-        arr_local = arr_utc.astimezone(home_tz)
-
         segments.append(DutySegmentResponse(
             flight_number=seg.flight_number,
             departure=seg.departure_airport.code,
+            departure_timezone=seg.departure_airport.timezone,
             arrival=seg.arrival_airport.code,
+            arrival_timezone=seg.arrival_airport.timezone,
             departure_time=dep_utc.isoformat(),
             arrival_time=arr_utc.isoformat(),
-            departure_time_local=dep_local.strftime("%H:%M"),
-            arrival_time_local=arr_local.strftime("%H:%M"),
             block_hours=seg.block_time_hours
         ))
 
@@ -553,9 +548,12 @@ async def analyze_roster(
         return AnalysisResponse(
             analysis_id=analysis_id,
             roster_id=roster.roster_id,
-            pilot_id=roster.pilot_id,            pilot_name=roster.pilot_name,
+            pilot_id=roster.pilot_id,
+            pilot_name=roster.pilot_name,
             pilot_base=roster.pilot_base,
-            pilot_aircraft=roster.pilot_aircraft,            month=roster.month,
+            home_base_timezone=roster.home_base_timezone,
+            pilot_aircraft=roster.pilot_aircraft,
+            month=roster.month,
             total_duties=roster.total_duties,
             total_sectors=roster.total_sectors,
             total_duty_hours=roster.total_duty_hours,
@@ -604,6 +602,7 @@ async def get_analysis(analysis_id: str):
         pilot_id=roster.pilot_id,
         pilot_name=roster.pilot_name,
         pilot_base=roster.pilot_base,
+        home_base_timezone=roster.home_base_timezone,
         pilot_aircraft=roster.pilot_aircraft,
         month=roster.month,
         total_duties=roster.total_duties,
