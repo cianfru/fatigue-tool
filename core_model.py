@@ -2221,14 +2221,16 @@ class BorbelyFatigueModel:
     ) -> Optional[SleepBlock]:
         """
         Generate post-duty recovery sleep at layover or home.
-        
+
         Handles all arrival times (not just morning arrivals). Pilots need
         to sleep at layover locations regardless of arrival time.
-        
+
         Logic:
-        - Morning arrival (< 12:00): afternoon nap-style sleep
+        - Night arrival (20:00-06:00): immediate sleep after 1.5hr buffer
+        - Morning arrival (06:00-12:00): afternoon nap-style sleep after 2.5hr
         - Afternoon/evening arrival (12:00-20:00): evening/night sleep
-        - Night arrival (> 20:00): immediate night sleep
+
+        Fixed: 2AM landings now correctly treated as night arrivals, not morning.
         """
         if not duty.segments:
             return None
@@ -2245,21 +2247,24 @@ class BorbelyFatigueModel:
 
         release_local = duty.release_time_utc.astimezone(sleep_tz)
         release_hour = release_local.hour + release_local.minute / 60.0
-        
+
         # Calculate sleep window based on arrival time
-        if release_hour < 12:  # Morning arrival
+        # Night arrivals (00:00-06:00 and 20:00-23:59) should sleep immediately
+        # Morning arrivals (06:00-12:00) get afternoon rest
+        # Afternoon arrivals (12:00-20:00) get evening sleep
+        if 6 <= release_hour < 12:  # Morning arrival (dawn to noon)
             # Post-duty nap/rest after morning arrival
             sleep_start = release_local + timedelta(hours=2.5)
             desired_duration = 6.0
-        elif release_hour < 20:  # Afternoon/evening arrival
+        elif 12 <= release_hour < 20:  # Afternoon/evening arrival
             # Evening sleep starting at normal bedtime
             # Calculate hours until normal bedtime (23:00)
             hours_until_bedtime = (23 - release_hour) if release_hour < 23 else 0
             # Add buffer for post-duty activities (shower, meal, etc.)
             sleep_start = release_local + timedelta(hours=max(2, hours_until_bedtime))
             desired_duration = 8.0
-        else:  # Night arrival (>= 20:00)
-            # Immediate night sleep after short buffer
+        else:  # Night arrival (20:00-06:00) - includes late night and early morning
+            # Immediate night sleep after short buffer (hotel check-in, shower, etc.)
             sleep_start = release_local + timedelta(hours=1.5)
             desired_duration = 8.0
 
