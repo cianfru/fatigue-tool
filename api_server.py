@@ -14,7 +14,7 @@ Usage:
     uvicorn api_server:app --reload --host 0.0.0.0 --port 8000
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
@@ -27,7 +27,7 @@ from pathlib import Path
 
 # Import your fatigue model
 from core_model import BorbelyFatigueModel, ModelConfig
-from roster_parser import PDFRosterParser, CSVRosterParser
+from roster_parser import PDFRosterParser, CSVRosterParser, AirportDatabase
 from data_models import MonthlyAnalysis, DutyTimeline
 from chronogram import FatigueChronogram
 from aviation_calendar import AviationCalendar
@@ -72,14 +72,35 @@ class AnalysisRequest(BaseModel):
     config_preset: str = "default"  # "default", "conservative", "liberal", "research"
 
 
+class AirportResponse(BaseModel):
+    """Airport information from the backend's ~7,800 airport database"""
+    code: str           # IATA code (e.g., "LHR")
+    timezone: str       # IANA timezone (e.g., "Europe/London")
+    utc_offset_hours: Optional[float] = None  # Current UTC offset (accounts for DST)
+    latitude: float = 0.0
+    longitude: float = 0.0
+
+
 class DutySegmentResponse(BaseModel):
     flight_number: str
     departure: str
     arrival: str
     departure_time: str  # UTC ISO format
     arrival_time: str    # UTC ISO format
-    departure_time_local: str  # Home base local time in HH:mm format
-    arrival_time_local: str    # Home base local time in HH:mm format
+    # Home base timezone times (HH:mm) - same reference TZ for all segments
+    departure_time_local: str  # Home base local time in HH:mm format (kept for backward compat)
+    arrival_time_local: str    # Home base local time in HH:mm format (kept for backward compat)
+    # Explicit home-base timezone times (identical to _local, but unambiguous naming)
+    departure_time_home_tz: str = ""  # HH:mm in home base timezone
+    arrival_time_home_tz: str = ""    # HH:mm in home base timezone
+    # Airport-local times (in the actual departure/arrival airport timezone)
+    departure_time_airport_local: str = ""  # HH:mm in departure airport local TZ
+    arrival_time_airport_local: str = ""    # HH:mm in arrival airport local TZ
+    # Timezone metadata for each airport
+    departure_timezone: str = ""  # IANA timezone of departure airport
+    arrival_timezone: str = ""    # IANA timezone of arrival airport
+    departure_utc_offset: Optional[float] = None  # UTC offset at departure (hours, e.g. +3.0)
+    arrival_utc_offset: Optional[float] = None     # UTC offset at arrival (hours, e.g. +5.5)
     block_hours: float
 
 
@@ -142,8 +163,11 @@ class DutyResponse(BaseModel):
     report_time_utc: str
     release_time_utc: str
     # Local time strings for direct display (HH:MM in home timezone)
-    report_time_local: Optional[str] = None
-    release_time_local: Optional[str] = None
+    report_time_local: Optional[str] = None    # Kept for backward compat
+    release_time_local: Optional[str] = None   # Kept for backward compat
+    # Explicit home-base timezone times (identical to _local, unambiguous naming)
+    report_time_home_tz: Optional[str] = None  # HH:MM in home base timezone
+    release_time_home_tz: Optional[str] = None # HH:MM in home base timezone
     duty_hours: float
     sectors: int
     segments: List[DutySegmentResponse]
@@ -194,6 +218,7 @@ class AnalysisResponse(BaseModel):
     pilot_name: Optional[str]  # Extracted from PDF
     pilot_base: Optional[str]  # Home base airport
     pilot_aircraft: Optional[str]  # Aircraft type
+    home_base_timezone: Optional[str] = None  # IANA timezone (e.g., "Asia/Qatar")
     month: str
     
     # Summary
@@ -274,17 +299,20 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
         dep_utc = seg.scheduled_departure_utc
         arr_utc = seg.scheduled_arrival_utc
 
-        # IMPORTANT: Convert to HOME BASE timezone (not airport timezone)
-        # The home-base chronogram needs all times in the same reference timezone
-        # to position duty bars correctly and calculate proper lengths.
-        #
-        # For timezone-crossing flights (e.g., DOH-CCJ-DOH), this means:
-        # - India departure 22:25Z → shows as 01:25 DOH time (not 03:55 India time)
-        # - This keeps duty bars proportional on the home-base timeline
-        #
-        # The Human Performance (Elapsed) timeline uses T=0 reference, so it's unaffected.
-        dep_local = dep_utc.astimezone(home_tz)
-        arr_local = arr_utc.astimezone(home_tz)
+        # Convert to HOME BASE timezone for chronogram positioning
+        # All times in the same reference TZ keeps duty bars proportional.
+        dep_home = dep_utc.astimezone(home_tz)
+        arr_home = arr_utc.astimezone(home_tz)
+
+        # Also convert to actual airport-local timezone for display
+        dep_airport_tz = pytz.timezone(seg.departure_airport.timezone)
+        arr_airport_tz = pytz.timezone(seg.arrival_airport.timezone)
+        dep_airport_local = dep_utc.astimezone(dep_airport_tz)
+        arr_airport_local = arr_utc.astimezone(arr_airport_tz)
+
+        # Calculate UTC offsets at the time of departure/arrival (DST-aware)
+        dep_utc_offset = dep_airport_local.utcoffset().total_seconds() / 3600
+        arr_utc_offset = arr_airport_local.utcoffset().total_seconds() / 3600
 
         segments.append(DutySegmentResponse(
             flight_number=seg.flight_number,
@@ -292,8 +320,20 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
             arrival=seg.arrival_airport.code,
             departure_time=dep_utc.isoformat(),
             arrival_time=arr_utc.isoformat(),
-            departure_time_local=dep_local.strftime("%H:%M"),
-            arrival_time_local=arr_local.strftime("%H:%M"),
+            # Backward-compatible fields (home base TZ)
+            departure_time_local=dep_home.strftime("%H:%M"),
+            arrival_time_local=arr_home.strftime("%H:%M"),
+            # Explicit home-base TZ fields
+            departure_time_home_tz=dep_home.strftime("%H:%M"),
+            arrival_time_home_tz=arr_home.strftime("%H:%M"),
+            # Actual airport-local times
+            departure_time_airport_local=dep_airport_local.strftime("%H:%M"),
+            arrival_time_airport_local=arr_airport_local.strftime("%H:%M"),
+            # Timezone metadata
+            departure_timezone=seg.departure_airport.timezone,
+            arrival_timezone=seg.arrival_airport.timezone,
+            departure_utc_offset=dep_utc_offset,
+            arrival_utc_offset=arr_utc_offset,
             block_hours=seg.block_time_hours
         ))
 
@@ -347,6 +387,8 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
         release_time_utc=duty.release_time_utc.isoformat(),
         report_time_local=report_local.strftime("%H:%M"),
         release_time_local=release_local.strftime("%H:%M"),
+        report_time_home_tz=report_local.strftime("%H:%M"),
+        release_time_home_tz=release_local.strftime("%H:%M"),
         duty_hours=duty.duty_hours,
         sectors=len(duty.segments),
         segments=segments,
@@ -553,9 +595,12 @@ async def analyze_roster(
         return AnalysisResponse(
             analysis_id=analysis_id,
             roster_id=roster.roster_id,
-            pilot_id=roster.pilot_id,            pilot_name=roster.pilot_name,
+            pilot_id=roster.pilot_id,
+            pilot_name=roster.pilot_name,
             pilot_base=roster.pilot_base,
-            pilot_aircraft=roster.pilot_aircraft,            month=roster.month,
+            pilot_aircraft=roster.pilot_aircraft,
+            home_base_timezone=roster.home_base_timezone,
+            month=roster.month,
             total_duties=roster.total_duties,
             total_sectors=roster.total_sectors,
             total_duty_hours=roster.total_duty_hours,
@@ -605,6 +650,7 @@ async def get_analysis(analysis_id: str):
         pilot_name=roster.pilot_name,
         pilot_base=roster.pilot_base,
         pilot_aircraft=roster.pilot_aircraft,
+        home_base_timezone=roster.home_base_timezone,
         month=roster.month,
         total_duties=roster.total_duties,
         total_sectors=roster.total_sectors,
@@ -792,6 +838,109 @@ async def get_statistics(analysis_id: str):
             "max_sleep_debt": monthly_analysis.max_sleep_debt,
         }
     }
+
+
+# ============================================================================
+# AIRPORT DATABASE ENDPOINTS
+# ============================================================================
+
+@app.get("/api/airports/{iata_code}", response_model=AirportResponse)
+async def get_airport(iata_code: str):
+    """
+    Look up airport by IATA code from backend's ~7,800 airport database.
+
+    Returns timezone (IANA), coordinates, and current UTC offset.
+    This eliminates the need for the frontend to maintain its own airport database.
+    """
+    import pytz
+
+    airport = AirportDatabase.get_airport(iata_code)
+
+    # Calculate current UTC offset (DST-aware)
+    try:
+        tz = pytz.timezone(airport.timezone)
+        now = datetime.now(pytz.utc)
+        utc_offset = tz.utcoffset(now).total_seconds() / 3600
+    except Exception:
+        utc_offset = None
+
+    return AirportResponse(
+        code=airport.code,
+        timezone=airport.timezone,
+        utc_offset_hours=utc_offset,
+        latitude=airport.latitude,
+        longitude=airport.longitude,
+    )
+
+
+class BatchAirportRequest(BaseModel):
+    codes: List[str]  # List of IATA codes
+
+
+@app.post("/api/airports/batch", response_model=List[AirportResponse])
+async def get_airports_batch(request: BatchAirportRequest):
+    """
+    Batch lookup for multiple airports.
+
+    Accepts up to 50 IATA codes and returns timezone + coordinate data for each.
+    Use this to populate the frontend's airport data for a whole roster in one call.
+    """
+    import pytz
+
+    if len(request.codes) > 50:
+        raise HTTPException(status_code=400, detail="Maximum 50 airports per batch request")
+
+    now = datetime.now(pytz.utc)
+    results = []
+
+    for code in request.codes:
+        airport = AirportDatabase.get_airport(code)
+        try:
+            tz = pytz.timezone(airport.timezone)
+            utc_offset = tz.utcoffset(now).total_seconds() / 3600
+        except Exception:
+            utc_offset = None
+
+        results.append(AirportResponse(
+            code=airport.code,
+            timezone=airport.timezone,
+            utc_offset_hours=utc_offset,
+            latitude=airport.latitude,
+            longitude=airport.longitude,
+        ))
+
+    return results
+
+
+@app.get("/api/airports/search")
+async def search_airports(q: str = Query(..., min_length=2, max_length=10)):
+    """
+    Search airports by IATA code prefix.
+
+    Returns matching airports from the ~7,800 airport database.
+    Useful for autocomplete in the frontend.
+    """
+    import airportsdata
+
+    _db = airportsdata.load('IATA')
+    q_upper = q.upper()
+    matches = []
+
+    for code, entry in _db.items():
+        if code.startswith(q_upper):
+            matches.append({
+                "code": entry['iata'],
+                "name": entry.get('name', ''),
+                "city": entry.get('city', ''),
+                "country": entry.get('country', ''),
+                "timezone": entry['tz'],
+                "latitude": entry['lat'],
+                "longitude": entry['lon'],
+            })
+        if len(matches) >= 20:
+            break
+
+    return {"results": matches, "total": len(matches)}
 
 
 # ============================================================================
