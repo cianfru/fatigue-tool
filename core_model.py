@@ -479,7 +479,15 @@ class UnifiedSleepCalculator:
         self.layover_timezone = layover_tz
         self.sleep_environment = sleep_env
 
-        report_local = duty.report_time_utc.astimezone(self.home_tz)
+        # Use layover timezone for strategy selection when pilot is at layover.
+        # The pilot's sleep behavior is governed by local clock time where they
+        # physically are, not their home base timezone. A 05:00 home-time report
+        # might be 08:00 local at the layover — completely different strategy.
+        if is_layover and layover_tz:
+            strategy_tz = pytz.timezone(layover_tz)
+        else:
+            strategy_tz = self.home_tz
+        report_local = duty.report_time_utc.astimezone(strategy_tz)
         report_hour = report_local.hour
 
         # Calculate duty characteristics
@@ -1119,10 +1127,12 @@ class UnifiedSleepCalculator:
         adjusted_start = sleep_start
         adjusted_end = sleep_end
         
-        # Check overlap with current duty
-        if adjusted_end > duty.report_time_utc:
-            adjusted_end = duty.report_time_utc - timedelta(minutes=30)
-            warnings.append("Sleep truncated: would overlap with duty report time")
+        # Check overlap with current duty — enforce MIN_WAKE_BEFORE_REPORT (2h)
+        # gap, not just 30 minutes. Pilots need time for commute, briefing, etc.
+        min_wake_gap = timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
+        if adjusted_end > duty.report_time_utc - min_wake_gap:
+            adjusted_end = duty.report_time_utc - min_wake_gap
+            warnings.append("Sleep truncated: enforcing minimum wake period before report")
         
         # Check overlap with previous duty
         if previous_duty and adjusted_start < previous_duty.release_time_utc:
@@ -1136,7 +1146,7 @@ class UnifiedSleepCalculator:
             else:
                 earliest_sleep = duty.report_time_utc - timedelta(hours=8)
             
-            latest_sleep = duty.report_time_utc - timedelta(minutes=30)
+            latest_sleep = duty.report_time_utc - min_wake_gap
             time_available = (latest_sleep - earliest_sleep).total_seconds() / 3600
             
             if time_available >= 2:
@@ -2071,29 +2081,33 @@ class BorbelyFatigueModel:
                     'references': self._get_strategy_references(strategy.strategy_type),
                 }
 
-            post_duty_sleep = self._generate_post_duty_sleep(
+            post_duty_result = self._generate_post_duty_sleep(
                 duty=duty,
                 next_duty=next_duty,
                 home_timezone=roster.home_base_timezone,
                 home_base=roster.pilot_base,
             )
-            if post_duty_sleep:
+            if post_duty_result:
+                post_duty_sleep, post_duty_quality = post_duty_result
                 sleep_blocks.append(post_duty_sleep)
-                
-                # Add post-duty sleep to API response
+
+                # Add post-duty sleep to API response with full quality breakdown
                 post_duty_key = f"post_duty_{duty.duty_id}"
                 location_tz = pytz.timezone(post_duty_sleep.location_timezone)
                 sleep_start_local = post_duty_sleep.start_utc.astimezone(location_tz)
                 sleep_end_local = post_duty_sleep.end_utc.astimezone(location_tz)
-                
+
+                # Lower confidence for hotel sleep (more variability)
+                post_duty_confidence = 0.85 if post_duty_sleep.environment == 'hotel' else 0.90
+
                 sleep_strategies[post_duty_key] = {
                     'strategy_type': 'post_duty_recovery',
-                    'confidence': 0.90,
-                    'total_sleep_hours': post_duty_sleep.duration_hours,
-                    'effective_sleep_hours': post_duty_sleep.effective_sleep_hours,
-                    'sleep_efficiency': post_duty_sleep.quality_factor,
-                    'wocl_overlap_hours': 0.0,
-                    'warnings': [],
+                    'confidence': post_duty_confidence,
+                    'total_sleep_hours': post_duty_quality.total_sleep_hours,
+                    'effective_sleep_hours': post_duty_quality.effective_sleep_hours,
+                    'sleep_efficiency': post_duty_quality.sleep_efficiency,
+                    'wocl_overlap_hours': post_duty_quality.wocl_overlap_hours,
+                    'warnings': [w['message'] for w in post_duty_quality.warnings],
                     'sleep_start_time': sleep_start_local.strftime('%H:%M'),
                     'sleep_end_time': sleep_end_local.strftime('%H:%M'),
                     'sleep_blocks': [{
@@ -2102,9 +2116,9 @@ class BorbelyFatigueModel:
                         'sleep_start_iso': sleep_start_local.isoformat(),
                         'sleep_end_iso': sleep_end_local.isoformat(),
                         'sleep_type': 'main',
-                        'duration_hours': post_duty_sleep.duration_hours,
-                        'effective_hours': post_duty_sleep.effective_sleep_hours,
-                        'quality_factor': post_duty_sleep.quality_factor,
+                        'duration_hours': post_duty_quality.actual_sleep_hours,
+                        'effective_hours': post_duty_quality.effective_sleep_hours,
+                        'quality_factor': post_duty_quality.sleep_efficiency,
                         'sleep_start_day': sleep_start_local.day,
                         'sleep_start_hour': sleep_start_local.hour + sleep_start_local.minute / 60.0,
                         'sleep_end_day': sleep_end_local.day,
@@ -2112,15 +2126,24 @@ class BorbelyFatigueModel:
                         'location_timezone': post_duty_sleep.location_timezone,
                         'environment': post_duty_sleep.environment
                     }],
-                    'explanation': f'Post-duty recovery sleep at {post_duty_sleep.environment} ({post_duty_sleep.location_timezone})',
-                    'confidence_basis': 'High confidence — post-duty recovery period at layover',
+                    'explanation': (
+                        f'Post-duty recovery sleep at {post_duty_sleep.environment} '
+                        f'({post_duty_sleep.location_timezone}): '
+                        f'{post_duty_quality.effective_sleep_hours:.1f}h effective '
+                        f'({post_duty_quality.sleep_efficiency:.0%} efficiency)'
+                    ),
+                    'confidence_basis': (
+                        f'{"Good" if post_duty_confidence >= 0.88 else "Moderate"} confidence — '
+                        f'post-duty recovery at {post_duty_sleep.environment}'
+                        f'{" (reduced quality: unfamiliar environment)" if post_duty_sleep.environment == "hotel" else ""}'
+                    ),
                     'quality_factors': {
-                        'base_efficiency': post_duty_sleep.quality_factor,
-                        'wocl_boost': 0.0,
-                        'late_onset_penalty': 0.0,
-                        'recovery_boost': 0.0,
-                        'time_pressure_factor': 1.0,
-                        'insufficient_penalty': 0.0,
+                        'base_efficiency': post_duty_quality.base_efficiency,
+                        'wocl_boost': post_duty_quality.wocl_penalty,
+                        'late_onset_penalty': post_duty_quality.late_onset_penalty,
+                        'recovery_boost': post_duty_quality.recovery_boost,
+                        'time_pressure_factor': post_duty_quality.time_pressure_factor,
+                        'insufficient_penalty': post_duty_quality.insufficient_penalty,
                     },
                     'references': self._get_strategy_references('post_duty_recovery'),
                     'related_duty_id': duty.duty_id,
@@ -2210,6 +2233,42 @@ class BorbelyFatigueModel:
                             'references': self._get_strategy_references('recovery'),
                         }
         
+        # Resolve overlapping sleep blocks.
+        # Post-duty sleep from duty N can overlap with pre-duty sleep of duty N+1.
+        # Sort by start time and truncate earlier blocks where they overlap with later ones.
+        sleep_blocks.sort(key=lambda s: s.start_utc)
+        resolved_blocks = []
+        for block in sleep_blocks:
+            if resolved_blocks:
+                prev = resolved_blocks[-1]
+                if block.start_utc < prev.end_utc:
+                    # Overlap detected — truncate the earlier (previous) block
+                    # to end where the later block starts
+                    overlap_hours = (prev.end_utc - block.start_utc).total_seconds() / 3600
+                    new_duration = prev.duration_hours - overlap_hours
+                    if new_duration >= 1.0:
+                        # Scale effective hours proportionally to duration reduction
+                        scale = new_duration / prev.duration_hours if prev.duration_hours > 0 else 1.0
+                        resolved_blocks[-1] = SleepBlock(
+                            start_utc=prev.start_utc,
+                            end_utc=block.start_utc,
+                            location_timezone=prev.location_timezone,
+                            duration_hours=new_duration,
+                            quality_factor=prev.quality_factor,
+                            effective_sleep_hours=prev.effective_sleep_hours * scale,
+                            environment=prev.environment,
+                            is_anchor_sleep=prev.is_anchor_sleep,
+                            sleep_start_day=prev.sleep_start_day,
+                            sleep_start_hour=prev.sleep_start_hour,
+                            sleep_end_day=block.start_utc.day,
+                            sleep_end_hour=block.start_utc.hour + block.start_utc.minute / 60.0
+                        )
+                    else:
+                        # Too short after truncation — remove previous block
+                        resolved_blocks.pop()
+            resolved_blocks.append(block)
+        sleep_blocks = resolved_blocks
+
         return sleep_blocks, sleep_strategies
 
     def _generate_post_duty_sleep(
@@ -2218,7 +2277,7 @@ class BorbelyFatigueModel:
         next_duty: Optional[Duty],
         home_timezone: str,
         home_base: Optional[str]
-    ) -> Optional[SleepBlock]:
+    ) -> Optional[Tuple[SleepBlock, 'SleepQualityAnalysis']]:
         """
         Generate post-duty recovery sleep at layover or home.
 
@@ -2299,7 +2358,7 @@ class BorbelyFatigueModel:
             location_timezone=sleep_tz.zone
         )
 
-        return SleepBlock(
+        block = SleepBlock(
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=sleep_end.astimezone(pytz.utc),
             location_timezone=sleep_tz.zone,
@@ -2312,6 +2371,7 @@ class BorbelyFatigueModel:
             sleep_end_day=sleep_end.day,
             sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
         )
+        return block, sleep_quality
 
     @staticmethod
     def _get_confidence_basis(strategy: SleepStrategy) -> str:
