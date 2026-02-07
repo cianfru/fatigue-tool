@@ -108,16 +108,20 @@ class BorbelyParameters:
 
     # Sleep debt
     # Baseline 8h need: Van Dongen et al. (2003) Sleep 26(2):117-126
-    # Decay rate 0.50/day ≈ half-life 1.4 days.
+    # Decay rate 0.35/day ≈ half-life 2.0 days.
+    #   Banks et al. (2010) showed one night of 10 h TIB insufficient to
+    #   restore baseline after 5 days of 4 h/night restriction.
     #   Kitamura et al. (2016) Sci Rep 6:35812 found 1 h of debt needs
-    #   ~4 days of optimal sleep for full recovery → exp(-0.5*4)=0.135
-    #   (87 % recovered in 4 d).  Belenky et al. (2003) J Sleep Res
+    #   ~4 days of optimal sleep for full recovery → exp(-0.35*4)=0.247
+    #   (75 % recovered in 4 d).  Belenky et al. (2003) J Sleep Res
     #   12:1-12 showed substantial but incomplete recovery after 3 × 8 h
-    #   nights → exp(-0.5*3)=0.22 (78 % recovered in 3 d).
-    # Debt is calculated against RAW sleep duration (not quality-adjusted)
-    # to avoid double-penalising — quality already degrades Process S.
+    #   nights → exp(-0.35*3)=0.35 (65 % recovered in 3 d).
+    # Previous value of 0.50 was too generous — implied near-full recovery
+    # in ~2 nights, inconsistent with Banks (2010) findings.
+    # Debt is calculated against EFFECTIVE sleep hours to maintain
+    # consistency with Process S recovery calculations.
     baseline_sleep_need_hours: float = 8.0
-    sleep_debt_decay_rate: float = 0.50
+    sleep_debt_decay_rate: float = 0.35
 
 
 @dataclass
@@ -512,9 +516,18 @@ class UnifiedSleepCalculator:
         previous_duty_end: Optional[datetime],
         next_event: datetime,
         is_nap: bool = False,
-        location_timezone: str = 'UTC'
+        location_timezone: str = 'UTC',
+        biological_timezone: str = None
     ) -> SleepQualityAnalysis:
-        """Calculate realistic sleep quality with all factors"""
+        """Calculate realistic sleep quality with all factors.
+
+        Args:
+            biological_timezone: The timezone representing the pilot's current
+                circadian phase.  For home-base sleep this equals
+                ``location_timezone``; for layovers it is the home-base TZ
+                (short layovers) or partially adapted TZ (longer layovers).
+                When ``None``, defaults to ``location_timezone``.
+        """
         
         # 1. Calculate raw duration
         total_hours = (sleep_end - sleep_start).total_seconds() / 3600
@@ -548,7 +561,7 @@ class UnifiedSleepCalculator:
         # WOCL window is ~6 h; full overlap → no penalty (1.0).
         # Reduced from 15% based on research: circadian affects sleep consolidation
         # and onset, but quality per hour slept remains stable (Dijk & Czeisler 1995).
-        wocl_overlap = self._calculate_wocl_overlap(sleep_start, sleep_end, location_timezone)
+        wocl_overlap = self._calculate_wocl_overlap(sleep_start, sleep_end, location_timezone, biological_timezone)
         wocl_window_hours = float(self.WOCL_END - self.WOCL_START)
         # Fraction of sleep that aligns with WOCL (0 = fully daytime, 1 = fully nighttime)
         alignment_ratio = min(1.0, wocl_overlap / max(1.0, min(actual_duration, wocl_window_hours)))
@@ -556,16 +569,35 @@ class UnifiedSleepCalculator:
         wocl_boost = 1.0 - 0.08 * (1.0 - alignment_ratio) if actual_duration > 0.5 else 1.0
         
         # 5. Late sleep onset penalty
+        # Evaluate against the biological clock — during layovers the pilot's
+        # circadian wake-maintenance zone (WMZ, ~18:00-21:00 biological time)
+        # is the hardest window to fall asleep in, regardless of local time.
+        # Dijk & Czeisler (1995): sleep latency is maximal in the 2-3 h
+        # preceding the temperature minimum's mirror (the evening WMZ).
         tz = pytz.timezone(location_timezone)
-        sleep_start_local = sleep_start.astimezone(tz)
-        sleep_start_hour = sleep_start_local.hour + sleep_start_local.minute / 60.0
-        
+        bio_tz_for_onset = pytz.timezone(biological_timezone) if biological_timezone else tz
+        sleep_start_bio_local = sleep_start.astimezone(bio_tz_for_onset)
+        sleep_start_hour = sleep_start_bio_local.hour + sleep_start_bio_local.minute / 60.0
+
         if sleep_start_hour >= 1 and sleep_start_hour < 4:
             late_onset_penalty = 0.93
         elif sleep_start_hour >= 0 and sleep_start_hour < 1:
             late_onset_penalty = 0.97
         else:
             late_onset_penalty = 1.0
+
+        # Additional penalty for attempting sleep during the circadian
+        # wake-maintenance zone (WMZ, ~17:00-21:00 biological time).
+        # This is the hardest time to fall asleep — the SCN is actively
+        # promoting wakefulness. Sleep onset latency roughly doubles,
+        # and sleep efficiency drops ~5-10% (Dijk & Czeisler 1994;
+        # Strogatz et al. 1987).
+        if 17 <= sleep_start_hour < 21:
+            # Peak difficulty at ~19:00 biological time
+            wmz_center = 19.0
+            wmz_distance = abs(sleep_start_hour - wmz_center) / 2.0
+            wmz_penalty = 0.93 + 0.07 * min(1.0, wmz_distance)  # 0.93-1.0
+            late_onset_penalty = min(late_onset_penalty, wmz_penalty)
         
         # 6. Recovery sleep boost — graded by recency of duty.
         # Post-duty sleep with high homeostatic drive shows enhanced SWA
@@ -651,31 +683,58 @@ class UnifiedSleepCalculator:
         self,
         sleep_start: datetime,
         sleep_end: datetime,
-        location_timezone: str = 'UTC'
+        location_timezone: str = 'UTC',
+        biological_timezone: str = None
     ) -> float:
         """
         Calculate hours of sleep overlapping WOCL (02:00-06:00)
-        Converts to local timezone FIRST to avoid timezone bugs
+
+        The WOCL window is evaluated in the pilot's **biological timezone**
+        (home-base clock adjusted for circadian adaptation), not the local
+        timezone of the sleep location.  For short layovers (< 48 h) the
+        circadian clock remains essentially on home time (SKYbrary; EASA
+        AMC1 ORO.FTL.105).  ``biological_timezone`` defaults to
+        ``location_timezone`` when the pilot is at home base (no shift).
+
+        References:
+            Dijk & Czeisler (1995) J Neurosci 15:3526 — circadian gating
+            Roach et al. (2025) PMC11879054 — layover start time predicts sleep
         """
-        
+
+        # Use biological (home-base) timezone for WOCL evaluation when provided,
+        # falling back to location timezone (correct when pilot is at home base).
+        wocl_tz_str = biological_timezone or location_timezone
+        wocl_tz = pytz.timezone(wocl_tz_str)
+
+        # Sleep times are still converted to local timezone for onset/offset
+        # calculations (the pilot physically sleeps in the local timezone),
+        # but the *WOCL window* is anchored to the biological clock.
         tz = pytz.timezone(location_timezone)
         sleep_start_local = sleep_start.astimezone(tz)
         sleep_end_local = sleep_end.astimezone(tz)
+
+        # Compute the WOCL window boundaries in UTC using the biological TZ,
+        # then compare against sleep times in UTC for accurate overlap.
+        sleep_start_bio = sleep_start.astimezone(wocl_tz)
+        sleep_end_bio = sleep_end.astimezone(wocl_tz)
         
-        sleep_start_hour = sleep_start_local.hour + sleep_start_local.minute / 60.0
-        sleep_end_hour = sleep_end_local.hour + sleep_end_local.minute / 60.0
-        
+        # Use biological-clock hours for WOCL overlap evaluation.
+        # The WOCL (02:00-06:00) is defined relative to the pilot's adapted
+        # circadian rhythm, which during short layovers remains on home time.
+        sleep_start_hour = sleep_start_bio.hour + sleep_start_bio.minute / 60.0
+        sleep_end_hour = sleep_end_bio.hour + sleep_end_bio.minute / 60.0
+
         overlap_hours = 0.0
-        
-        # Handle overnight sleep (crosses midnight)
-        if sleep_end_hour < sleep_start_hour or sleep_end_local.date() > sleep_start_local.date():
+
+        # Handle overnight sleep (crosses midnight in biological TZ)
+        if sleep_end_hour < sleep_start_hour or sleep_end_bio.date() > sleep_start_bio.date():
             # Day 1: From sleep_start to end of day
             if sleep_start_hour < self.WOCL_END:
                 day1_overlap_start = max(sleep_start_hour, self.WOCL_START)
                 day1_overlap_end = min(24.0, self.WOCL_END)
                 if day1_overlap_start < day1_overlap_end:
                     overlap_hours += day1_overlap_end - day1_overlap_start
-            
+
             # Day 2: From start of day to sleep_end
             if sleep_end_hour > self.WOCL_START:
                 day2_overlap_start = max(0.0, self.WOCL_START)
@@ -683,12 +742,12 @@ class UnifiedSleepCalculator:
                 if day2_overlap_start < day2_overlap_end:
                     overlap_hours += day2_overlap_end - day2_overlap_start
         else:
-            # Same-day sleep
+            # Same-day sleep (in biological TZ)
             if sleep_start_hour < self.WOCL_END and sleep_end_hour > self.WOCL_START:
                 overlap_start = max(sleep_start_hour, self.WOCL_START)
                 overlap_end = min(sleep_end_hour, self.WOCL_END)
                 overlap_hours = max(0.0, overlap_end - overlap_start)
-        
+
         return overlap_hours
     
     def _generate_sleep_warnings(
@@ -782,13 +841,19 @@ class UnifiedSleepCalculator:
         morning_sleep_start = morning_sleep_start_utc.astimezone(sleep_tz)
         morning_sleep_end = morning_sleep_end_utc.astimezone(sleep_tz)
 
+        # Use home-base TZ as biological clock reference during layovers.
+        # For short layovers (< 48 h) the circadian clock does not adapt
+        # to local time (SKYbrary; EASA AMC1 ORO.FTL.105).
+        bio_tz = self.home_tz.zone if self.is_layover else None
+
         morning_quality = self.calculate_sleep_quality(
             sleep_start=morning_sleep_start,
             sleep_end=morning_sleep_end,
             location=sleep_location,  # 'home' or 'hotel'
             previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
             next_event=report_local,
-            location_timezone=sleep_tz.zone
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz
         )
 
         morning_sleep = SleepBlock(
@@ -823,7 +888,8 @@ class UnifiedSleepCalculator:
             previous_duty_end=morning_sleep_end.astimezone(pytz.utc),
             next_event=report_local,
             is_nap=True,
-            location_timezone=sleep_tz.zone
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz
         )
 
         afternoon_nap = SleepBlock(
@@ -908,13 +974,16 @@ class UnifiedSleepCalculator:
         sleep_start = sleep_start_utc.astimezone(sleep_tz)
         sleep_end = sleep_end_utc.astimezone(sleep_tz)
 
+        bio_tz = self.home_tz.zone if self.is_layover else None
+
         sleep_quality = self.calculate_sleep_quality(
             sleep_start=sleep_start,
             sleep_end=sleep_end,
             location=sleep_location,  # 'home' or 'hotel'
             previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
             next_event=report_local,
-            location_timezone=sleep_tz.zone
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz
         )
 
         early_sleep = SleepBlock(
@@ -979,13 +1048,16 @@ class UnifiedSleepCalculator:
         anchor_start = anchor_start_utc.astimezone(sleep_tz)
         anchor_end = anchor_end_utc.astimezone(sleep_tz)
 
+        bio_tz = self.home_tz.zone if self.is_layover else None
+
         anchor_quality = self.calculate_sleep_quality(
             sleep_start=anchor_start,
             sleep_end=anchor_end,
             location=sleep_location,  # 'home' or 'hotel'
             previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
             next_event=report_local,
-            location_timezone=sleep_tz.zone
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz
         )
 
         anchor_sleep = SleepBlock(
@@ -1058,13 +1130,16 @@ class UnifiedSleepCalculator:
         sleep_start = sleep_start_utc.astimezone(sleep_tz)
         sleep_end = sleep_end_utc.astimezone(sleep_tz)
 
+        bio_tz = self.home_tz.zone if self.is_layover else None
+
         sleep_quality = self.calculate_sleep_quality(
             sleep_start=sleep_start,
             sleep_end=sleep_end,
             location=sleep_location,  # 'home' or 'hotel'
             previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
             next_event=report_local,
-            location_timezone=sleep_tz.zone
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz
         )
 
         normal_sleep = SleepBlock(
@@ -1960,9 +2035,11 @@ class BorbelyFatigueModel:
                 cumulative_sleep_debt += abs(sleep_balance)
             elif sleep_balance > 0 and cumulative_sleep_debt > 0:
                 # Surplus: actively reduce existing debt with recovery inefficiency.
-                # Research (Van Dongen 2003) shows 1h debt requires ~1.15h sleep,
-                # so debt reduction is less efficient: divide surplus by 1.15
-                debt_reduction = sleep_balance / 1.15
+                # Banks et al. (2010, 2023) show recovery is significantly less
+                # efficient than 1:1 — 1 h of debt requires ~1.3 h of recovery
+                # sleep. This aligns with the finding that one night of 10 h TIB
+                # was insufficient to restore baseline after chronic restriction.
+                debt_reduction = sleep_balance / 1.30
                 cumulative_sleep_debt = max(
                     0.0, cumulative_sleep_debt - debt_reduction
                 )
@@ -2021,13 +2098,26 @@ class BorbelyFatigueModel:
                         location_tz = pytz.timezone(block.location_timezone)
                         sleep_start_local = block.start_utc.astimezone(location_tz)
                         sleep_end_local = block.end_utc.astimezone(location_tz)
-                        
+
                         sleep_type = 'main'
                         if hasattr(block, 'is_anchor_sleep') and not block.is_anchor_sleep:
                             sleep_type = 'nap'
                         elif hasattr(block, 'is_inflight_rest') and block.is_inflight_rest:
                             sleep_type = 'inflight'
-                        
+
+                        # Per-block quality factors from corresponding analysis
+                        block_qf = None
+                        if idx < len(strategy.quality_analysis):
+                            qa = strategy.quality_analysis[idx]
+                            block_qf = {
+                                'base_efficiency': qa.base_efficiency,
+                                'wocl_boost': qa.wocl_penalty,
+                                'late_onset_penalty': qa.late_onset_penalty,
+                                'recovery_boost': qa.recovery_boost,
+                                'time_pressure_factor': qa.time_pressure_factor,
+                                'insufficient_penalty': qa.insufficient_penalty,
+                            }
+
                         sleep_blocks_response.append({
                             'sleep_start_time': sleep_start_local.strftime('%H:%M'),
                             'sleep_end_time': sleep_end_local.strftime('%H:%M'),
@@ -2042,7 +2132,8 @@ class BorbelyFatigueModel:
                             'sleep_end_day': sleep_end_local.day,
                             'sleep_end_hour': sleep_end_local.hour + sleep_end_local.minute / 60.0,
                             'location_timezone': block.location_timezone,
-                            'environment': block.environment
+                            'environment': block.environment,
+                            'quality_factors': block_qf,
                         })
                     
                     first_block = strategy.sleep_blocks[0]
@@ -2100,6 +2191,15 @@ class BorbelyFatigueModel:
                 # Lower confidence for hotel sleep (more variability)
                 post_duty_confidence = 0.85 if post_duty_sleep.environment == 'hotel' else 0.90
 
+                post_duty_qf = {
+                    'base_efficiency': post_duty_quality.base_efficiency,
+                    'wocl_boost': post_duty_quality.wocl_penalty,
+                    'late_onset_penalty': post_duty_quality.late_onset_penalty,
+                    'recovery_boost': post_duty_quality.recovery_boost,
+                    'time_pressure_factor': post_duty_quality.time_pressure_factor,
+                    'insufficient_penalty': post_duty_quality.insufficient_penalty,
+                }
+
                 sleep_strategies[post_duty_key] = {
                     'strategy_type': 'post_duty_recovery',
                     'confidence': post_duty_confidence,
@@ -2124,7 +2224,8 @@ class BorbelyFatigueModel:
                         'sleep_end_day': sleep_end_local.day,
                         'sleep_end_hour': sleep_end_local.hour + sleep_end_local.minute / 60.0,
                         'location_timezone': post_duty_sleep.location_timezone,
-                        'environment': post_duty_sleep.environment
+                        'environment': post_duty_sleep.environment,
+                        'quality_factors': post_duty_qf,
                     }],
                     'explanation': (
                         f'Post-duty recovery sleep at {post_duty_sleep.environment} '
@@ -2137,14 +2238,7 @@ class BorbelyFatigueModel:
                         f'post-duty recovery at {post_duty_sleep.environment}'
                         f'{" (reduced quality: unfamiliar environment)" if post_duty_sleep.environment == "hotel" else ""}'
                     ),
-                    'quality_factors': {
-                        'base_efficiency': post_duty_quality.base_efficiency,
-                        'wocl_boost': post_duty_quality.wocl_penalty,
-                        'late_onset_penalty': post_duty_quality.late_onset_penalty,
-                        'recovery_boost': post_duty_quality.recovery_boost,
-                        'time_pressure_factor': post_duty_quality.time_pressure_factor,
-                        'insufficient_penalty': post_duty_quality.insufficient_penalty,
-                    },
+                    'quality_factors': post_duty_qf,
                     'references': self._get_strategy_references('post_duty_recovery'),
                     'related_duty_id': duty.duty_id,
                 }
@@ -2166,18 +2260,19 @@ class BorbelyFatigueModel:
                 # Only generate rest days if pilot is at home, not at layover
                 if pilot_at_home:
                     gap_days = (next_duty_report.date() - duty_release.date()).days
-                    
+
                     for rest_day_offset in range(1, gap_days):
                         rest_date = duty_release.date() + timedelta(days=rest_day_offset)
                         rest_day_key = f"rest_{rest_date.isoformat()}"
-                        
+                        recovery_night_number = rest_day_offset  # 1-indexed
+
                         sleep_start = home_tz.localize(
                             datetime.combine(rest_date - timedelta(days=1), time(23, 0))
                         )
                         sleep_end = home_tz.localize(
                             datetime.combine(rest_date, time(7, 0))
                         )
-                        
+
                         # Calculate proper rest day sleep quality
                         rest_quality = self.sleep_calculator.calculate_sleep_quality(
                             sleep_start=sleep_start,
@@ -2200,9 +2295,29 @@ class BorbelyFatigueModel:
                         
                         sleep_blocks.append(recovery_block)
                         
+                        rest_qf = {
+                            'base_efficiency': rest_quality.base_efficiency,
+                            'wocl_boost': rest_quality.wocl_penalty,
+                            'late_onset_penalty': rest_quality.late_onset_penalty,
+                            'recovery_boost': rest_quality.recovery_boost,
+                            'time_pressure_factor': rest_quality.time_pressure_factor,
+                            'insufficient_penalty': rest_quality.insufficient_penalty,
+                        }
+
+                        # Recovery fraction model — Banks et al. (2010, 2023):
+                        # Recovery is exponential, not instantaneous.
+                        # Night 1: ~33% of debt cleared
+                        # Night 2: ~55%
+                        # Night 3: ~71%
+                        # Night 4+: ~80%+
+                        # tau_recovery ≈ 2.5 nights (calibrated to Banks 2010)
+                        recovery_fraction = 1.0 - math.exp(-recovery_night_number / 2.5)
+
                         sleep_strategies[rest_day_key] = {
                             'strategy_type': 'recovery',
                             'confidence': 0.95,
+                            'recovery_night_number': recovery_night_number,
+                            'cumulative_recovery_fraction': round(recovery_fraction, 2),
                             'total_sleep_hours': rest_quality.total_sleep_hours,
                             'effective_sleep_hours': rest_quality.effective_sleep_hours,
                             'sleep_efficiency': rest_quality.sleep_efficiency,
@@ -2218,18 +2333,21 @@ class BorbelyFatigueModel:
                                 'sleep_type': 'main',
                                 'duration_hours': rest_quality.actual_sleep_hours,
                                 'effective_hours': rest_quality.effective_sleep_hours,
-                                'quality_factor': rest_quality.sleep_efficiency
+                                'quality_factor': rest_quality.sleep_efficiency,
+                                'quality_factors': rest_qf,
                             }],
-                            'explanation': f'Rest day: standard home sleep (23:00-07:00, {rest_quality.sleep_efficiency:.0%} efficiency)',
-                            'confidence_basis': 'High confidence — home environment, no duty constraints',
-                            'quality_factors': {
-                                'base_efficiency': rest_quality.base_efficiency,
-                                'wocl_boost': rest_quality.wocl_penalty,
-                                'late_onset_penalty': rest_quality.late_onset_penalty,
-                                'recovery_boost': rest_quality.recovery_boost,
-                                'time_pressure_factor': rest_quality.time_pressure_factor,
-                                'insufficient_penalty': rest_quality.insufficient_penalty,
-                            },
+                            'explanation': (
+                                f'Recovery night {recovery_night_number}: home sleep '
+                                f'(23:00-07:00, {rest_quality.sleep_efficiency:.0%} efficiency). '
+                                f'Cumulative recovery ~{recovery_fraction:.0%} of prior debt '
+                                f'(Banks et al. 2010: exponential multi-night recovery)'
+                            ),
+                            'confidence_basis': (
+                                f'High confidence — home environment, no duty constraints. '
+                                f'Recovery night {recovery_night_number} of {gap_days - 1} '
+                                f'(~{recovery_fraction:.0%} cumulative debt recovery)'
+                            ),
+                            'quality_factors': rest_qf,
                             'references': self._get_strategy_references('recovery'),
                         }
         
@@ -2349,13 +2467,19 @@ class BorbelyFatigueModel:
         else:
             next_event = sleep_end + timedelta(hours=12)  # No time pressure
 
+        # For layover post-duty sleep, the pilot's circadian clock is still
+        # on home-base time.  Use home TZ as biological reference so WOCL
+        # overlap is evaluated against the pilot's actual biological night.
+        home_tz_str = home_timezone if not is_home_base else None
+
         sleep_quality = self.sleep_calculator.calculate_sleep_quality(
             sleep_start=sleep_start,
             sleep_end=sleep_end,
             location=environment,
             previous_duty_end=duty.release_time_utc,
             next_event=next_event,
-            location_timezone=sleep_tz.zone
+            location_timezone=sleep_tz.zone,
+            biological_timezone=home_tz_str
         )
 
         block = SleepBlock(
@@ -2405,7 +2529,17 @@ class BorbelyFatigueModel:
                 'data on pilot adoption of this specific pattern'
             )
         elif st == 'recovery':
-            return 'High confidence — home environment, no duty constraints'
+            return (
+                f'High confidence ({c:.0%}) — home environment, no duty constraints. '
+                'Recovery from sleep debt is exponential over multiple nights '
+                '(Banks et al. 2010)'
+            )
+        elif st == 'post_duty_recovery':
+            return (
+                f'{"Good" if c >= 0.88 else "Moderate"} confidence ({c:.0%}) — '
+                f'post-duty recovery sleep. WOCL evaluated against pilot biological '
+                f'clock (home-base time), not local time'
+            )
         return f'Confidence: {c:.0%}'
 
     @staticmethod
@@ -2505,6 +2639,16 @@ class BorbelyFatigueModel:
                     'short': 'Gander et al. (2014)',
                     'full': 'Gander PH et al. Pilot fatigue: departure/arrival times. Aviat Space Environ Med 85(8):833-40',
                 },
+                {
+                    'key': 'banks_2010',
+                    'short': 'Banks et al. (2010)',
+                    'full': 'Banks S et al. Neurobehavioral dynamics following chronic sleep restriction: dose-response effects of one night for recovery. Sleep 33(8):1013-1026',
+                },
+                {
+                    'key': 'van_dongen_2003',
+                    'short': 'Van Dongen et al. (2003)',
+                    'full': 'Van Dongen HPA et al. The cumulative cost of additional wakefulness. Sleep 26(2):117-126',
+                },
             ],
             'post_duty_recovery': [
                 {
@@ -2516,6 +2660,11 @@ class BorbelyFatigueModel:
                     'key': 'gander_2013',
                     'short': 'Gander et al. (2013)',
                     'full': 'Gander PH et al. In-flight sleep, pilot fatigue and PVT. J Sleep Res 22(6):697-706',
+                },
+                {
+                    'key': 'roach_2025',
+                    'short': 'Roach et al. (2025)',
+                    'full': 'Roach GD et al. Layover start timing predicts layover sleep. PMC11879054',
                 },
             ],
         }

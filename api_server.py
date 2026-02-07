@@ -105,7 +105,7 @@ class DutySegmentResponse(BaseModel):
 
 
 class SleepBlockResponse(BaseModel):
-    """Individual sleep period with timing"""
+    """Individual sleep period with timing and optional quality breakdown"""
     sleep_start_time: str  # HH:mm in home-base timezone
     sleep_end_time: str    # HH:mm in home-base timezone
     sleep_start_iso: str   # ISO format with date for proper chronogram positioning
@@ -114,6 +114,9 @@ class SleepBlockResponse(BaseModel):
     duration_hours: float
     effective_hours: float
     quality_factor: float
+
+    # Per-block quality factor breakdown (populated for all sleep types)
+    quality_factors: Optional[QualityFactorsResponse] = None
 
 
 class QualityFactorsResponse(BaseModel):
@@ -201,14 +204,24 @@ class DutyResponse(BaseModel):
 
 
 class RestDaySleepResponse(BaseModel):
-    """Sleep pattern for a rest day (no duties)"""
+    """Sleep pattern for a rest day (no duties) with full scientific methodology"""
     date: str  # YYYY-MM-DD
     sleep_blocks: List[SleepBlockResponse]
     total_sleep_hours: float
     effective_sleep_hours: float
     sleep_efficiency: float
-    strategy_type: str  # 'recovery'
+    strategy_type: str  # 'recovery' or 'post_duty_recovery'
     confidence: float
+
+    # Scientific methodology — consistent with SleepQualityResponse
+    explanation: Optional[str] = None
+    confidence_basis: Optional[str] = None
+    quality_factors: Optional[QualityFactorsResponse] = None
+    references: List[ReferenceResponse] = []
+
+    # Recovery context (for recovery strategy_type)
+    recovery_night_number: Optional[int] = None           # Which recovery night (1-indexed)
+    cumulative_recovery_fraction: Optional[float] = None  # 0-1 fraction of debt recovered
 
 
 class AnalysisResponse(BaseModel):
@@ -443,6 +456,14 @@ def _build_rest_days_sleep(sleep_strategies: dict) -> List[RestDaySleepResponse]
                 sleep_efficiency=data.get('sleep_efficiency', 0.0),
                 strategy_type=data.get('strategy_type', 'recovery'),
                 confidence=data.get('confidence', 0.0),
+                # Scientific methodology — now always populated
+                explanation=data.get('explanation'),
+                confidence_basis=data.get('confidence_basis'),
+                quality_factors=data.get('quality_factors'),
+                references=data.get('references', []),
+                # Recovery context
+                recovery_night_number=data.get('recovery_night_number'),
+                cumulative_recovery_fraction=data.get('cumulative_recovery_fraction'),
             ))
     return rest_days
 
