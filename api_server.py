@@ -144,7 +144,7 @@ class SleepQualityResponse(BaseModel):
     effective_sleep_hours: float
     sleep_efficiency: float
     wocl_overlap_hours: float
-    sleep_strategy: str  # 'normal', 'afternoon_nap', 'early_bedtime', 'split_sleep'
+    sleep_strategy: str  # 'anchor', 'split', 'nap', 'early_bedtime', 'afternoon_nap', 'extended', 'restricted', 'normal', 'recovery', 'post_duty_recovery'
     confidence: float
     warnings: List[str]
     sleep_blocks: List[SleepBlockResponse] = []  # All sleep periods
@@ -210,7 +210,7 @@ class RestDaySleepResponse(BaseModel):
     total_sleep_hours: float
     effective_sleep_hours: float
     sleep_efficiency: float
-    strategy_type: str  # 'recovery' or 'post_duty_recovery'
+    strategy_type: str  # 'recovery', 'post_duty_recovery', or other strategy types
     confidence: float
 
     # Scientific methodology — consistent with SleepQualityResponse
