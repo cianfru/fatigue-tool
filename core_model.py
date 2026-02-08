@@ -391,7 +391,12 @@ class UnifiedSleepCalculator:
 
         # Operational thresholds
         self.NIGHT_FLIGHT_THRESHOLD = 20  # EASA late-type duty
-        self.EARLY_REPORT_THRESHOLD = 7
+        self.EARLY_REPORT_THRESHOLD = 6   # Before 06:00 local → early_bedtime
+        self.AFTERNOON_REPORT_THRESHOLD = 14  # After 14:00 local → afternoon_nap
+        self.ANCHOR_TIMEZONE_SHIFT = 3.0  # ≥3h timezone crossing → anchor strategy
+        self.RESTRICTED_REST_HOURS = 9.0  # <9h rest → restricted strategy
+        self.SPLIT_REST_HOURS = 10.0      # <10h rest → split strategy
+        self.EXTENDED_REST_HOURS = 14.0   # >14h rest → extended strategy
         
         # WOCL definition — aligned with EASAFatigueFramework (02:00-05:59)
         # per EASA ORO.FTL.105(28). Using 6.0 as float boundary so that
@@ -498,15 +503,67 @@ class UnifiedSleepCalculator:
         duty_duration = (duty.release_time_utc - duty.report_time_utc).total_seconds() / 3600
         crosses_wocl = self._duty_crosses_wocl(duty)
 
+        # Calculate rest period before this duty
+        rest_hours = None
+        if previous_duty:
+            rest_hours = (duty.report_time_utc - previous_duty.release_time_utc).total_seconds() / 3600
+
+        # Calculate timezone crossing from home base
+        timezone_shift = 0.0
+        if duty.segments:
+            dep_airport = duty.segments[0].departure_airport
+            home_airport_tz = pytz.timezone(duty.home_base_timezone)
+            dep_tz = pytz.timezone(dep_airport.timezone)
+            naive_ref = duty.report_time_utc.replace(tzinfo=None)
+            home_offset = home_airport_tz.localize(naive_ref).utcoffset().total_seconds() / 3600
+            dep_offset = dep_tz.localize(naive_ref).utcoffset().total_seconds() / 3600
+            timezone_shift = abs(dep_offset - home_offset)
+
         # Decision tree: match pilot behavior patterns
+        # Priority order: most constrained/specific scenarios first.
+
+        # 1. Anchor sleep — large timezone shift from home base (≥3h).
+        #    Pilot's circadian clock is misaligned; maintain home-base
+        #    sleep window to preserve circadian anchor.
+        if timezone_shift >= self.ANCHOR_TIMEZONE_SHIFT:
+            return self._anchor_strategy(duty, previous_duty, timezone_shift)
+
+        # 2. Restricted sleep — very short rest (<9h) forces truncated sleep.
+        #    Takes priority because the rest period physically constrains
+        #    available sleep regardless of report time.
+        if rest_hours is not None and rest_hours < self.RESTRICTED_REST_HOURS:
+            return self._restricted_strategy(duty, previous_duty, rest_hours)
+
+        # 3. Split sleep — short layover (<10h) where one consolidated
+        #    block is impossible. Pilot splits sleep around the gap.
+        if rest_hours is not None and rest_hours < self.SPLIT_REST_HOURS:
+            return self._split_strategy(duty, previous_duty, rest_hours)
+
+        # 4. Early bedtime — report before 06:00 local.
+        #    Pilot goes to bed earlier; circadian opposition limits advance.
+        if report_hour < self.EARLY_REPORT_THRESHOLD:
+            return self._early_morning_strategy(duty, previous_duty)
+
+        # 5. Nap — night departure (report ≥20:00 or <04:00).
+        #    Morning sleep + pre-duty nap before evening/night flight.
         if report_hour >= self.NIGHT_FLIGHT_THRESHOLD or report_hour < 4:
             return self._night_departure_strategy(duty, previous_duty)
-        elif report_hour < self.EARLY_REPORT_THRESHOLD:
-            return self._early_morning_strategy(duty, previous_duty)
-        elif crosses_wocl and duty_duration > 6:
+
+        # 6. Afternoon nap — late report (14:00-20:00 local).
+        #    Normal previous-night sleep + afternoon nap before duty.
+        if report_hour >= self.AFTERNOON_REPORT_THRESHOLD:
+            return self._afternoon_nap_strategy(duty, previous_duty)
+
+        # 7. Extended sleep — long rest period (>14h) allows extra sleep.
+        if rest_hours is not None and rest_hours > self.EXTENDED_REST_HOURS:
+            return self._extended_strategy(duty, previous_duty, rest_hours)
+
+        # 8. WOCL duty — crosses Window of Circadian Low with long duty.
+        if crosses_wocl and duty_duration > 6:
             return self._wocl_duty_strategy(duty, previous_duty)
-        else:
-            return self._normal_sleep_strategy(duty, previous_duty)
+
+        # 9. Normal — standard overnight rest, no special constraints.
+        return self._normal_sleep_strategy(duty, previous_duty)
     
     def calculate_sleep_quality(
         self,
@@ -917,7 +974,7 @@ class UnifiedSleepCalculator:
 
         location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
         return SleepStrategy(
-            strategy_type='afternoon_nap',
+            strategy_type='nap',
             sleep_blocks=[morning_sleep, afternoon_nap],
             confidence=confidence,
             explanation=f"Night departure at {location_desc}: {morning_quality.actual_sleep_hours:.1f}h + "
@@ -1082,7 +1139,7 @@ class UnifiedSleepCalculator:
 
         location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
         return SleepStrategy(
-            strategy_type='split_sleep',
+            strategy_type='split',
             sleep_blocks=[anchor_sleep],
             confidence=confidence,
             explanation=f"WOCL duty at {location_desc}: Split sleep = {anchor_quality.effective_sleep_hours:.1f}h effective",
@@ -1185,10 +1242,558 @@ class UnifiedSleepCalculator:
             quality_analysis=[sleep_quality]
         )
     
+    def _anchor_strategy(
+        self,
+        duty: Duty,
+        previous_duty: Optional[Duty],
+        timezone_shift: float
+    ) -> SleepStrategy:
+        """
+        Anchor sleep strategy: maintain home-base sleep window when crossing
+        ≥3 timezones. The pilot's circadian clock has not adapted to local
+        time, so sleep is anchored to the home-base biological night.
+
+        References:
+            Minors & Waterhouse (1981) Int J Chronobiol 8:165-88
+            Minors & Waterhouse (1983) J Physiol 345:1-11
+            Waterhouse et al. (2007) Aviat Space Environ Med 78(5):B1-B10
+        """
+        # Determine sleep location timezone
+        if self.is_layover and self.layover_timezone:
+            sleep_tz = pytz.timezone(self.layover_timezone)
+            sleep_location = self.sleep_environment  # 'hotel'
+        else:
+            sleep_tz = self.home_tz
+            sleep_location = 'home'
+
+        # Anchor sleep to home-base biological night (23:00-07:00 home time)
+        # expressed in local time at the sleep location.
+        report_local = duty.report_time_utc.astimezone(sleep_tz)
+        report_home = duty.report_time_utc.astimezone(self.home_tz)
+
+        # Calculate home-base bedtime/wake in UTC, then convert to local
+        home_bedtime = report_home.replace(hour=self.NORMAL_BEDTIME_HOUR, minute=0) - timedelta(days=1)
+        home_wake = report_home.replace(hour=self.NORMAL_WAKE_HOUR, minute=0)
+
+        # Ensure wake is before report
+        if home_wake.astimezone(pytz.utc) > duty.report_time_utc - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT):
+            home_wake = (duty.report_time_utc - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)).astimezone(self.home_tz)
+
+        sleep_start = home_bedtime.astimezone(sleep_tz)
+        sleep_end = home_wake.astimezone(sleep_tz)
+
+        sleep_start_utc, sleep_end_utc, sleep_warnings = self._validate_sleep_no_overlap(
+            sleep_start.astimezone(pytz.utc), sleep_end.astimezone(pytz.utc), duty, previous_duty
+        )
+        sleep_start = sleep_start_utc.astimezone(sleep_tz)
+        sleep_end = sleep_end_utc.astimezone(sleep_tz)
+
+        bio_tz = self.home_tz.zone  # Always use home TZ as biological reference
+
+        sleep_quality = self.calculate_sleep_quality(
+            sleep_start=sleep_start,
+            sleep_end=sleep_end,
+            location=sleep_location,
+            previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
+            next_event=report_local,
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz
+        )
+
+        anchor_sleep = SleepBlock(
+            start_utc=sleep_start.astimezone(pytz.utc),
+            end_utc=sleep_end.astimezone(pytz.utc),
+            location_timezone=sleep_tz.zone,
+            duration_hours=sleep_quality.actual_sleep_hours,
+            quality_factor=sleep_quality.sleep_efficiency,
+            effective_sleep_hours=sleep_quality.effective_sleep_hours,
+            environment=sleep_location,
+            sleep_start_day=sleep_start.day,
+            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
+            sleep_end_day=sleep_end.day,
+            sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
+        )
+
+        # Confidence decreases with larger timezone shifts (harder to anchor)
+        if timezone_shift < 5:
+            confidence = 0.55
+        elif timezone_shift < 8:
+            confidence = 0.45
+        else:
+            confidence = 0.35
+
+        if sleep_warnings:
+            confidence *= 0.80
+
+        if self.is_layover:
+            confidence *= 0.90
+
+        location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
+        return SleepStrategy(
+            strategy_type='anchor',
+            sleep_blocks=[anchor_sleep],
+            confidence=confidence,
+            explanation=(
+                f"Anchor sleep at {location_desc}: {timezone_shift:.1f}h timezone shift, "
+                f"maintaining home-base sleep window "
+                f"({sleep_quality.effective_sleep_hours:.1f}h effective)"
+            ),
+            quality_analysis=[sleep_quality]
+        )
+
+    def _restricted_strategy(
+        self,
+        duty: Duty,
+        previous_duty: Optional[Duty],
+        rest_hours: float
+    ) -> SleepStrategy:
+        """
+        Restricted sleep strategy: short rest period (<9h) forces truncated
+        sleep. The pilot sleeps as soon as possible after previous duty
+        release and wakes for the next report.
+
+        References:
+            Belenky et al. (2003) J Sleep Res 12:1-12
+            Van Dongen et al. (2003) Sleep 26(2):117-126
+        """
+        if self.is_layover and self.layover_timezone:
+            sleep_tz = pytz.timezone(self.layover_timezone)
+            sleep_location = self.sleep_environment
+        else:
+            sleep_tz = self.home_tz
+            sleep_location = 'home'
+
+        report_local = duty.report_time_utc.astimezone(sleep_tz)
+
+        # Sleep starts 1h after previous duty release (transit/wind-down)
+        # and ends MIN_WAKE_BEFORE_REPORT hours before next report
+        if previous_duty:
+            sleep_start = previous_duty.release_time_utc + timedelta(hours=1)
+        else:
+            sleep_start = duty.report_time_utc - timedelta(hours=rest_hours - 1)
+
+        sleep_end = duty.report_time_utc - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
+
+        sleep_start_local = sleep_start.astimezone(sleep_tz)
+        sleep_end_local = sleep_end.astimezone(sleep_tz)
+
+        sleep_start_utc, sleep_end_utc, sleep_warnings = self._validate_sleep_no_overlap(
+            sleep_start, sleep_end, duty, previous_duty
+        )
+        sleep_start_local = sleep_start_utc.astimezone(sleep_tz)
+        sleep_end_local = sleep_end_utc.astimezone(sleep_tz)
+
+        bio_tz = self.home_tz.zone if self.is_layover else None
+
+        sleep_quality = self.calculate_sleep_quality(
+            sleep_start=sleep_start_local,
+            sleep_end=sleep_end_local,
+            location=sleep_location,
+            previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
+            next_event=report_local,
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz
+        )
+
+        restricted_sleep = SleepBlock(
+            start_utc=sleep_start_utc,
+            end_utc=sleep_end_utc,
+            location_timezone=sleep_tz.zone,
+            duration_hours=sleep_quality.actual_sleep_hours,
+            quality_factor=sleep_quality.sleep_efficiency,
+            effective_sleep_hours=sleep_quality.effective_sleep_hours,
+            environment=sleep_location,
+            sleep_start_day=sleep_start_local.day,
+            sleep_start_hour=sleep_start_local.hour + sleep_start_local.minute / 60.0,
+            sleep_end_day=sleep_end_local.day,
+            sleep_end_hour=sleep_end_local.hour + sleep_end_local.minute / 60.0
+        )
+
+        # Low confidence — severe time constraint
+        confidence = 0.45 if not sleep_warnings else 0.30
+
+        if self.is_layover:
+            confidence *= 0.90
+
+        location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
+        return SleepStrategy(
+            strategy_type='restricted',
+            sleep_blocks=[restricted_sleep],
+            confidence=confidence,
+            explanation=(
+                f"Restricted sleep at {location_desc}: only {rest_hours:.1f}h rest period, "
+                f"{sleep_quality.effective_sleep_hours:.1f}h effective sleep "
+                f"(truncated by schedule constraints)"
+            ),
+            quality_analysis=[sleep_quality]
+        )
+
+    def _split_strategy(
+        self,
+        duty: Duty,
+        previous_duty: Optional[Duty],
+        rest_hours: float
+    ) -> SleepStrategy:
+        """
+        Split sleep strategy: short layover (9-10h rest) where one
+        consolidated block is difficult. Pilot takes a main sleep block
+        after previous duty release and may have a short nap before
+        next report.
+
+        References:
+            Jackson et al. (2014) Accid Anal Prev 72:252-261
+            Kosmadopoulos et al. (2017) Chronobiol Int 34(2):190-196
+        """
+        if self.is_layover and self.layover_timezone:
+            sleep_tz = pytz.timezone(self.layover_timezone)
+            sleep_location = self.sleep_environment
+        else:
+            sleep_tz = self.home_tz
+            sleep_location = 'home'
+
+        report_local = duty.report_time_utc.astimezone(sleep_tz)
+
+        # Main sleep block: starts 1h after previous duty release
+        if previous_duty:
+            main_start = previous_duty.release_time_utc + timedelta(hours=1)
+        else:
+            main_start = duty.report_time_utc - timedelta(hours=rest_hours - 1)
+
+        # Main sleep: use available time minus buffer for nap
+        # Allocate ~70% of available sleep time to main block, rest to nap
+        available_sleep_hours = rest_hours - 1.0 - self.MIN_WAKE_BEFORE_REPORT
+        main_duration = min(6.0, available_sleep_hours * 0.70)
+        main_end = main_start + timedelta(hours=main_duration)
+
+        main_start_local = main_start.astimezone(sleep_tz)
+        main_end_local = main_end.astimezone(sleep_tz)
+
+        main_start_utc, main_end_utc, main_warnings = self._validate_sleep_no_overlap(
+            main_start, main_end, duty, previous_duty
+        )
+        main_start_local = main_start_utc.astimezone(sleep_tz)
+        main_end_local = main_end_utc.astimezone(sleep_tz)
+
+        bio_tz = self.home_tz.zone if self.is_layover else None
+
+        main_quality = self.calculate_sleep_quality(
+            sleep_start=main_start_local,
+            sleep_end=main_end_local,
+            location=sleep_location,
+            previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
+            next_event=report_local,
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz
+        )
+
+        main_sleep = SleepBlock(
+            start_utc=main_start_utc,
+            end_utc=main_end_utc,
+            location_timezone=sleep_tz.zone,
+            duration_hours=main_quality.actual_sleep_hours,
+            quality_factor=main_quality.sleep_efficiency,
+            effective_sleep_hours=main_quality.effective_sleep_hours,
+            environment=sleep_location,
+            sleep_start_day=main_start_local.day,
+            sleep_start_hour=main_start_local.hour + main_start_local.minute / 60.0,
+            sleep_end_day=main_end_local.day,
+            sleep_end_hour=main_end_local.hour + main_end_local.minute / 60.0
+        )
+
+        # Short nap before duty (remaining time)
+        nap_end = duty.report_time_utc - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
+        nap_duration = min(2.0, available_sleep_hours - main_duration)
+        if nap_duration < 0.5:
+            # Not enough time for a nap; return single-block split
+            confidence = 0.40 if not main_warnings else 0.30
+            if self.is_layover:
+                confidence *= 0.90
+            location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
+            return SleepStrategy(
+                strategy_type='split',
+                sleep_blocks=[main_sleep],
+                confidence=confidence,
+                explanation=(
+                    f"Split sleep at {location_desc}: {rest_hours:.1f}h rest, "
+                    f"{main_quality.effective_sleep_hours:.1f}h effective "
+                    f"(insufficient time for nap block)"
+                ),
+                quality_analysis=[main_quality]
+            )
+
+        nap_start = nap_end - timedelta(hours=nap_duration)
+        nap_start_local = nap_start.astimezone(sleep_tz)
+        nap_end_local = nap_end.astimezone(sleep_tz)
+
+        # Ensure nap doesn't overlap main sleep
+        if nap_start < main_end_utc:
+            nap_start = main_end_utc + timedelta(minutes=30)
+            nap_start_local = nap_start.astimezone(sleep_tz)
+
+        if nap_start >= nap_end:
+            # No room for nap
+            confidence = 0.40 if not main_warnings else 0.30
+            if self.is_layover:
+                confidence *= 0.90
+            location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
+            return SleepStrategy(
+                strategy_type='split',
+                sleep_blocks=[main_sleep],
+                confidence=confidence,
+                explanation=(
+                    f"Split sleep at {location_desc}: {rest_hours:.1f}h rest, "
+                    f"{main_quality.effective_sleep_hours:.1f}h effective "
+                    f"(no room for second block)"
+                ),
+                quality_analysis=[main_quality]
+            )
+
+        nap_quality = self.calculate_sleep_quality(
+            sleep_start=nap_start_local,
+            sleep_end=nap_end_local,
+            location=sleep_location,
+            previous_duty_end=main_end_utc,
+            next_event=report_local,
+            is_nap=True,
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz
+        )
+
+        nap_block = SleepBlock(
+            start_utc=nap_start,
+            end_utc=nap_end,
+            location_timezone=sleep_tz.zone,
+            duration_hours=nap_quality.actual_sleep_hours,
+            quality_factor=nap_quality.sleep_efficiency,
+            effective_sleep_hours=nap_quality.effective_sleep_hours,
+            is_anchor_sleep=False,
+            environment=sleep_location,
+            sleep_start_day=nap_start_local.day,
+            sleep_start_hour=nap_start_local.hour + nap_start_local.minute / 60.0,
+            sleep_end_day=nap_end_local.day,
+            sleep_end_hour=nap_end_local.hour + nap_end_local.minute / 60.0
+        )
+
+        total_effective = main_quality.effective_sleep_hours + nap_quality.effective_sleep_hours
+        confidence = 0.50 if not (main_warnings) else 0.35
+        if self.is_layover:
+            confidence *= 0.90
+
+        location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
+        return SleepStrategy(
+            strategy_type='split',
+            sleep_blocks=[main_sleep, nap_block],
+            confidence=confidence,
+            explanation=(
+                f"Split sleep at {location_desc}: {rest_hours:.1f}h rest, "
+                f"{main_quality.effective_sleep_hours:.1f}h + "
+                f"{nap_quality.effective_sleep_hours:.1f}h nap = "
+                f"{total_effective:.1f}h effective"
+            ),
+            quality_analysis=[main_quality, nap_quality]
+        )
+
+    def _afternoon_nap_strategy(
+        self,
+        duty: Duty,
+        previous_duty: Optional[Duty]
+    ) -> SleepStrategy:
+        """
+        Afternoon nap strategy: late report (14:00-20:00 local) allows
+        normal previous-night sleep plus an afternoon nap before duty.
+
+        References:
+            Dinges et al. (1987) Sleep 10(4):313-329
+            Signal et al. (2014) Aviat Space Environ Med 85:1199-1208
+        """
+        if self.is_layover and self.layover_timezone:
+            sleep_tz = pytz.timezone(self.layover_timezone)
+            sleep_location = self.sleep_environment
+        else:
+            sleep_tz = self.home_tz
+            sleep_location = 'home'
+
+        report_local = duty.report_time_utc.astimezone(sleep_tz)
+
+        # Normal previous-night sleep (23:00-07:00)
+        night_start = report_local.replace(hour=self.NORMAL_BEDTIME_HOUR, minute=0) - timedelta(days=1)
+        night_end = report_local.replace(hour=self.NORMAL_WAKE_HOUR, minute=0)
+
+        night_start_utc, night_end_utc, night_warnings = self._validate_sleep_no_overlap(
+            night_start.astimezone(pytz.utc), night_end.astimezone(pytz.utc), duty, previous_duty
+        )
+        night_start = night_start_utc.astimezone(sleep_tz)
+        night_end = night_end_utc.astimezone(sleep_tz)
+
+        bio_tz = self.home_tz.zone if self.is_layover else None
+
+        night_quality = self.calculate_sleep_quality(
+            sleep_start=night_start,
+            sleep_end=night_end,
+            location=sleep_location,
+            previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
+            next_event=report_local,
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz
+        )
+
+        night_sleep = SleepBlock(
+            start_utc=night_start.astimezone(pytz.utc),
+            end_utc=night_end.astimezone(pytz.utc),
+            location_timezone=sleep_tz.zone,
+            duration_hours=night_quality.actual_sleep_hours,
+            quality_factor=night_quality.sleep_efficiency,
+            effective_sleep_hours=night_quality.effective_sleep_hours,
+            environment=sleep_location,
+            sleep_start_day=night_start.day,
+            sleep_start_hour=night_start.hour + night_start.minute / 60.0,
+            sleep_end_day=night_end.day,
+            sleep_end_hour=night_end.hour + night_end.minute / 60.0
+        )
+
+        # Afternoon nap: 1.5h, ending 2h before report
+        nap_end = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
+        nap_start = nap_end - timedelta(hours=1.5)
+
+        nap_start_utc, nap_end_utc, nap_warnings = self._validate_sleep_no_overlap(
+            nap_start.astimezone(pytz.utc), nap_end.astimezone(pytz.utc), duty, previous_duty
+        )
+        nap_start = nap_start_utc.astimezone(sleep_tz)
+        nap_end = nap_end_utc.astimezone(sleep_tz)
+
+        nap_quality = self.calculate_sleep_quality(
+            sleep_start=nap_start,
+            sleep_end=nap_end,
+            location=sleep_location,
+            previous_duty_end=night_end.astimezone(pytz.utc),
+            next_event=report_local,
+            is_nap=True,
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz
+        )
+
+        nap_block = SleepBlock(
+            start_utc=nap_start.astimezone(pytz.utc),
+            end_utc=nap_end.astimezone(pytz.utc),
+            location_timezone=sleep_tz.zone,
+            duration_hours=nap_quality.actual_sleep_hours,
+            quality_factor=nap_quality.sleep_efficiency,
+            effective_sleep_hours=nap_quality.effective_sleep_hours,
+            is_anchor_sleep=False,
+            environment=sleep_location,
+            sleep_start_day=nap_start.day,
+            sleep_start_hour=nap_start.hour + nap_start.minute / 60.0,
+            sleep_end_day=nap_end.day,
+            sleep_end_hour=nap_end.hour + nap_end.minute / 60.0
+        )
+
+        total_effective = night_quality.effective_sleep_hours + nap_quality.effective_sleep_hours
+        confidence = 0.60 if not (night_warnings or nap_warnings) else 0.45
+        if self.is_layover:
+            confidence *= 0.90
+
+        location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
+        return SleepStrategy(
+            strategy_type='afternoon_nap',
+            sleep_blocks=[night_sleep, nap_block],
+            confidence=confidence,
+            explanation=(
+                f"Afternoon nap at {location_desc}: "
+                f"{night_quality.actual_sleep_hours:.1f}h night + "
+                f"{nap_quality.actual_sleep_hours:.1f}h nap = "
+                f"{total_effective:.1f}h effective (late {report_local.strftime('%H:%M')} report)"
+            ),
+            quality_analysis=[night_quality, nap_quality]
+        )
+
+    def _extended_strategy(
+        self,
+        duty: Duty,
+        previous_duty: Optional[Duty],
+        rest_hours: float
+    ) -> SleepStrategy:
+        """
+        Extended sleep strategy: long rest period (>14h) allows extended
+        sleep opportunity. Pilot can sleep a full night plus additional
+        recovery time.
+
+        References:
+            Banks et al. (2010) Sleep 33(8):1013-1026
+            Kitamura et al. (2016) Sci Rep 6:35812
+        """
+        if self.is_layover and self.layover_timezone:
+            sleep_tz = pytz.timezone(self.layover_timezone)
+            sleep_location = self.sleep_environment
+        else:
+            sleep_tz = self.home_tz
+            sleep_location = 'home'
+
+        report_local = duty.report_time_utc.astimezone(sleep_tz)
+
+        # Extended sleep: start at normal bedtime, allow up to 9h
+        # (longer than normal 8h to reflect recovery opportunity)
+        sleep_start = report_local.replace(hour=self.NORMAL_BEDTIME_HOUR, minute=0) - timedelta(days=1)
+        # Allow extended wake — pilot may sleep later than 07:00
+        extended_duration = min(9.0, self.MAX_REALISTIC_SLEEP)
+        normal_wake = sleep_start + timedelta(hours=extended_duration)
+        latest_wake = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
+        sleep_end = min(normal_wake, latest_wake)
+
+        sleep_start_utc, sleep_end_utc, sleep_warnings = self._validate_sleep_no_overlap(
+            sleep_start.astimezone(pytz.utc), sleep_end.astimezone(pytz.utc), duty, previous_duty
+        )
+        sleep_start = sleep_start_utc.astimezone(sleep_tz)
+        sleep_end = sleep_end_utc.astimezone(sleep_tz)
+
+        bio_tz = self.home_tz.zone if self.is_layover else None
+
+        sleep_quality = self.calculate_sleep_quality(
+            sleep_start=sleep_start,
+            sleep_end=sleep_end,
+            location=sleep_location,
+            previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
+            next_event=report_local,
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz
+        )
+
+        extended_sleep = SleepBlock(
+            start_utc=sleep_start.astimezone(pytz.utc),
+            end_utc=sleep_end.astimezone(pytz.utc),
+            location_timezone=sleep_tz.zone,
+            duration_hours=sleep_quality.actual_sleep_hours,
+            quality_factor=sleep_quality.sleep_efficiency,
+            effective_sleep_hours=sleep_quality.effective_sleep_hours,
+            environment=sleep_location,
+            sleep_start_day=sleep_start.day,
+            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
+            sleep_end_day=sleep_end.day,
+            sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
+        )
+
+        # High confidence — ample rest
+        confidence = 0.85 if not sleep_warnings else 0.70
+
+        if self.is_layover:
+            confidence *= 0.90
+
+        location_desc = f"{sleep_location} (layover)" if self.is_layover else sleep_location
+        return SleepStrategy(
+            strategy_type='extended',
+            sleep_blocks=[extended_sleep],
+            confidence=confidence,
+            explanation=(
+                f"Extended sleep at {location_desc}: {rest_hours:.1f}h rest period, "
+                f"{sleep_quality.effective_sleep_hours:.1f}h effective "
+                f"(recovery opportunity)"
+            ),
+            quality_analysis=[sleep_quality]
+        )
+
     # ========================================================================
     # HELPER METHODS
     # ========================================================================
-    
+
     def _validate_sleep_no_overlap(
         self,
         sleep_start: datetime,
@@ -2604,7 +3209,7 @@ class BorbelyFatigueModel:
                     'full': 'Arsintescu L et al. Early starts and late finishes reduce alertness. J Sleep Res 31(3):e13521',
                 },
             ],
-            'afternoon_nap': [
+            'nap': [
                 {
                     'key': 'signal_2014',
                     'short': 'Signal et al. (2014)',
@@ -2621,16 +3226,69 @@ class BorbelyFatigueModel:
                     'full': 'Dinges DF et al. Temporal placement of a nap for alertness. Sleep 10(4):313-329',
                 },
             ],
-            'split_sleep': [
+            'afternoon_nap': [
+                {
+                    'key': 'dinges_1987',
+                    'short': 'Dinges et al. (1987)',
+                    'full': 'Dinges DF et al. Temporal placement of a nap for alertness. Sleep 10(4):313-329',
+                },
+                {
+                    'key': 'signal_2014',
+                    'short': 'Signal et al. (2014)',
+                    'full': 'Signal TL et al. Mitigating flight crew fatigue on ULR flights. Aviat Space Environ Med 85:1199-1208',
+                },
+            ],
+            'anchor': [
+                {
+                    'key': 'minors_1981',
+                    'short': 'Minors & Waterhouse (1981)',
+                    'full': 'Minors DS, Waterhouse JM. Anchor sleep as a synchronizer. Int J Chronobiol 8:165-88',
+                },
                 {
                     'key': 'minors_1983',
                     'short': 'Minors & Waterhouse (1983)',
                     'full': 'Minors DS, Waterhouse JM. Does anchor sleep entrain circadian rhythms? J Physiol 345:1-11',
                 },
                 {
-                    'key': 'minors_1981',
-                    'short': 'Minors & Waterhouse (1981)',
-                    'full': 'Minors DS, Waterhouse JM. Anchor sleep as a synchronizer. Int J Chronobiol 8:165-88',
+                    'key': 'waterhouse_2007',
+                    'short': 'Waterhouse et al. (2007)',
+                    'full': 'Waterhouse J et al. Jet lag: trends and coping strategies. Aviat Space Environ Med 78(5):B1-B10',
+                },
+            ],
+            'split': [
+                {
+                    'key': 'jackson_2014',
+                    'short': 'Jackson et al. (2014)',
+                    'full': 'Jackson ML et al. Investigation of the effectiveness of a split sleep schedule. Accid Anal Prev 72:252-261',
+                },
+                {
+                    'key': 'kosmadopoulos_2017',
+                    'short': 'Kosmadopoulos et al. (2017)',
+                    'full': 'Kosmadopoulos A et al. Split sleep period on sustained performance. Chronobiol Int 34(2):190-196',
+                },
+            ],
+            'restricted': [
+                {
+                    'key': 'belenky_2003',
+                    'short': 'Belenky et al. (2003)',
+                    'full': 'Belenky G et al. Patterns of performance degradation and restoration during sleep restriction and subsequent recovery. J Sleep Res 12:1-12',
+                },
+                {
+                    'key': 'van_dongen_2003',
+                    'short': 'Van Dongen et al. (2003)',
+                    'full': 'Van Dongen HPA et al. The cumulative cost of additional wakefulness. Sleep 26(2):117-126',
+                },
+            ],
+            'extended': [
+                {
+                    'key': 'banks_2010',
+                    'short': 'Banks et al. (2010)',
+                    'full': 'Banks S et al. Neurobehavioral dynamics following chronic sleep restriction: dose-response effects of one night for recovery. Sleep 33(8):1013-1026',
+                },
+                {
+                    'key': 'kitamura_2016',
+                    'short': 'Kitamura et al. (2016)',
+                    'full': 'Kitamura S et al. Estimating individual optimal sleep duration and potential sleep debt. Sci Rep 6:35812',
                 },
             ],
             'recovery': [
