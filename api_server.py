@@ -104,6 +104,18 @@ class DutySegmentResponse(BaseModel):
     block_hours: float
 
 
+class QualityFactorsResponse(BaseModel):
+    """Breakdown of multiplicative quality factors applied to raw sleep duration.
+    Each factor is a multiplier around 1.0 (>1 = boost, <1 = penalty).
+    effective_sleep = duration * product(all factors), clamped to [0.65, 1.0]."""
+    base_efficiency: float        # Location-based: home 0.90, hotel 0.85, crew_rest 0.70
+    wocl_boost: float             # WOCL-aligned sleep consolidation boost (1.0-1.15)
+    late_onset_penalty: float     # Penalty for sleep starting after 01:00 (0.93-1.0)
+    recovery_boost: float         # Post-duty homeostatic drive boost (1.0-1.10)
+    time_pressure_factor: float   # Proximity to next duty (0.88-1.03)
+    insufficient_penalty: float   # Penalty for <6h sleep (0.75-1.0)
+
+
 class SleepBlockResponse(BaseModel):
     """Individual sleep period with timing and optional quality breakdown"""
     sleep_start_time: str  # HH:mm in home-base timezone
@@ -117,18 +129,6 @@ class SleepBlockResponse(BaseModel):
 
     # Per-block quality factor breakdown (populated for all sleep types)
     quality_factors: Optional[QualityFactorsResponse] = None
-
-
-class QualityFactorsResponse(BaseModel):
-    """Breakdown of multiplicative quality factors applied to raw sleep duration.
-    Each factor is a multiplier around 1.0 (>1 = boost, <1 = penalty).
-    effective_sleep = duration * product(all factors), clamped to [0.65, 1.0]."""
-    base_efficiency: float        # Location-based: home 0.90, hotel 0.85, crew_rest 0.70
-    wocl_boost: float             # WOCL-aligned sleep consolidation boost (1.0-1.15)
-    late_onset_penalty: float     # Penalty for sleep starting after 01:00 (0.93-1.0)
-    recovery_boost: float         # Post-duty homeostatic drive boost (1.0-1.10)
-    time_pressure_factor: float   # Proximity to next duty (0.88-1.03)
-    insufficient_penalty: float   # Penalty for <6h sleep (0.75-1.0)
 
 
 class ReferenceResponse(BaseModel):
