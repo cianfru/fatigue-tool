@@ -895,14 +895,30 @@ class UnifiedSleepCalculator:
         # Use sleep location timezone for report time (where pilot wakes up)
         report_local = duty.report_time_utc.astimezone(sleep_tz)
 
-        # All normal duties: sleep previous night, wake at normal time.
-        # Ensure at least MIN_WAKE_BEFORE_REPORT hours before report —
-        # if report is 07:30 and normal wake is 07:00, that's only 30 min
-        # which is unrealistic for commute + briefing.
-        normal_wake = report_local.replace(hour=self.NORMAL_WAKE_HOUR, minute=0)
-        latest_wake = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
-        sleep_end = min(normal_wake, latest_wake)
+        # All normal duties: sleep previous night, wake at biological morning
+        # or later if sleep started late (circadian gate as FLOOR).
+        # Dijk & Czeisler (1995): sleep termination is circadian-gated;
+        # 07:00 biological time is the natural wake for standard-onset sleep.
         sleep_start = report_local.replace(hour=self.NORMAL_BEDTIME_HOUR, minute=0) - timedelta(days=1)
+
+        # Use biological timezone for circadian gating
+        bio_tz = pytz.timezone(
+            self.home_tz.zone if (self.is_layover and self.layover_duration_hours <= 48)
+            else sleep_tz.zone
+        )
+
+        # Circadian-gated wake: 07:00 bio time is a floor, not ceiling
+        sleep_end = self._circadian_gated_wake(
+            sleep_start=sleep_start,
+            base_duration=self.NORMAL_SLEEP_DURATION,
+            bio_tz=bio_tz,
+            sleep_tz=sleep_tz,
+        )
+
+        # Cap by next duty report minus wake buffer
+        latest_wake = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
+        if sleep_end > latest_wake:
+            sleep_end = latest_wake
 
         sleep_start_utc, sleep_end_utc, sleep_warnings = self._validate_sleep_no_overlap(
             sleep_start.astimezone(pytz.utc), sleep_end.astimezone(pytz.utc), duty, previous_duty
@@ -1464,11 +1480,22 @@ class UnifiedSleepCalculator:
         # Extended sleep: start at normal bedtime, allow up to 9h
         # (longer than normal 8h to reflect recovery opportunity)
         sleep_start = report_local.replace(hour=self.NORMAL_BEDTIME_HOUR, minute=0) - timedelta(days=1)
-        # Allow extended wake — pilot may sleep later than 07:00
+
+        # Use circadian-gated wake with extended duration
         extended_duration = min(9.0, self.MAX_REALISTIC_SLEEP)
-        normal_wake = sleep_start + timedelta(hours=extended_duration)
+        bio_tz_obj = pytz.timezone(
+            self.home_tz.zone if (self.is_layover and self.layover_duration_hours <= 48)
+            else sleep_tz.zone
+        )
+        sleep_end = self._circadian_gated_wake(
+            sleep_start=sleep_start,
+            base_duration=extended_duration,
+            bio_tz=bio_tz_obj,
+            sleep_tz=sleep_tz,
+        )
         latest_wake = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
-        sleep_end = min(normal_wake, latest_wake)
+        if sleep_end > latest_wake:
+            sleep_end = latest_wake
 
         sleep_start_utc, sleep_end_utc, sleep_warnings = self._validate_sleep_no_overlap(
             sleep_start.astimezone(pytz.utc), sleep_end.astimezone(pytz.utc), duty, previous_duty
@@ -1522,6 +1549,270 @@ class UnifiedSleepCalculator:
             ),
             quality_analysis=[sleep_quality]
         )
+
+    # ========================================================================
+    # INTER-DUTY RECOVERY SLEEP
+    # ========================================================================
+
+    def generate_inter_duty_sleep(
+        self,
+        previous_duty: Duty,
+        next_duty: Duty,
+        home_timezone: str,
+        home_base: Optional[str] = None
+    ) -> SleepStrategy:
+        """
+        Generate a single, scientifically grounded recovery sleep block for the
+        rest period between two duties.
+
+        This replaces the previous dual-generation approach (post-duty sleep +
+        pre-duty sleep) which could overlap and double-count recovery.  Instead,
+        a single block is produced per inter-duty gap, with:
+
+        1. **Onset** anchored to duty release + arrival-window delay
+           (Roach et al. 2025; Signal et al. 2013)
+        2. **Duration** scaled by prior wakefulness / homeostatic load
+           (Banks et al. 2010; Kitamura et al. 2016)
+        3. **Wake time** gated by the circadian morning signal (07:00
+           biological time as a floor, not a ceiling) — extended when sleep
+           starts late due to high homeostatic pressure
+           (Dijk & Czeisler 1995; Borbély 1982)
+
+        References:
+            Signal et al. (2013) J Sleep Res 22(6):697-706
+            Roach et al. (2025) PMC11879054
+            Banks et al. (2010) Sleep 33(8):1013-1026
+            Kitamura et al. (2016) Sci Rep 6:35812
+            Dijk & Czeisler (1995) J Neurosci 15:3526
+            Borbély (1982) Human Neurobiol 1:195-204
+        """
+        self.home_tz = pytz.timezone(home_timezone)
+        self.home_base = home_base or (
+            next_duty.segments[0].departure_airport.code
+            if next_duty.segments else None
+        )
+
+        # --- Determine sleep location ---
+        arrival_airport = previous_duty.segments[-1].arrival_airport if previous_duty.segments else None
+        if arrival_airport and arrival_airport.code != self.home_base:
+            sleep_tz = pytz.timezone(arrival_airport.timezone)
+            sleep_location = 'hotel'
+            is_layover = True
+        else:
+            sleep_tz = self.home_tz
+            sleep_location = 'home'
+            is_layover = False
+
+        release_local = previous_duty.release_time_utc.astimezone(sleep_tz)
+        release_hour = release_local.hour + release_local.minute / 60.0
+        report_utc = next_duty.report_time_utc
+
+        # --- Layover duration for acclimatization ---
+        layover_duration_hours = (
+            report_utc - previous_duty.release_time_utc
+        ).total_seconds() / 3600
+        acclimated = is_layover and layover_duration_hours > 48
+
+        # Biological timezone: home for short layovers, local for acclimated
+        bio_tz_str = (
+            sleep_tz.zone if (not is_layover or acclimated)
+            else self.home_tz.zone
+        )
+        bio_tz = pytz.timezone(bio_tz_str)
+
+        # --- 1. Sleep onset: release time + arrival-window delay ---
+        # Roach et al. (2025): layover sleep onset predicted by layover start
+        # Signal et al. (2013): ~1-2h wind-down after duty release
+        if release_hour >= 20 or release_hour < 6:
+            # Night arrival — high sleep pressure + circadian permission
+            onset_delay_hours = 1.5
+        elif 6 <= release_hour < 12:
+            # Morning arrival — circadian wake signal opposes immediate sleep
+            onset_delay_hours = 2.5
+        elif 12 <= release_hour < 17:
+            # Afternoon arrival — wake maintenance zone; delay to biological
+            # evening.  Calculate hours until ~22:00 biological time.
+            bio_release = previous_duty.release_time_utc.astimezone(bio_tz)
+            bio_hour = bio_release.hour + bio_release.minute / 60.0
+            hours_to_bio_evening = (22.0 - bio_hour) % 24
+            onset_delay_hours = max(2.0, hours_to_bio_evening)
+        else:
+            # Evening arrival (17:00-20:00) — approaching biological night
+            onset_delay_hours = 2.0
+
+        # Modulate onset by sleep pressure: higher pressure → faster onset
+        # Åkerstedt (2003): sleep latency shortens under high homeostatic load
+        duty_duration_hours = (
+            previous_duty.release_time_utc - previous_duty.report_time_utc
+        ).total_seconds() / 3600
+        prior_wake_estimate = duty_duration_hours + self.MIN_WAKE_BEFORE_REPORT
+        if prior_wake_estimate > 18:
+            onset_delay_hours = max(1.0, onset_delay_hours - 0.5)
+        elif prior_wake_estimate > 14:
+            onset_delay_hours = max(1.0, onset_delay_hours - 0.25)
+
+        sleep_start = release_local + timedelta(hours=onset_delay_hours)
+
+        # --- 2. Duration: scaled by prior wakefulness ---
+        # Banks et al. (2010): recovery sleep 8.5-9.5h after restriction
+        # Kitamura et al. (2016): saturates at ~8-9h
+        # Signal et al. (2013): average ~7.5h for standard duty
+        base_duration = 7.5
+        if prior_wake_estimate > 16:
+            # Extended wakefulness → longer recovery (up to 9.5h ceiling)
+            base_duration = min(9.5, 7.5 + 0.25 * (prior_wake_estimate - 16))
+        elif prior_wake_estimate < 10:
+            # Short duty → slightly less recovery needed
+            base_duration = max(6.5, 7.5 - 0.2 * (10 - prior_wake_estimate))
+
+        # Morning arrivals: circadian opposition caps duration
+        # Pilots arriving 06:00-12:00 struggle to maintain daytime sleep
+        if 6 <= release_hour < 12:
+            base_duration = min(base_duration, 6.0)
+
+        # --- 3. Wake time: circadian gate as FLOOR ---
+        # Dijk & Czeisler (1995): sleep termination is circadian-gated.
+        # Biological morning (~07:00) is the earliest natural wake for
+        # sleep that started before midnight.  For late-onset sleep (post-
+        # midnight), homeostatic duration dominates and wake extends past
+        # the biological morning.
+        sleep_end = self._circadian_gated_wake(
+            sleep_start=sleep_start,
+            base_duration=base_duration,
+            bio_tz=bio_tz,
+            sleep_tz=sleep_tz,
+        )
+
+        # Cap by next duty report minus wake buffer
+        latest_wake_utc = report_utc - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
+        if sleep_end.astimezone(pytz.utc) > latest_wake_utc:
+            sleep_end = latest_wake_utc.astimezone(sleep_tz)
+
+        # Ensure minimum viable sleep (2h)
+        actual_hours = (sleep_end - sleep_start).total_seconds() / 3600
+        if actual_hours < 2.0:
+            # Severely constrained — use whatever is available
+            sleep_start = previous_duty.release_time_utc.astimezone(sleep_tz) + timedelta(hours=0.5)
+            sleep_end = latest_wake_utc.astimezone(sleep_tz)
+            actual_hours = (sleep_end - sleep_start).total_seconds() / 3600
+            if actual_hours < 1.0:
+                # Cannot produce a meaningful sleep block
+                return SleepStrategy(
+                    strategy_type='restricted',
+                    sleep_blocks=[],
+                    confidence=0.20,
+                    explanation=(
+                        f"Critically insufficient rest: {actual_hours:.1f}h available "
+                        f"between duties — regulatory violation likely"
+                    ),
+                    quality_analysis=[]
+                )
+
+        # --- 4. Quality calculation ---
+        report_local = report_utc.astimezone(sleep_tz)
+        sleep_quality = self.calculate_sleep_quality(
+            sleep_start=sleep_start,
+            sleep_end=sleep_end,
+            location=sleep_location,
+            previous_duty_end=previous_duty.release_time_utc,
+            next_event=report_local,
+            location_timezone=sleep_tz.zone,
+            biological_timezone=bio_tz_str if is_layover else None
+        )
+
+        recovery_block = SleepBlock(
+            start_utc=sleep_start.astimezone(pytz.utc),
+            end_utc=sleep_end.astimezone(pytz.utc),
+            location_timezone=sleep_tz.zone,
+            duration_hours=sleep_quality.actual_sleep_hours,
+            quality_factor=sleep_quality.sleep_efficiency,
+            effective_sleep_hours=sleep_quality.effective_sleep_hours,
+            environment=sleep_location,
+            sleep_start_day=sleep_start.day,
+            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
+            sleep_end_day=sleep_end.day,
+            sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
+        )
+
+        # --- Confidence ---
+        # Base confidence depends on scenario predictability
+        if actual_hours >= 7:
+            confidence = 0.80
+        elif actual_hours >= 5:
+            confidence = 0.65
+        else:
+            confidence = 0.45
+
+        if is_layover:
+            confidence *= 0.90  # More variability away from home
+
+        if prior_wake_estimate > 16:
+            confidence *= 0.95  # Extreme fatigue → less predictable behavior
+
+        location_desc = f"{sleep_location} (layover)" if is_layover else sleep_location
+        return SleepStrategy(
+            strategy_type='inter_duty_recovery',
+            sleep_blocks=[recovery_block],
+            confidence=confidence,
+            explanation=(
+                f"Inter-duty recovery at {location_desc}: "
+                f"{onset_delay_hours:.1f}h wind-down after {duty_duration_hours:.0f}h duty, "
+                f"{sleep_quality.actual_sleep_hours:.1f}h sleep "
+                f"({sleep_quality.effective_sleep_hours:.1f}h effective, "
+                f"{sleep_quality.sleep_efficiency:.0%} efficiency)"
+            ),
+            quality_analysis=[sleep_quality]
+        )
+
+    def _circadian_gated_wake(
+        self,
+        sleep_start: datetime,
+        base_duration: float,
+        bio_tz: Any,
+        sleep_tz: Any,
+    ) -> datetime:
+        """
+        Compute wake time using circadian morning as a FLOOR, not a ceiling.
+
+        For sleep starting before biological midnight: wake at biological
+        morning (07:00) if that exceeds the duration-based wake.
+
+        For sleep starting after biological midnight: duration dominates —
+        the pilot has high homeostatic pressure and will sleep through the
+        circadian morning signal.
+
+        References:
+            Dijk & Czeisler (1995) J Neurosci 15:3526
+            Borbély (1982) Human Neurobiol 1:195-204
+        """
+        duration_wake = sleep_start + timedelta(hours=base_duration)
+
+        # Calculate biological morning (07:00) in the sleep timezone
+        sleep_start_bio = sleep_start.astimezone(bio_tz)
+        bio_morning = sleep_start_bio.replace(
+            hour=self.NORMAL_WAKE_HOUR, minute=0, second=0, microsecond=0
+        )
+        # If biological morning is before or at sleep start, advance to next day
+        if bio_morning <= sleep_start_bio:
+            bio_morning += timedelta(days=1)
+        bio_morning_in_sleep_tz = bio_morning.astimezone(sleep_tz)
+
+        # Determine if sleep started before or after biological midnight
+        bio_midnight = sleep_start_bio.replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ) + timedelta(days=1)
+        sleep_started_before_bio_midnight = sleep_start_bio < bio_midnight
+
+        if sleep_started_before_bio_midnight:
+            # Normal evening sleep: circadian morning is a floor
+            # Pilot wakes at the later of (duration_wake, bio_morning)
+            return max(duration_wake, bio_morning_in_sleep_tz)
+        else:
+            # Late-onset sleep (post-midnight): homeostatic pressure dominates
+            # Pilot sleeps through biological morning signal
+            # Still apply a soft circadian influence: cap at 10h (biological ceiling)
+            max_duration_wake = sleep_start + timedelta(hours=self.MAX_REALISTIC_SLEEP)
+            return min(duration_wake, max_duration_wake)
 
     # ========================================================================
     # HELPER METHODS
