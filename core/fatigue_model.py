@@ -720,6 +720,11 @@ class BorbelyFatigueModel:
                         sleep_start_local = block.start_utc.astimezone(location_tz)
                         sleep_end_local = block.end_utc.astimezone(location_tz)
 
+                        # ALSO convert to home base timezone for chronogram positioning
+                        # This allows frontend to position sleep blocks consistently with duty times
+                        sleep_start_home = block.start_utc.astimezone(home_tz)
+                        sleep_end_home = block.end_utc.astimezone(home_tz)
+
                         sleep_type = 'main'
                         if hasattr(block, 'is_anchor_sleep') and not block.is_anchor_sleep:
                             sleep_type = 'nap'
@@ -740,20 +745,29 @@ class BorbelyFatigueModel:
                             }
 
                         sleep_blocks_response.append({
+                            # Location timezone (actual sleep location)
                             'sleep_start_time': sleep_start_local.strftime('%H:%M'),
                             'sleep_end_time': sleep_end_local.strftime('%H:%M'),
                             'sleep_start_iso': sleep_start_local.isoformat(),
                             'sleep_end_iso': sleep_end_local.isoformat(),
-                            'sleep_type': sleep_type,
-                            'duration_hours': block.duration_hours,
-                            'effective_hours': block.effective_sleep_hours,
-                            'quality_factor': block.quality_factor,
                             'sleep_start_day': sleep_start_local.day,
                             'sleep_start_hour': sleep_start_local.hour + sleep_start_local.minute / 60.0,
                             'sleep_end_day': sleep_end_local.day,
                             'sleep_end_hour': sleep_end_local.hour + sleep_end_local.minute / 60.0,
                             'location_timezone': block.location_timezone,
                             'environment': block.environment,
+                            # Home base timezone (for chronogram positioning consistency)
+                            'sleep_start_time_home_tz': sleep_start_home.strftime('%H:%M'),
+                            'sleep_end_time_home_tz': sleep_end_home.strftime('%H:%M'),
+                            'sleep_start_day_home_tz': sleep_start_home.day,
+                            'sleep_start_hour_home_tz': sleep_start_home.hour + sleep_start_home.minute / 60.0,
+                            'sleep_end_day_home_tz': sleep_end_home.day,
+                            'sleep_end_hour_home_tz': sleep_end_home.hour + sleep_end_home.minute / 60.0,
+                            # Sleep characteristics
+                            'sleep_type': sleep_type,
+                            'duration_hours': block.duration_hours,
+                            'effective_hours': block.effective_sleep_hours,
+                            'quality_factor': block.quality_factor,
                             'quality_factors': block_qf,
                         })
                     
@@ -947,10 +961,25 @@ class BorbelyFatigueModel:
                             'sleep_start_time': '23:00',
                             'sleep_end_time': '07:00',
                             'sleep_blocks': [{
+                                # Location timezone (same as home for rest days)
                                 'sleep_start_time': '23:00',
                                 'sleep_end_time': '07:00',
                                 'sleep_start_iso': sleep_start.isoformat(),
                                 'sleep_end_iso': sleep_end.isoformat(),
+                                'sleep_start_day': sleep_start.day,
+                                'sleep_start_hour': 23.0,
+                                'sleep_end_day': sleep_end.day,
+                                'sleep_end_hour': 7.0,
+                                'location_timezone': home_tz.zone,
+                                'environment': 'home',
+                                # Home base timezone (same as location for rest days)
+                                'sleep_start_time_home_tz': '23:00',
+                                'sleep_end_time_home_tz': '07:00',
+                                'sleep_start_day_home_tz': sleep_start.day,
+                                'sleep_start_hour_home_tz': 23.0,
+                                'sleep_end_day_home_tz': sleep_end.day,
+                                'sleep_end_hour_home_tz': 7.0,
+                                # Sleep characteristics
                                 'sleep_type': 'main',
                                 'duration_hours': rest_quality.actual_sleep_hours,
                                 'effective_hours': rest_quality.effective_sleep_hours,
