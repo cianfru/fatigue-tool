@@ -195,8 +195,8 @@ class CrewLinkRosterParser:
             return 'local'
 
         # Pattern 3: Home base format
-        # Matches: "all times are home base", "times in home base", "home base time"
-        if re.search(r'(?:all\s+)?times?\s*(?:are\s+)?(?:in\s+)?[:\-–]?\s*home\s*base', text_lower) or \
+        # Matches: "all times are base", "all times are home base", "times in home base", "home base time"
+        if re.search(r'(?:all\s+)?times?\s*(?:are\s+)?(?:in\s+)?[:\-–]?\s*(?:home\s*)?base(?:\s|$)', text_lower) or \
            re.search(r'home\s*base\s+time', text_lower):
             print("   📍 Timezone format detected: HOME BASE")
             return 'homebase'
