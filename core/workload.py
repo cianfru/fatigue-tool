@@ -7,13 +7,14 @@ Workload estimation for flight operations based on duty characteristics.
 References: Aviation workload research
 """
 
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict
 from datetime import datetime, timedelta
 import pytz
 
 from models.data_models import Duty, FlightSegment, FlightPhase
 
+@dataclass
 class WorkloadParameters:
     """
     Workload multipliers derived from aviation research
@@ -52,9 +53,3 @@ class WorkloadModel:
     
     def get_combined_multiplier(self, phase: FlightPhase, sector_number: int) -> float:
         return self.get_phase_multiplier(phase) * self.get_sector_multiplier(sector_number)
-
-
-# ============================================================================
-# MAIN BORBÉLY FATIGUE MODEL
-# ============================================================================
-
