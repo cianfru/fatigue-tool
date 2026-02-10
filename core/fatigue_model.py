@@ -688,215 +688,69 @@ class BorbelyFatigueModel:
         roster: Roster,
         body_clock_timeline: List[Tuple[datetime, CircadianState]]
     ) -> Tuple[List[SleepBlock], Dict[str, Any]]:
-        """Auto-generate sleep opportunities from duty gaps"""
+        """
+        Auto-generate sleep opportunities from duty gaps.
+
+        Architecture (v2):
+        - First duty: pre-duty sleep via estimate_sleep_for_duty (no prior context)
+        - Inter-duty gaps: single recovery block via generate_inter_duty_sleep
+          (replaces the old dual post-duty + pre-duty approach that could overlap)
+        - Multi-day home gaps: additional rest-day blocks (23:00-07:00)
+        """
         sleep_blocks = []
         sleep_strategies = {}
         home_tz = pytz.timezone(roster.home_base_timezone)
-        
+
         for i, duty in enumerate(roster.duties):
             previous_duty = roster.duties[i - 1] if i > 0 else None
             next_duty = roster.duties[i + 1] if i < len(roster.duties) - 1 else None
 
-            # Use unified sleep calculator
-            strategy = self.sleep_calculator.estimate_sleep_for_duty(
-                duty=duty,
-                previous_duty=previous_duty,
-                home_timezone=roster.home_base_timezone,
-                home_base=roster.pilot_base  # Pass home base for layover detection
-            )
-            
+            if i == 0:
+                # First duty only: estimate pre-duty sleep (no previous duty context)
+                strategy = self.sleep_calculator.estimate_sleep_for_duty(
+                    duty=duty,
+                    previous_duty=None,
+                    home_timezone=roster.home_base_timezone,
+                    home_base=roster.pilot_base
+                )
+                strategy_key = duty.duty_id
+            else:
+                # Inter-duty gap: single recovery block replaces both
+                # post-duty and pre-duty sleep to avoid double-counting
+                strategy = self.sleep_calculator.generate_inter_duty_sleep(
+                    previous_duty=previous_duty,
+                    next_duty=duty,
+                    home_timezone=roster.home_base_timezone,
+                    home_base=roster.pilot_base
+                )
+                strategy_key = duty.duty_id
+
             for sleep_block in strategy.sleep_blocks:
                 sleep_blocks.append(sleep_block)
-            
+
             # Store strategy data for API exposure
-            if strategy.quality_analysis:
-                quality = strategy.quality_analysis[0]
-                sleep_blocks_response = []
-                
-                if strategy.sleep_blocks:
-                    for idx, block in enumerate(strategy.sleep_blocks):
-                        # Use actual location timezone, not home timezone
-                        location_tz = pytz.timezone(block.location_timezone)
-                        sleep_start_local = block.start_utc.astimezone(location_tz)
-                        sleep_end_local = block.end_utc.astimezone(location_tz)
-
-                        # ALSO convert to home base timezone for chronogram positioning
-                        # This allows frontend to position sleep blocks consistently with duty times
-                        sleep_start_home = block.start_utc.astimezone(home_tz)
-                        sleep_end_home = block.end_utc.astimezone(home_tz)
-
-                        sleep_type = 'main'
-                        if hasattr(block, 'is_anchor_sleep') and not block.is_anchor_sleep:
-                            sleep_type = 'nap'
-                        elif hasattr(block, 'is_inflight_rest') and block.is_inflight_rest:
-                            sleep_type = 'inflight'
-
-                        # Per-block quality factors from corresponding analysis
-                        block_qf = None
-                        if idx < len(strategy.quality_analysis):
-                            qa = strategy.quality_analysis[idx]
-                            block_qf = {
-                                'base_efficiency': qa.base_efficiency,
-                                'wocl_boost': qa.wocl_penalty,
-                                'late_onset_penalty': qa.late_onset_penalty,
-                                'recovery_boost': qa.recovery_boost,
-                                'time_pressure_factor': qa.time_pressure_factor,
-                                'insufficient_penalty': qa.insufficient_penalty,
-                            }
-
-                        sleep_blocks_response.append({
-                            # Location timezone (actual sleep location)
-                            'sleep_start_time': sleep_start_local.strftime('%H:%M'),
-                            'sleep_end_time': sleep_end_local.strftime('%H:%M'),
-                            'sleep_start_iso': sleep_start_local.isoformat(),
-                            'sleep_end_iso': sleep_end_local.isoformat(),
-                            'sleep_start_day': sleep_start_local.day,
-                            'sleep_start_hour': sleep_start_local.hour + sleep_start_local.minute / 60.0,
-                            'sleep_end_day': sleep_end_local.day,
-                            'sleep_end_hour': sleep_end_local.hour + sleep_end_local.minute / 60.0,
-                            'location_timezone': block.location_timezone,
-                            'environment': block.environment,
-                            # Home base timezone (for chronogram positioning consistency)
-                            'sleep_start_time_home_tz': sleep_start_home.strftime('%H:%M'),
-                            'sleep_end_time_home_tz': sleep_end_home.strftime('%H:%M'),
-                            'sleep_start_day_home_tz': sleep_start_home.day,
-                            'sleep_start_hour_home_tz': sleep_start_home.hour + sleep_start_home.minute / 60.0,
-                            'sleep_end_day_home_tz': sleep_end_home.day,
-                            'sleep_end_hour_home_tz': sleep_end_home.hour + sleep_end_home.minute / 60.0,
-                            # Sleep characteristics
-                            'sleep_type': sleep_type,
-                            'duration_hours': block.duration_hours,
-                            'effective_hours': block.effective_sleep_hours,
-                            'quality_factor': block.quality_factor,
-                            'quality_factors': block_qf,
-                        })
-                    
-                    first_block = strategy.sleep_blocks[0]
-                    location_tz = pytz.timezone(first_block.location_timezone)
-                    sleep_start_local = first_block.start_utc.astimezone(location_tz)
-                    sleep_end_local = first_block.end_utc.astimezone(location_tz)
-                    sleep_start_time = sleep_start_local.strftime('%H:%M')
-                    sleep_end_time = sleep_end_local.strftime('%H:%M')
-                else:
-                    sleep_start_time = None
-                    sleep_end_time = None
-                
-                sleep_strategies[duty.duty_id] = {
-                    'strategy_type': strategy.strategy_type,
-                    'confidence': strategy.confidence,
-                    'total_sleep_hours': quality.total_sleep_hours,
-                    'effective_sleep_hours': quality.effective_sleep_hours,
-                    'sleep_efficiency': quality.sleep_efficiency,
-                    'wocl_overlap_hours': quality.wocl_overlap_hours,
-                    'warnings': [w['message'] for w in quality.warnings],
-                    'sleep_start_time': sleep_start_time,
-                    'sleep_end_time': sleep_end_time,
-                    'sleep_blocks': sleep_blocks_response,
-
-                    # Scientific methodology (surfaces to frontend)
-                    'explanation': strategy.explanation,
-                    'confidence_basis': self._get_confidence_basis(strategy),
-                    'quality_factors': {
-                        'base_efficiency': quality.base_efficiency,
-                        'wocl_boost': quality.wocl_penalty,  # renamed field, was 1.0 placeholder
-                        'late_onset_penalty': quality.late_onset_penalty,
-                        'recovery_boost': quality.recovery_boost,
-                        'time_pressure_factor': quality.time_pressure_factor,
-                        'insufficient_penalty': quality.insufficient_penalty,
-                    },
-                    'references': self._get_strategy_references(strategy.strategy_type),
-                }
-
-            post_duty_result = self._generate_post_duty_sleep(
-                duty=duty,
-                next_duty=next_duty,
-                home_timezone=roster.home_base_timezone,
-                home_base=roster.pilot_base,
+            self._store_strategy_response(
+                strategy, strategy_key, sleep_strategies, home_tz
             )
-            if post_duty_result:
-                post_duty_sleep, post_duty_quality = post_duty_result
-                sleep_blocks.append(post_duty_sleep)
 
-                # Add post-duty sleep to API response with full quality breakdown
-                post_duty_key = f"post_duty_{duty.duty_id}"
-                location_tz = pytz.timezone(post_duty_sleep.location_timezone)
-                sleep_start_local = post_duty_sleep.start_utc.astimezone(location_tz)
-                sleep_end_local = post_duty_sleep.end_utc.astimezone(location_tz)
-
-                # Lower confidence for hotel sleep (more variability)
-                post_duty_confidence = 0.85 if post_duty_sleep.environment == 'hotel' else 0.90
-
-                post_duty_qf = {
-                    'base_efficiency': post_duty_quality.base_efficiency,
-                    'wocl_boost': post_duty_quality.wocl_penalty,
-                    'late_onset_penalty': post_duty_quality.late_onset_penalty,
-                    'recovery_boost': post_duty_quality.recovery_boost,
-                    'time_pressure_factor': post_duty_quality.time_pressure_factor,
-                    'insufficient_penalty': post_duty_quality.insufficient_penalty,
-                }
-
-                sleep_strategies[post_duty_key] = {
-                    'strategy_type': 'post_duty_recovery',
-                    'confidence': post_duty_confidence,
-                    'total_sleep_hours': post_duty_quality.total_sleep_hours,
-                    'effective_sleep_hours': post_duty_quality.effective_sleep_hours,
-                    'sleep_efficiency': post_duty_quality.sleep_efficiency,
-                    'wocl_overlap_hours': post_duty_quality.wocl_overlap_hours,
-                    'warnings': [w['message'] for w in post_duty_quality.warnings],
-                    'sleep_start_time': sleep_start_local.strftime('%H:%M'),
-                    'sleep_end_time': sleep_end_local.strftime('%H:%M'),
-                    'sleep_blocks': [{
-                        'sleep_start_time': sleep_start_local.strftime('%H:%M'),
-                        'sleep_end_time': sleep_end_local.strftime('%H:%M'),
-                        'sleep_start_iso': sleep_start_local.isoformat(),
-                        'sleep_end_iso': sleep_end_local.isoformat(),
-                        'sleep_type': 'main',
-                        'duration_hours': post_duty_quality.actual_sleep_hours,
-                        'effective_hours': post_duty_quality.effective_sleep_hours,
-                        'quality_factor': post_duty_quality.sleep_efficiency,
-                        'sleep_start_day': sleep_start_local.day,
-                        'sleep_start_hour': sleep_start_local.hour + sleep_start_local.minute / 60.0,
-                        'sleep_end_day': sleep_end_local.day,
-                        'sleep_end_hour': sleep_end_local.hour + sleep_end_local.minute / 60.0,
-                        'location_timezone': post_duty_sleep.location_timezone,
-                        'environment': post_duty_sleep.environment,
-                        'quality_factors': post_duty_qf,
-                    }],
-                    'explanation': (
-                        f'Post-duty recovery sleep at {post_duty_sleep.environment} '
-                        f'({post_duty_sleep.location_timezone}): '
-                        f'{post_duty_quality.effective_sleep_hours:.1f}h effective '
-                        f'({post_duty_quality.sleep_efficiency:.0%} efficiency)'
-                    ),
-                    'confidence_basis': (
-                        f'{"Good" if post_duty_confidence >= 0.88 else "Moderate"} confidence — '
-                        f'post-duty recovery at {post_duty_sleep.environment}'
-                        f'{" (reduced quality: unfamiliar environment)" if post_duty_sleep.environment == "hotel" else ""}'
-                    ),
-                    'quality_factors': post_duty_qf,
-                    'references': self._get_strategy_references('post_duty_recovery'),
-                    'related_duty_id': duty.duty_id,
-                }
-            
-            # Generate rest day sleep for gaps between duties
-            # Only generate for days when pilot is confirmed at home base
+            # Generate rest day sleep for multi-day gaps at home
             if i < len(roster.duties) - 1:
-                next_duty = roster.duties[i + 1]
+                next_d = roster.duties[i + 1]
                 duty_release = duty.release_time_utc.astimezone(home_tz)
-                next_duty_report = next_duty.report_time_utc.astimezone(home_tz)
-                
-                # Determine where pilot is during the gap
+                next_duty_report = next_d.report_time_utc.astimezone(home_tz)
+
                 duty_arrival = duty.segments[-1].arrival_airport.code if duty.segments else None
-                next_duty_departure = next_duty.segments[0].departure_airport.code if next_duty.segments else None
-                
-                # Check if pilot returned home (duty ended at home OR next duty starts from home)
+                next_duty_departure = next_d.segments[0].departure_airport.code if next_d.segments else None
+
                 pilot_at_home = (duty_arrival == roster.pilot_base or next_duty_departure == roster.pilot_base)
-                
-                # Only generate rest days if pilot is at home, not at layover
+
                 if pilot_at_home:
                     gap_days = (next_duty_report.date() - duty_release.date()).days
 
-                    for rest_day_offset in range(1, gap_days):
+                    # Start from day 2+: the inter-duty recovery block already
+                    # covers the first night after duty release.  Additional
+                    # rest-day blocks model subsequent nights at home.
+                    for rest_day_offset in range(2, gap_days):
                         rest_date = duty_release.date() + timedelta(days=rest_day_offset)
                         rest_day_key = f"rest_{rest_date.isoformat()}"
                         recovery_night_number = rest_day_offset  # 1-indexed
@@ -908,16 +762,15 @@ class BorbelyFatigueModel:
                             datetime.combine(rest_date, time(7, 0))
                         )
 
-                        # Calculate proper rest day sleep quality
                         rest_quality = self.sleep_calculator.calculate_sleep_quality(
                             sleep_start=sleep_start,
                             sleep_end=sleep_end,
                             location='home',
-                            previous_duty_end=None,  # Rest day - no recent duty
-                            next_event=sleep_end + timedelta(hours=12),  # No time pressure
+                            previous_duty_end=None,
+                            next_event=sleep_end + timedelta(hours=12),
                             location_timezone=home_tz.zone
                         )
-                        
+
                         recovery_block = SleepBlock(
                             start_utc=sleep_start.astimezone(pytz.utc),
                             end_utc=sleep_end.astimezone(pytz.utc),
@@ -927,9 +780,9 @@ class BorbelyFatigueModel:
                             effective_sleep_hours=rest_quality.effective_sleep_hours,
                             environment='home'
                         )
-                        
+
                         sleep_blocks.append(recovery_block)
-                        
+
                         rest_qf = {
                             'base_efficiency': rest_quality.base_efficiency,
                             'wocl_boost': rest_quality.wocl_penalty,
@@ -940,11 +793,6 @@ class BorbelyFatigueModel:
                         }
 
                         # Recovery fraction model — Banks et al. (2010, 2023):
-                        # Recovery is exponential, not instantaneous.
-                        # Night 1: ~33% of debt cleared
-                        # Night 2: ~55%
-                        # Night 3: ~71%
-                        # Night 4+: ~80%+
                         # tau_recovery ≈ 2.5 nights (calibrated to Banks 2010)
                         recovery_fraction = 1.0 - math.exp(-recovery_night_number / 2.5)
 
@@ -961,7 +809,6 @@ class BorbelyFatigueModel:
                             'sleep_start_time': '23:00',
                             'sleep_end_time': '07:00',
                             'sleep_blocks': [{
-                                # Location timezone (same as home for rest days)
                                 'sleep_start_time': '23:00',
                                 'sleep_end_time': '07:00',
                                 'sleep_start_iso': sleep_start.isoformat(),
@@ -972,14 +819,12 @@ class BorbelyFatigueModel:
                                 'sleep_end_hour': 7.0,
                                 'location_timezone': home_tz.zone,
                                 'environment': 'home',
-                                # Home base timezone (same as location for rest days)
                                 'sleep_start_time_home_tz': '23:00',
                                 'sleep_end_time_home_tz': '07:00',
                                 'sleep_start_day_home_tz': sleep_start.day,
                                 'sleep_start_hour_home_tz': 23.0,
                                 'sleep_end_day_home_tz': sleep_end.day,
                                 'sleep_end_hour_home_tz': 7.0,
-                                # Sleep characteristics
                                 'sleep_type': 'main',
                                 'duration_hours': rest_quality.actual_sleep_hours,
                                 'effective_hours': rest_quality.effective_sleep_hours,
@@ -1000,23 +845,29 @@ class BorbelyFatigueModel:
                             'quality_factors': rest_qf,
                             'references': self._get_strategy_references('recovery'),
                         }
-        
-        # Resolve overlapping sleep blocks.
-        # Post-duty sleep from duty N can overlap with pre-duty sleep of duty N+1.
-        # Sort by start time and truncate earlier blocks where they overlap with later ones.
+
+        # Resolve overlapping sleep blocks with SWS-aware truncation.
+        # First hours of sleep contain disproportionate SWS recovery
+        # (Borbély 1982; Dijk & Czeisler 1995: ~65% of SWS in first 3h).
         sleep_blocks.sort(key=lambda s: s.start_utc)
         resolved_blocks = []
         for block in sleep_blocks:
             if resolved_blocks:
                 prev = resolved_blocks[-1]
                 if block.start_utc < prev.end_utc:
-                    # Overlap detected — truncate the earlier (previous) block
-                    # to end where the later block starts
                     overlap_hours = (prev.end_utc - block.start_utc).total_seconds() / 3600
                     new_duration = prev.duration_hours - overlap_hours
                     if new_duration >= 1.0:
-                        # Scale effective hours proportionally to duration reduction
-                        scale = new_duration / prev.duration_hours if prev.duration_hours > 0 else 1.0
+                        # SWS-aware scaling: first hours are most restorative
+                        # Exponential recovery model — ~65% of SWS occurs in
+                        # the first 3h (Dijk & Czeisler 1995 J Neurosci 15:3526)
+                        tau_sws = 3.0  # SWS time constant (hours)
+                        original_recovery = 1.0 - math.exp(-prev.duration_hours / tau_sws)
+                        truncated_recovery = 1.0 - math.exp(-new_duration / tau_sws)
+                        if original_recovery > 0:
+                            scale = truncated_recovery / original_recovery
+                        else:
+                            scale = new_duration / prev.duration_hours if prev.duration_hours > 0 else 1.0
                         resolved_blocks[-1] = SleepBlock(
                             start_utc=prev.start_utc,
                             end_utc=block.start_utc,
@@ -1032,12 +883,109 @@ class BorbelyFatigueModel:
                             sleep_end_hour=block.start_utc.hour + block.start_utc.minute / 60.0
                         )
                     else:
-                        # Too short after truncation — remove previous block
                         resolved_blocks.pop()
             resolved_blocks.append(block)
         sleep_blocks = resolved_blocks
 
         return sleep_blocks, sleep_strategies
+
+    def _store_strategy_response(
+        self,
+        strategy: 'SleepStrategy',
+        key: str,
+        sleep_strategies: Dict[str, Any],
+        home_tz: Any
+    ) -> None:
+        """Build and store the API response dict for a sleep strategy."""
+        if not strategy.quality_analysis:
+            return
+
+        quality = strategy.quality_analysis[0]
+        sleep_blocks_response = []
+
+        if strategy.sleep_blocks:
+            for idx, block in enumerate(strategy.sleep_blocks):
+                location_tz = pytz.timezone(block.location_timezone)
+                sleep_start_local = block.start_utc.astimezone(location_tz)
+                sleep_end_local = block.end_utc.astimezone(location_tz)
+                sleep_start_home = block.start_utc.astimezone(home_tz)
+                sleep_end_home = block.end_utc.astimezone(home_tz)
+
+                sleep_type = 'main'
+                if hasattr(block, 'is_anchor_sleep') and not block.is_anchor_sleep:
+                    sleep_type = 'nap'
+                elif hasattr(block, 'is_inflight_rest') and block.is_inflight_rest:
+                    sleep_type = 'inflight'
+
+                block_qf = None
+                if idx < len(strategy.quality_analysis):
+                    qa = strategy.quality_analysis[idx]
+                    block_qf = {
+                        'base_efficiency': qa.base_efficiency,
+                        'wocl_boost': qa.wocl_penalty,
+                        'late_onset_penalty': qa.late_onset_penalty,
+                        'recovery_boost': qa.recovery_boost,
+                        'time_pressure_factor': qa.time_pressure_factor,
+                        'insufficient_penalty': qa.insufficient_penalty,
+                    }
+
+                sleep_blocks_response.append({
+                    'sleep_start_time': sleep_start_local.strftime('%H:%M'),
+                    'sleep_end_time': sleep_end_local.strftime('%H:%M'),
+                    'sleep_start_iso': sleep_start_local.isoformat(),
+                    'sleep_end_iso': sleep_end_local.isoformat(),
+                    'sleep_start_day': sleep_start_local.day,
+                    'sleep_start_hour': sleep_start_local.hour + sleep_start_local.minute / 60.0,
+                    'sleep_end_day': sleep_end_local.day,
+                    'sleep_end_hour': sleep_end_local.hour + sleep_end_local.minute / 60.0,
+                    'location_timezone': block.location_timezone,
+                    'environment': block.environment,
+                    'sleep_start_time_home_tz': sleep_start_home.strftime('%H:%M'),
+                    'sleep_end_time_home_tz': sleep_end_home.strftime('%H:%M'),
+                    'sleep_start_day_home_tz': sleep_start_home.day,
+                    'sleep_start_hour_home_tz': sleep_start_home.hour + sleep_start_home.minute / 60.0,
+                    'sleep_end_day_home_tz': sleep_end_home.day,
+                    'sleep_end_hour_home_tz': sleep_end_home.hour + sleep_end_home.minute / 60.0,
+                    'sleep_type': sleep_type,
+                    'duration_hours': block.duration_hours,
+                    'effective_hours': block.effective_sleep_hours,
+                    'quality_factor': block.quality_factor,
+                    'quality_factors': block_qf,
+                })
+
+            first_block = strategy.sleep_blocks[0]
+            location_tz = pytz.timezone(first_block.location_timezone)
+            sleep_start_local = first_block.start_utc.astimezone(location_tz)
+            sleep_end_local = first_block.end_utc.astimezone(location_tz)
+            sleep_start_time = sleep_start_local.strftime('%H:%M')
+            sleep_end_time = sleep_end_local.strftime('%H:%M')
+        else:
+            sleep_start_time = None
+            sleep_end_time = None
+
+        sleep_strategies[key] = {
+            'strategy_type': strategy.strategy_type,
+            'confidence': strategy.confidence,
+            'total_sleep_hours': quality.total_sleep_hours,
+            'effective_sleep_hours': quality.effective_sleep_hours,
+            'sleep_efficiency': quality.sleep_efficiency,
+            'wocl_overlap_hours': quality.wocl_overlap_hours,
+            'warnings': [w['message'] for w in quality.warnings],
+            'sleep_start_time': sleep_start_time,
+            'sleep_end_time': sleep_end_time,
+            'sleep_blocks': sleep_blocks_response,
+            'explanation': strategy.explanation,
+            'confidence_basis': self._get_confidence_basis(strategy),
+            'quality_factors': {
+                'base_efficiency': quality.base_efficiency,
+                'wocl_boost': quality.wocl_penalty,
+                'late_onset_penalty': quality.late_onset_penalty,
+                'recovery_boost': quality.recovery_boost,
+                'time_pressure_factor': quality.time_pressure_factor,
+                'insufficient_penalty': quality.insufficient_penalty,
+            },
+            'references': self._get_strategy_references(strategy.strategy_type),
+        }
 
     def _generate_post_duty_sleep(
         self,
@@ -1190,6 +1138,23 @@ class BorbelyFatigueModel:
                 f'post-duty recovery sleep. WOCL evaluated against pilot biological '
                 f'clock (home-base time), not local time'
             )
+        elif st == 'inter_duty_recovery':
+            if c >= 0.75:
+                return (
+                    f'Good confidence ({c:.0%}) — single inter-duty recovery block '
+                    f'with circadian-gated wake and homeostatic duration scaling '
+                    f'(Signal 2013, Banks 2010)'
+                )
+            elif c >= 0.55:
+                return (
+                    f'Moderate confidence ({c:.0%}) — inter-duty recovery with '
+                    f'constrained sleep opportunity or layover variability'
+                )
+            else:
+                return (
+                    f'Low confidence ({c:.0%}) — severely constrained inter-duty '
+                    f'recovery; schedule pressure limits sleep opportunity'
+                )
         return f'Confidence: {c:.0%}'
 
     @staticmethod
@@ -1368,6 +1333,28 @@ class BorbelyFatigueModel:
                     'key': 'roach_2025',
                     'short': 'Roach et al. (2025)',
                     'full': 'Roach GD et al. Layover start timing predicts layover sleep. PMC11879054',
+                },
+            ],
+            'inter_duty_recovery': [
+                {
+                    'key': 'signal_2013',
+                    'short': 'Signal et al. (2013)',
+                    'full': 'Signal TL et al. Sleep on layover: PSG measured hotel sleep efficiency 88%. J Sleep Res 22(6):697-706',
+                },
+                {
+                    'key': 'roach_2025',
+                    'short': 'Roach et al. (2025)',
+                    'full': 'Roach GD et al. Layover start timing predicts layover sleep. PMC11879054',
+                },
+                {
+                    'key': 'banks_2010',
+                    'short': 'Banks et al. (2010)',
+                    'full': 'Banks S et al. Neurobehavioral dynamics following chronic sleep restriction: dose-response effects of one night for recovery. Sleep 33(8):1013-1026',
+                },
+                {
+                    'key': 'kitamura_2016',
+                    'short': 'Kitamura et al. (2016)',
+                    'full': 'Kitamura S et al. Estimating individual optimal sleep duration and potential sleep debt. Sci Rep 6:35812',
                 },
             ],
         }
