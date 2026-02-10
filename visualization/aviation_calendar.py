@@ -21,7 +21,7 @@ from typing import List, Dict, Optional
 import numpy as np
 import pytz
 
-from data_models import MonthlyAnalysis, DutyTimeline, FlightPhase
+from models.data_models import MonthlyAnalysis, DutyTimeline, FlightPhase
 
 
 class AviationCalendar:

@@ -10,8 +10,8 @@ from datetime import datetime, timedelta
 import pytz
 import pytest
 
-from core_model import BorbelyFatigueModel, ModelConfig
-from data_models import Duty, FlightSegment, Airport
+from core import BorbelyFatigueModel, ModelConfig
+from models.data_models import Duty, FlightSegment, Airport
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────

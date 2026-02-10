@@ -10,8 +10,8 @@ Tests the scenario described:
 
 from datetime import datetime, timedelta
 import pytz
-from core_model import BorbelyFatigueModel, ModelConfig
-from data_models import Duty, FlightSegment, Airport, SleepBlock, Roster
+from core import BorbelyFatigueModel, ModelConfig
+from models.data_models import Duty, FlightSegment, Airport, SleepBlock, Roster
 
 def test_performance_improvements():
     """Test the improved performance calculations"""

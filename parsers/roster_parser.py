@@ -21,8 +21,8 @@ import pytz
 import airportsdata
 
 # Ensure you have these models defined in your project
-from data_models import Airport, FlightSegment, Duty, Roster
-from qatar_crewlink_parser import CrewLinkRosterParser
+from models.data_models import Airport, FlightSegment, Duty, Roster
+from parsers.qatar_crewlink_parser import CrewLinkRosterParser
 
 # ============================================================================
 # AIRPORT DATABASE (backed by airportsdata ~7,800 IATA airports)

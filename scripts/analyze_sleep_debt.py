@@ -10,8 +10,8 @@ This script examines:
 
 from datetime import datetime, timedelta
 import pytz
-from core_model import BorbelyFatigueModel, ModelConfig
-from data_models import Duty, FlightSegment, Airport, SleepBlock, Roster
+from core import BorbelyFatigueModel, ModelConfig
+from models.data_models import Duty, FlightSegment, Airport, SleepBlock, Roster
 
 def create_monthly_roster():
     """Create a typical monthly roster with varied patterns"""
