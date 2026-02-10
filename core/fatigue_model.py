@@ -12,7 +12,7 @@ Scientific Foundation:
     Borbély & Achermann (1999), Jewett & Kronauer (1999), Van Dongen et al. (2003)
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import List, Tuple, Optional, Dict, Any
 import math
 import pytz
