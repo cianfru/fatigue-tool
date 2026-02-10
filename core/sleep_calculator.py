@@ -195,14 +195,24 @@ class UnifiedSleepCalculator:
         self.layover_timezone = layover_tz
         self.sleep_environment = sleep_env
 
-        # Use layover timezone for strategy selection when pilot is at layover.
-        # The pilot's sleep behavior is governed by local clock time where they
-        # physically are, not their home base timezone. A 05:00 home-time report
-        # might be 08:00 local at the layover — completely different strategy.
-        if is_layover and layover_tz:
-            strategy_tz = pytz.timezone(layover_tz)
-        else:
-            strategy_tz = self.home_tz
+        # Calculate layover duration for acclimatization logic
+        self.layover_duration_hours = 0.0
+        if is_layover and previous_duty:
+            self.layover_duration_hours = (duty.report_time_utc - previous_duty.release_time_utc).total_seconds() / 3600
+
+        # Use layover timezone for strategy selection ONLY after acclimatization (>48h).
+        # For short layovers (<48h), pilot's circadian clock remains on home base time
+        # (EASA AMC1 ORO.FTL.105). A 05:00 home-time report at a layover should use
+        # home timezone for strategy selection, not local timezone.
+        strategy_tz = self.home_tz  # Default to home timezone
+
+        if is_layover and layover_tz and previous_duty:
+            # Calculate layover duration from previous duty release to current duty report
+            layover_duration_hours = (duty.report_time_utc - previous_duty.release_time_utc).total_seconds() / 3600
+            # Only use layover timezone if pilot has been at this location >48h (acclimated)
+            if layover_duration_hours > 48:
+                strategy_tz = pytz.timezone(layover_tz)
+
         report_local = duty.report_time_utc.astimezone(strategy_tz)
         report_hour = report_local.hour
 
@@ -608,7 +618,9 @@ class UnifiedSleepCalculator:
         # Use home-base TZ as biological clock reference during layovers.
         # For short layovers (< 48 h) the circadian clock does not adapt
         # to local time (SKYbrary; EASA AMC1 ORO.FTL.105).
-        bio_tz = self.home_tz.zone if self.is_layover else None
+        # Use home timezone as biological reference only for SHORT layovers (<48h).
+        # After 48h, circadian clock adapts to local timezone (EASA AMC1 ORO.FTL.105).
+        bio_tz = self.home_tz.zone if (self.is_layover and self.layover_duration_hours <= 48) else None
 
         morning_quality = self.calculate_sleep_quality(
             sleep_start=morning_sleep_start,
@@ -738,7 +750,9 @@ class UnifiedSleepCalculator:
         sleep_start = sleep_start_utc.astimezone(sleep_tz)
         sleep_end = sleep_end_utc.astimezone(sleep_tz)
 
-        bio_tz = self.home_tz.zone if self.is_layover else None
+        # Use home timezone as biological reference only for SHORT layovers (<48h).
+        # After 48h, circadian clock adapts to local timezone (EASA AMC1 ORO.FTL.105).
+        bio_tz = self.home_tz.zone if (self.is_layover and self.layover_duration_hours <= 48) else None
 
         sleep_quality = self.calculate_sleep_quality(
             sleep_start=sleep_start,
@@ -812,7 +826,9 @@ class UnifiedSleepCalculator:
         anchor_start = anchor_start_utc.astimezone(sleep_tz)
         anchor_end = anchor_end_utc.astimezone(sleep_tz)
 
-        bio_tz = self.home_tz.zone if self.is_layover else None
+        # Use home timezone as biological reference only for SHORT layovers (<48h).
+        # After 48h, circadian clock adapts to local timezone (EASA AMC1 ORO.FTL.105).
+        bio_tz = self.home_tz.zone if (self.is_layover and self.layover_duration_hours <= 48) else None
 
         anchor_quality = self.calculate_sleep_quality(
             sleep_start=anchor_start,
@@ -894,7 +910,9 @@ class UnifiedSleepCalculator:
         sleep_start = sleep_start_utc.astimezone(sleep_tz)
         sleep_end = sleep_end_utc.astimezone(sleep_tz)
 
-        bio_tz = self.home_tz.zone if self.is_layover else None
+        # Use home timezone as biological reference only for SHORT layovers (<48h).
+        # After 48h, circadian clock adapts to local timezone (EASA AMC1 ORO.FTL.105).
+        bio_tz = self.home_tz.zone if (self.is_layover and self.layover_duration_hours <= 48) else None
 
         sleep_quality = self.calculate_sleep_quality(
             sleep_start=sleep_start,
@@ -1090,7 +1108,9 @@ class UnifiedSleepCalculator:
         sleep_start_local = sleep_start_utc.astimezone(sleep_tz)
         sleep_end_local = sleep_end_utc.astimezone(sleep_tz)
 
-        bio_tz = self.home_tz.zone if self.is_layover else None
+        # Use home timezone as biological reference only for SHORT layovers (<48h).
+        # After 48h, circadian clock adapts to local timezone (EASA AMC1 ORO.FTL.105).
+        bio_tz = self.home_tz.zone if (self.is_layover and self.layover_duration_hours <= 48) else None
 
         sleep_quality = self.calculate_sleep_quality(
             sleep_start=sleep_start_local,
@@ -1181,7 +1201,9 @@ class UnifiedSleepCalculator:
         main_start_local = main_start_utc.astimezone(sleep_tz)
         main_end_local = main_end_utc.astimezone(sleep_tz)
 
-        bio_tz = self.home_tz.zone if self.is_layover else None
+        # Use home timezone as biological reference only for SHORT layovers (<48h).
+        # After 48h, circadian clock adapts to local timezone (EASA AMC1 ORO.FTL.105).
+        bio_tz = self.home_tz.zone if (self.is_layover and self.layover_duration_hours <= 48) else None
 
         main_quality = self.calculate_sleep_quality(
             sleep_start=main_start_local,
@@ -1332,7 +1354,9 @@ class UnifiedSleepCalculator:
         night_start = night_start_utc.astimezone(sleep_tz)
         night_end = night_end_utc.astimezone(sleep_tz)
 
-        bio_tz = self.home_tz.zone if self.is_layover else None
+        # Use home timezone as biological reference only for SHORT layovers (<48h).
+        # After 48h, circadian clock adapts to local timezone (EASA AMC1 ORO.FTL.105).
+        bio_tz = self.home_tz.zone if (self.is_layover and self.layover_duration_hours <= 48) else None
 
         night_quality = self.calculate_sleep_quality(
             sleep_start=night_start,
@@ -1452,7 +1476,9 @@ class UnifiedSleepCalculator:
         sleep_start = sleep_start_utc.astimezone(sleep_tz)
         sleep_end = sleep_end_utc.astimezone(sleep_tz)
 
-        bio_tz = self.home_tz.zone if self.is_layover else None
+        # Use home timezone as biological reference only for SHORT layovers (<48h).
+        # After 48h, circadian clock adapts to local timezone (EASA AMC1 ORO.FTL.105).
+        bio_tz = self.home_tz.zone if (self.is_layover and self.layover_duration_hours <= 48) else None
 
         sleep_quality = self.calculate_sleep_quality(
             sleep_start=sleep_start,
