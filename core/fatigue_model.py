@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Import data models
 from models.data_models import (
     Duty, Roster, FlightSegment, SleepBlock, CircadianState,
-    PerformancePoint, PinchEvent, DutyTimeline, MonthlyAnalysis
+    PerformancePoint, PinchEvent, DutyTimeline, MonthlyAnalysis, FlightPhase
 )
 from core.parameters import ModelConfig
 from core.sleep_calculator import UnifiedSleepCalculator
