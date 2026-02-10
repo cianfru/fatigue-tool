@@ -26,7 +26,7 @@ from models.data_models import (
     PerformancePoint, PinchEvent, DutyTimeline, MonthlyAnalysis, FlightPhase
 )
 from core.parameters import ModelConfig
-from core.sleep_calculator import UnifiedSleepCalculator
+from core.sleep_calculator import UnifiedSleepCalculator, SleepStrategy
 from core.compliance import EASAComplianceValidator
 from core.workload import WorkloadModel
 
