@@ -3,8 +3,8 @@
 
 from datetime import datetime, timedelta
 import pytz
-from core_model import BorbelyFatigueModel, ModelConfig
-from data_models import Duty, FlightSegment, Airport, SleepBlock
+from core import BorbelyFatigueModel, ModelConfig
+from models.data_models import Duty, FlightSegment, Airport, SleepBlock
 
 def test_improved_efficiency():
     print("=" * 80)

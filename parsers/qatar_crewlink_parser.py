@@ -18,7 +18,7 @@ from typing import List, Dict, Optional
 import pytz
 import airportsdata
 
-from data_models import Airport, FlightSegment, Duty
+from models.data_models import Airport, FlightSegment, Duty
 
 
 # Load global IATA airport database (~7,800 airports with timezones and coordinates)

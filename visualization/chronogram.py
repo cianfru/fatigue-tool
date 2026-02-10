@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 import pytz
 
-from data_models import MonthlyAnalysis, DutyTimeline
+from models.data_models import MonthlyAnalysis, DutyTimeline
 
 
 class FatigueChronogram:

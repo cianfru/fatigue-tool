@@ -5,8 +5,8 @@ Comprehensive test showing improvement across different sleep scenarios
 
 from datetime import datetime, timedelta
 import pytz
-from core_model import BorbelyFatigueModel, ModelConfig
-from data_models import Duty, FlightSegment, Airport, SleepBlock
+from core import BorbelyFatigueModel, ModelConfig
+from models.data_models import Duty, FlightSegment, Airport, SleepBlock
 
 def test_scenario(model, scenario_name, sleep_duration, sleep_efficiency, report_hour=7):
     """Test a specific sleep/duty scenario"""

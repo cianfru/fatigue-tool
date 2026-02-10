@@ -26,12 +26,11 @@ import base64
 from pathlib import Path
 
 # Import your fatigue model
-from core_model import BorbelyFatigueModel, ModelConfig
-from roster_parser import PDFRosterParser, CSVRosterParser, AirportDatabase
-from data_models import MonthlyAnalysis, DutyTimeline
-from chronogram import FatigueChronogram
-from aviation_calendar import AviationCalendar
-# from visualization import FatigueVisualizer  # Not used in API endpoints
+from core import BorbelyFatigueModel, ModelConfig
+from parsers.roster_parser import PDFRosterParser, CSVRosterParser, AirportDatabase
+from models.data_models import MonthlyAnalysis, DutyTimeline
+from visualization.chronogram import FatigueChronogram
+from visualization.aviation_calendar import AviationCalendar
 
 # ============================================================================
 # FASTAPI APP INITIALIZATION
