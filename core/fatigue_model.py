@@ -712,13 +712,18 @@ class BorbelyFatigueModel:
             if strategy.quality_analysis:
                 quality = strategy.quality_analysis[0]
                 sleep_blocks_response = []
-                
+
                 if strategy.sleep_blocks:
                     for idx, block in enumerate(strategy.sleep_blocks):
-                        # Use actual location timezone, not home timezone
+                        # Use actual location timezone for display
                         location_tz = pytz.timezone(block.location_timezone)
                         sleep_start_local = block.start_utc.astimezone(location_tz)
                         sleep_end_local = block.end_utc.astimezone(location_tz)
+
+                        # Also convert to home timezone for chronogram positioning
+                        home_tz = pytz.timezone(roster.home_base_timezone)
+                        sleep_start_home = block.start_utc.astimezone(home_tz)
+                        sleep_end_home = block.end_utc.astimezone(home_tz)
 
                         sleep_type = 'main'
                         if hasattr(block, 'is_anchor_sleep') and not block.is_anchor_sleep:
@@ -744,10 +749,17 @@ class BorbelyFatigueModel:
                             'sleep_end_time': sleep_end_local.strftime('%H:%M'),
                             'sleep_start_iso': sleep_start_local.isoformat(),
                             'sleep_end_iso': sleep_end_local.isoformat(),
-                            'sleep_type': sleep_type,
-                            'duration_hours': block.duration_hours,
-                            'effective_hours': block.effective_sleep_hours,
-                            'quality_factor': block.quality_factor,
+                            # Home timezone ISO for chronogram positioning (in home base time)
+                            'sleep_start_iso_home_tz': sleep_start_home.isoformat(),
+                            'sleep_end_iso_home_tz': sleep_end_home.isoformat(),
+                            # Home timezone times for display
+                            'sleep_start_time_home_tz': sleep_start_home.strftime('%H:%M'),
+                            'sleep_end_time_home_tz': sleep_end_home.strftime('%H:%M'),
+                            'sleep_start_day_home_tz': sleep_start_home.day,
+                            'sleep_start_hour_home_tz': sleep_start_home.hour + sleep_start_home.minute / 60.0,
+                            'sleep_end_day_home_tz': sleep_end_home.day,
+                            'sleep_end_hour_home_tz': sleep_end_home.hour + sleep_end_home.minute / 60.0,
+                            # Local timezone (where sleep occurred)
                             'sleep_start_day': sleep_start_local.day,
                             'sleep_start_hour': sleep_start_local.hour + sleep_start_local.minute / 60.0,
                             'sleep_end_day': sleep_end_local.day,
