@@ -221,9 +221,9 @@ class UnifiedSleepCalculator:
             dep_airport = duty.segments[0].departure_airport
             home_airport_tz = pytz.timezone(duty.home_base_timezone)
             dep_tz = pytz.timezone(dep_airport.timezone)
-            naive_ref = duty.report_time_utc.replace(tzinfo=None)
-            home_offset = home_airport_tz.localize(naive_ref).utcoffset().total_seconds() / 3600
-            dep_offset = dep_tz.localize(naive_ref).utcoffset().total_seconds() / 3600
+            # Correctly convert UTC time to each timezone to get the offset
+            home_offset = duty.report_time_utc.astimezone(home_airport_tz).utcoffset().total_seconds() / 3600
+            dep_offset = duty.report_time_utc.astimezone(dep_tz).utcoffset().total_seconds() / 3600
             timezone_shift = abs(dep_offset - home_offset)
 
         # Decision tree: match pilot behavior patterns
