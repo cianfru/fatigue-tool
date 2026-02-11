@@ -1630,10 +1630,10 @@ class UnifiedSleepCalculator:
         bio_release = previous_duty.release_time_utc.astimezone(bio_tz)
         bio_release_hour = bio_release.hour + bio_release.minute / 60.0
 
-        if bio_release_hour >= 20 or bio_release_hour < 6:
+        if bio_release_hour >= 20 or bio_release_hour < 4:
             # Night on biological clock — high sleep pressure + circadian permission
             onset_delay_hours = 1.5
-        elif 6 <= bio_release_hour < 12:
+        elif 4 <= bio_release_hour < 12:
             # Morning on biological clock — circadian wake signal opposes sleep
             onset_delay_hours = 2.5
         elif 12 <= bio_release_hour < 17:
@@ -1673,7 +1673,9 @@ class UnifiedSleepCalculator:
         # Morning arrivals (biological clock): circadian opposition caps
         # daytime nap duration.  Pilots whose body clock says morning
         # struggle to maintain sleep against the circadian wake signal.
-        is_morning_arrival = 6 <= bio_release_hour < 12
+        # Include pre-dawn arrivals (04:00-06:00) — functionally similar
+        # to morning: pilot arrives near dawn and needs daytime nap + night.
+        is_morning_arrival = 4 <= bio_release_hour < 12
         if is_morning_arrival:
             base_duration = min(base_duration, 6.0)
 
@@ -1965,10 +1967,10 @@ class UnifiedSleepCalculator:
         bio_hour = sleep_start_bio.hour + sleep_start_bio.minute / 60.0
 
         # Classify onset into biological windows:
-        #   Evening/night onset (19:00-23:59): circadian gate applies (floor)
+        #   Evening/night onset (18:00-23:59): circadian gate applies (floor)
         #   Post-midnight onset (00:00-06:00): duration dominates (high pressure)
-        #   Daytime onset (06:00-19:00): duration dominates (circadian opposition)
-        is_evening_onset = 19.0 <= bio_hour <= 23.99
+        #   Daytime onset (06:00-18:00): duration dominates (circadian opposition)
+        is_evening_onset = 18.0 <= bio_hour <= 23.99
         is_post_midnight_onset = bio_hour < 6.0
 
         if is_evening_onset:
