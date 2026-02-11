@@ -733,118 +733,178 @@ class BorbelyFatigueModel:
                 strategy, strategy_key, sleep_strategies, home_tz
             )
 
-            # Generate rest day sleep for multi-day gaps at home
-            if i < len(roster.duties) - 1:
-                next_d = roster.duties[i + 1]
-                duty_release = duty.release_time_utc.astimezone(home_tz)
-                next_duty_report = next_d.report_time_utc.astimezone(home_tz)
+            # Generate additional night sleep blocks for multi-day gaps.
+            # Works for both home base and layover locations.
+            # Instead of assuming the inter-duty block covers "night 1",
+            # we find the first uncovered night AFTER the last sleep block.
+            #
+            # IMPORTANT: This covers the gap BEFORE duty[i] (same gap as
+            # the inter-duty sleep above), using previous_duty's arrival
+            # airport as the sleep location.
+            if i > 0 and previous_duty:
+                # Determine where the pilot sleeps (previous duty arrival)
+                prev_arrival = previous_duty.segments[-1].arrival_airport if previous_duty.segments else None
+                arrival_code = prev_arrival.code if prev_arrival else None
+                is_at_home = (arrival_code == roster.pilot_base)
 
-                duty_arrival = duty.segments[-1].arrival_airport.code if duty.segments else None
-                next_duty_departure = next_d.segments[0].departure_airport.code if next_d.segments else None
+                if is_at_home:
+                    rest_tz = home_tz
+                    rest_env = 'home'
+                elif prev_arrival:
+                    rest_tz = pytz.timezone(prev_arrival.timezone)
+                    rest_env = 'hotel'
+                else:
+                    rest_tz = home_tz
+                    rest_env = 'home'
 
-                pilot_at_home = (duty_arrival == roster.pilot_base or next_duty_departure == roster.pilot_base)
+                # Find the last sleep block generated for this gap
+                last_block_end_utc = previous_duty.release_time_utc
+                if strategy.sleep_blocks:
+                    last_block_end_utc = max(
+                        b.end_utc for b in strategy.sleep_blocks
+                    )
 
-                if pilot_at_home:
-                    gap_days = (next_duty_report.date() - duty_release.date()).days
+                # Latest possible wake time before current duty
+                latest_wake_utc = duty.report_time_utc - timedelta(
+                    hours=self.sleep_calculator.MIN_WAKE_BEFORE_REPORT
+                )
 
-                    # Start from day 2+: the inter-duty recovery block already
-                    # covers the first night after duty release.  Additional
-                    # rest-day blocks model subsequent nights at home.
-                    for rest_day_offset in range(2, gap_days):
-                        rest_date = duty_release.date() + timedelta(days=rest_day_offset)
-                        rest_day_key = f"rest_{rest_date.isoformat()}"
-                        recovery_night_number = rest_day_offset  # 1-indexed
+                # Generate 23:00-07:00 blocks for each uncovered night
+                # Start from the evening after the last sleep block ends
+                last_block_end_local = last_block_end_utc.astimezone(rest_tz)
 
-                        sleep_start = home_tz.localize(
-                            datetime.combine(rest_date - timedelta(days=1), time(23, 0))
+                # First candidate night: 23:00 on the day the last block ends
+                # If last block ends after 23:00, start from the next day
+                candidate_date = last_block_end_local.date()
+                candidate_bedtime = rest_tz.localize(
+                    datetime.combine(candidate_date, time(23, 0))
+                )
+                if candidate_bedtime <= last_block_end_local:
+                    candidate_date += timedelta(days=1)
+                    candidate_bedtime = rest_tz.localize(
+                        datetime.combine(candidate_date, time(23, 0))
+                    )
+
+                recovery_night_number = 1
+                while True:
+                    sleep_start = candidate_bedtime
+                    sleep_end = rest_tz.localize(
+                        datetime.combine(
+                            candidate_date + timedelta(days=1), time(7, 0)
                         )
-                        sleep_end = home_tz.localize(
-                            datetime.combine(rest_date, time(7, 0))
-                        )
+                    )
 
-                        rest_quality = self.sleep_calculator.calculate_sleep_quality(
-                            sleep_start=sleep_start,
-                            sleep_end=sleep_end,
-                            location='home',
-                            previous_duty_end=None,
-                            next_event=sleep_end + timedelta(hours=12),
-                            location_timezone=home_tz.zone
-                        )
+                    # Stop if bedtime is past latest wake (no room for sleep)
+                    if sleep_start.astimezone(pytz.utc) >= latest_wake_utc:
+                        break
 
-                        recovery_block = SleepBlock(
-                            start_utc=sleep_start.astimezone(pytz.utc),
-                            end_utc=sleep_end.astimezone(pytz.utc),
-                            location_timezone=home_tz.zone,
-                            duration_hours=rest_quality.actual_sleep_hours,
-                            quality_factor=rest_quality.sleep_efficiency,
-                            effective_sleep_hours=rest_quality.effective_sleep_hours,
-                            environment='home'
-                        )
+                    # Cap wake time by next duty report buffer
+                    if sleep_end.astimezone(pytz.utc) > latest_wake_utc:
+                        sleep_end = latest_wake_utc.astimezone(rest_tz)
 
-                        sleep_blocks.append(recovery_block)
+                    # Need at least 3h for a meaningful night block
+                    block_hours = (sleep_end - sleep_start).total_seconds() / 3600
+                    if block_hours < 3.0:
+                        break
 
-                        rest_qf = {
-                            'base_efficiency': rest_quality.base_efficiency,
-                            'wocl_boost': rest_quality.wocl_penalty,
-                            'late_onset_penalty': rest_quality.late_onset_penalty,
-                            'recovery_boost': rest_quality.recovery_boost,
-                            'time_pressure_factor': rest_quality.time_pressure_factor,
-                            'insufficient_penalty': rest_quality.insufficient_penalty,
-                        }
+                    rest_day_key = f"rest_{candidate_date.isoformat()}"
 
-                        # Recovery fraction model — Banks et al. (2010, 2023):
-                        # tau_recovery ≈ 2.5 nights (calibrated to Banks 2010)
-                        recovery_fraction = 1.0 - math.exp(-recovery_night_number / 2.5)
+                    rest_quality = self.sleep_calculator.calculate_sleep_quality(
+                        sleep_start=sleep_start,
+                        sleep_end=sleep_end,
+                        location=rest_env,
+                        previous_duty_end=None,
+                        next_event=sleep_end + timedelta(hours=12),
+                        location_timezone=rest_tz.zone
+                    )
 
-                        sleep_strategies[rest_day_key] = {
-                            'strategy_type': 'recovery',
-                            'confidence': 0.95,
-                            'recovery_night_number': recovery_night_number,
-                            'cumulative_recovery_fraction': round(recovery_fraction, 2),
-                            'total_sleep_hours': rest_quality.total_sleep_hours,
-                            'effective_sleep_hours': rest_quality.effective_sleep_hours,
-                            'sleep_efficiency': rest_quality.sleep_efficiency,
-                            'wocl_overlap_hours': rest_quality.wocl_overlap_hours,
-                            'warnings': [w['message'] for w in rest_quality.warnings],
-                            'sleep_start_time': '23:00',
-                            'sleep_end_time': '07:00',
-                            'sleep_blocks': [{
-                                'sleep_start_time': '23:00',
-                                'sleep_end_time': '07:00',
-                                'sleep_start_iso': sleep_start.isoformat(),
-                                'sleep_end_iso': sleep_end.isoformat(),
-                                'sleep_start_day': sleep_start.day,
-                                'sleep_start_hour': 23.0,
-                                'sleep_end_day': sleep_end.day,
-                                'sleep_end_hour': 7.0,
-                                'location_timezone': home_tz.zone,
-                                'environment': 'home',
-                                'sleep_start_time_home_tz': '23:00',
-                                'sleep_end_time_home_tz': '07:00',
-                                'sleep_start_day_home_tz': sleep_start.day,
-                                'sleep_start_hour_home_tz': 23.0,
-                                'sleep_end_day_home_tz': sleep_end.day,
-                                'sleep_end_hour_home_tz': 7.0,
-                                'sleep_type': 'main',
-                                'duration_hours': rest_quality.actual_sleep_hours,
-                                'effective_hours': rest_quality.effective_sleep_hours,
-                                'quality_factor': rest_quality.sleep_efficiency,
-                                'quality_factors': rest_qf,
-                            }],
-                            'explanation': (
-                                f'Recovery night {recovery_night_number}: home sleep '
-                                f'(23:00-07:00, {rest_quality.sleep_efficiency:.0%} efficiency). '
-                                f'Cumulative recovery ~{recovery_fraction:.0%} of prior debt '
-                                f'(Banks et al. 2010: exponential multi-night recovery)'
-                            ),
-                            'confidence_basis': (
-                                f'High confidence — home environment, no duty constraints. '
-                                f'Recovery night {recovery_night_number} of {gap_days - 1} '
-                                f'(~{recovery_fraction:.0%} cumulative debt recovery)'
-                            ),
+                    recovery_block = SleepBlock(
+                        start_utc=sleep_start.astimezone(pytz.utc),
+                        end_utc=sleep_end.astimezone(pytz.utc),
+                        location_timezone=rest_tz.zone,
+                        duration_hours=rest_quality.actual_sleep_hours,
+                        quality_factor=rest_quality.sleep_efficiency,
+                        effective_sleep_hours=rest_quality.effective_sleep_hours,
+                        environment=rest_env
+                    )
+
+                    sleep_blocks.append(recovery_block)
+
+                    rest_qf = {
+                        'base_efficiency': rest_quality.base_efficiency,
+                        'wocl_boost': rest_quality.wocl_penalty,
+                        'late_onset_penalty': rest_quality.late_onset_penalty,
+                        'recovery_boost': rest_quality.recovery_boost,
+                        'time_pressure_factor': rest_quality.time_pressure_factor,
+                        'insufficient_penalty': rest_quality.insufficient_penalty,
+                    }
+
+                    # Recovery fraction model — Banks et al. (2010, 2023):
+                    # tau_recovery ≈ 2.5 nights (calibrated to Banks 2010)
+                    recovery_fraction = 1.0 - math.exp(-recovery_night_number / 2.5)
+
+                    sleep_start_home = sleep_start.astimezone(home_tz)
+                    sleep_end_home = sleep_end.astimezone(home_tz)
+                    sleep_start_local = sleep_start
+                    sleep_end_local = sleep_end
+
+                    sleep_strategies[rest_day_key] = {
+                        'strategy_type': 'recovery',
+                        'confidence': 0.95 if is_at_home else 0.85,
+                        'recovery_night_number': recovery_night_number,
+                        'cumulative_recovery_fraction': round(recovery_fraction, 2),
+                        'total_sleep_hours': rest_quality.total_sleep_hours,
+                        'effective_sleep_hours': rest_quality.effective_sleep_hours,
+                        'sleep_efficiency': rest_quality.sleep_efficiency,
+                        'wocl_overlap_hours': rest_quality.wocl_overlap_hours,
+                        'warnings': [w['message'] for w in rest_quality.warnings],
+                        'sleep_start_time': sleep_start_local.strftime('%H:%M'),
+                        'sleep_end_time': sleep_end_local.strftime('%H:%M'),
+                        'sleep_blocks': [{
+                            'sleep_start_time': sleep_start_local.strftime('%H:%M'),
+                            'sleep_end_time': sleep_end_local.strftime('%H:%M'),
+                            'sleep_start_iso': sleep_start_local.isoformat(),
+                            'sleep_end_iso': sleep_end_local.isoformat(),
+                            'sleep_start_day': sleep_start_local.day,
+                            'sleep_start_hour': sleep_start_local.hour + sleep_start_local.minute / 60.0,
+                            'sleep_end_day': sleep_end_local.day,
+                            'sleep_end_hour': sleep_end_local.hour + sleep_end_local.minute / 60.0,
+                            'location_timezone': rest_tz.zone,
+                            'environment': rest_env,
+                            'sleep_start_time_home_tz': sleep_start_home.strftime('%H:%M'),
+                            'sleep_end_time_home_tz': sleep_end_home.strftime('%H:%M'),
+                            'sleep_start_day_home_tz': sleep_start_home.day,
+                            'sleep_start_hour_home_tz': sleep_start_home.hour + sleep_start_home.minute / 60.0,
+                            'sleep_end_day_home_tz': sleep_end_home.day,
+                            'sleep_end_hour_home_tz': sleep_end_home.hour + sleep_end_home.minute / 60.0,
+                            'sleep_type': 'main',
+                            'duration_hours': rest_quality.actual_sleep_hours,
+                            'effective_hours': rest_quality.effective_sleep_hours,
+                            'quality_factor': rest_quality.sleep_efficiency,
                             'quality_factors': rest_qf,
-                            'references': self._get_strategy_references('recovery'),
-                        }
+                        }],
+                        'explanation': (
+                            f'Recovery night {recovery_night_number}: {rest_env} sleep '
+                            f'({sleep_start_local.strftime("%H:%M")}-{sleep_end_local.strftime("%H:%M")}, '
+                            f'{rest_quality.sleep_efficiency:.0%} efficiency). '
+                            f'Cumulative recovery ~{recovery_fraction:.0%} of prior debt '
+                            f'(Banks et al. 2010: exponential multi-night recovery)'
+                        ),
+                        'confidence_basis': (
+                            f'{"High" if is_at_home else "Moderate"} confidence — '
+                            f'{rest_env} environment, no duty constraints. '
+                            f'Recovery night {recovery_night_number} '
+                            f'(~{recovery_fraction:.0%} cumulative debt recovery)'
+                        ),
+                        'quality_factors': rest_qf,
+                        'references': self._get_strategy_references('recovery'),
+                    }
+
+                    recovery_night_number += 1
+                    candidate_date += timedelta(days=1)
+                    candidate_bedtime = rest_tz.localize(
+                        datetime.combine(candidate_date, time(23, 0))
+                    )
 
         # Resolve overlapping sleep blocks with SWS-aware truncation.
         # First hours of sleep contain disproportionate SWS recovery
@@ -868,13 +928,17 @@ class BorbelyFatigueModel:
                             scale = truncated_recovery / original_recovery
                         else:
                             scale = new_duration / prev.duration_hours if prev.duration_hours > 0 else 1.0
+                        new_effective = min(
+                            prev.effective_sleep_hours * scale,
+                            new_duration  # effective cannot exceed duration
+                        )
                         resolved_blocks[-1] = SleepBlock(
                             start_utc=prev.start_utc,
                             end_utc=block.start_utc,
                             location_timezone=prev.location_timezone,
                             duration_hours=new_duration,
                             quality_factor=prev.quality_factor,
-                            effective_sleep_hours=prev.effective_sleep_hours * scale,
+                            effective_sleep_hours=new_effective,
                             environment=prev.environment,
                             is_anchor_sleep=prev.is_anchor_sleep,
                             sleep_start_day=prev.sleep_start_day,
