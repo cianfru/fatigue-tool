@@ -129,6 +129,15 @@ class UnifiedSleepCalculator:
         self.home_tz = None
         self.home_base = None
 
+    def _home_tz_day_hour(self, dt: datetime) -> tuple:
+        """Convert a timezone-aware datetime to (day, decimal_hour) in home base TZ.
+
+        Used for SleepBlock chronogram positioning fields which must all
+        reference the same timezone as duty times (home base).
+        """
+        home_dt = dt.astimezone(self.home_tz)
+        return home_dt.day, home_dt.hour + home_dt.minute / 60.0
+
     def _detect_layover(
         self,
         duty: Duty,
@@ -632,6 +641,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz
         )
 
+        ms_day, ms_hour = self._home_tz_day_hour(morning_sleep_start)
+        me_day, me_hour = self._home_tz_day_hour(morning_sleep_end)
         morning_sleep = SleepBlock(
             start_utc=morning_sleep_start.astimezone(pytz.utc),
             end_utc=morning_sleep_end.astimezone(pytz.utc),
@@ -640,10 +651,10 @@ class UnifiedSleepCalculator:
             quality_factor=morning_quality.sleep_efficiency,
             effective_sleep_hours=morning_quality.effective_sleep_hours,
             environment=sleep_location,  # 'home' or 'hotel'
-            sleep_start_day=morning_sleep_start.day,
-            sleep_start_hour=morning_sleep_start.hour + morning_sleep_start.minute / 60.0,
-            sleep_end_day=morning_sleep_end.day,
-            sleep_end_hour=morning_sleep_end.hour + morning_sleep_end.minute / 60.0
+            sleep_start_day=ms_day,
+            sleep_start_hour=ms_hour,
+            sleep_end_day=me_day,
+            sleep_end_hour=me_hour
         )
 
         # Pre-duty nap: 2h duration (Signal 2014 found typical naps 1-2h;
@@ -668,6 +679,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz
         )
 
+        ns_day, ns_hour = self._home_tz_day_hour(nap_start)
+        ne_day, ne_hour = self._home_tz_day_hour(nap_end)
         afternoon_nap = SleepBlock(
             start_utc=nap_start.astimezone(pytz.utc),
             end_utc=nap_end.astimezone(pytz.utc),
@@ -677,10 +690,10 @@ class UnifiedSleepCalculator:
             effective_sleep_hours=nap_quality.effective_sleep_hours,
             is_anchor_sleep=False,
             environment=sleep_location,  # 'home' or 'hotel'
-            sleep_start_day=nap_start.day,
-            sleep_start_hour=nap_start.hour + nap_start.minute / 60.0,
-            sleep_end_day=nap_end.day,
-            sleep_end_hour=nap_end.hour + nap_end.minute / 60.0
+            sleep_start_day=ns_day,
+            sleep_start_hour=ns_hour,
+            sleep_end_day=ne_day,
+            sleep_end_hour=ne_hour
         )
 
         total_effective = morning_quality.effective_sleep_hours + nap_quality.effective_sleep_hours
@@ -764,6 +777,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz
         )
 
+        ss_day, ss_hour = self._home_tz_day_hour(sleep_start)
+        se_day, se_hour = self._home_tz_day_hour(sleep_end)
         early_sleep = SleepBlock(
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=sleep_end.astimezone(pytz.utc),
@@ -772,10 +787,10 @@ class UnifiedSleepCalculator:
             quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
             environment=sleep_location,  # 'home' or 'hotel'
-            sleep_start_day=sleep_start.day,
-            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
-            sleep_end_day=sleep_end.day,
-            sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
+            sleep_start_day=ss_day,
+            sleep_start_hour=ss_hour,
+            sleep_end_day=se_day,
+            sleep_end_hour=se_hour
         )
 
         # Lower confidence reflects Roach (2012) finding of high variability
@@ -840,6 +855,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz
         )
 
+        as_day, as_hour = self._home_tz_day_hour(anchor_start)
+        ae_day, ae_hour = self._home_tz_day_hour(anchor_end)
         anchor_sleep = SleepBlock(
             start_utc=anchor_start.astimezone(pytz.utc),
             end_utc=anchor_end.astimezone(pytz.utc),
@@ -848,10 +865,10 @@ class UnifiedSleepCalculator:
             quality_factor=anchor_quality.sleep_efficiency,
             effective_sleep_hours=anchor_quality.effective_sleep_hours,
             environment=sleep_location,  # 'home' or 'hotel'
-            sleep_start_day=anchor_start.day,
-            sleep_start_hour=anchor_start.hour + anchor_start.minute / 60.0,
-            sleep_end_day=anchor_end.day,
-            sleep_end_hour=anchor_end.hour + anchor_end.minute / 60.0
+            sleep_start_day=as_day,
+            sleep_start_hour=as_hour,
+            sleep_end_day=ae_day,
+            sleep_end_hour=ae_hour
         )
 
         confidence = 0.50 if not anchor_warnings else 0.35
@@ -940,6 +957,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz
         )
 
+        ss_day, ss_hour = self._home_tz_day_hour(sleep_start)
+        se_day, se_hour = self._home_tz_day_hour(sleep_end)
         normal_sleep = SleepBlock(
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=sleep_end.astimezone(pytz.utc),
@@ -948,10 +967,10 @@ class UnifiedSleepCalculator:
             quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
             environment=sleep_location,  # 'home' or 'hotel'
-            sleep_start_day=sleep_start.day,
-            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
-            sleep_end_day=sleep_end.day,
-            sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
+            sleep_start_day=ss_day,
+            sleep_start_hour=ss_hour,
+            sleep_end_day=se_day,
+            sleep_end_hour=se_hour
         )
 
         # Calculate awake duration
@@ -1041,6 +1060,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz
         )
 
+        ss_day, ss_hour = self._home_tz_day_hour(sleep_start)
+        se_day, se_hour = self._home_tz_day_hour(sleep_end)
         anchor_sleep = SleepBlock(
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=sleep_end.astimezone(pytz.utc),
@@ -1049,10 +1070,10 @@ class UnifiedSleepCalculator:
             quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
             environment=sleep_location,
-            sleep_start_day=sleep_start.day,
-            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
-            sleep_end_day=sleep_end.day,
-            sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
+            sleep_start_day=ss_day,
+            sleep_start_hour=ss_hour,
+            sleep_end_day=se_day,
+            sleep_end_hour=se_hour
         )
 
         # Confidence decreases with larger timezone shifts (harder to anchor)
@@ -1138,6 +1159,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz
         )
 
+        ss_day, ss_hour = self._home_tz_day_hour(sleep_start_local)
+        se_day, se_hour = self._home_tz_day_hour(sleep_end_local)
         restricted_sleep = SleepBlock(
             start_utc=sleep_start_utc,
             end_utc=sleep_end_utc,
@@ -1146,10 +1169,10 @@ class UnifiedSleepCalculator:
             quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
             environment=sleep_location,
-            sleep_start_day=sleep_start_local.day,
-            sleep_start_hour=sleep_start_local.hour + sleep_start_local.minute / 60.0,
-            sleep_end_day=sleep_end_local.day,
-            sleep_end_hour=sleep_end_local.hour + sleep_end_local.minute / 60.0
+            sleep_start_day=ss_day,
+            sleep_start_hour=ss_hour,
+            sleep_end_day=se_day,
+            sleep_end_hour=se_hour
         )
 
         # Low confidence — severe time constraint
@@ -1231,6 +1254,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz
         )
 
+        ms_day, ms_hour = self._home_tz_day_hour(main_start_local)
+        me_day, me_hour = self._home_tz_day_hour(main_end_local)
         main_sleep = SleepBlock(
             start_utc=main_start_utc,
             end_utc=main_end_utc,
@@ -1239,10 +1264,10 @@ class UnifiedSleepCalculator:
             quality_factor=main_quality.sleep_efficiency,
             effective_sleep_hours=main_quality.effective_sleep_hours,
             environment=sleep_location,
-            sleep_start_day=main_start_local.day,
-            sleep_start_hour=main_start_local.hour + main_start_local.minute / 60.0,
-            sleep_end_day=main_end_local.day,
-            sleep_end_hour=main_end_local.hour + main_end_local.minute / 60.0
+            sleep_start_day=ms_day,
+            sleep_start_hour=ms_hour,
+            sleep_end_day=me_day,
+            sleep_end_hour=me_hour
         )
 
         # Short nap before duty (remaining time)
@@ -1304,6 +1329,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz
         )
 
+        ns_day, ns_hour = self._home_tz_day_hour(nap_start_local)
+        ne_day, ne_hour = self._home_tz_day_hour(nap_end_local)
         nap_block = SleepBlock(
             start_utc=nap_start,
             end_utc=nap_end,
@@ -1313,10 +1340,10 @@ class UnifiedSleepCalculator:
             effective_sleep_hours=nap_quality.effective_sleep_hours,
             is_anchor_sleep=False,
             environment=sleep_location,
-            sleep_start_day=nap_start_local.day,
-            sleep_start_hour=nap_start_local.hour + nap_start_local.minute / 60.0,
-            sleep_end_day=nap_end_local.day,
-            sleep_end_hour=nap_end_local.hour + nap_end_local.minute / 60.0
+            sleep_start_day=ns_day,
+            sleep_start_hour=ns_hour,
+            sleep_end_day=ne_day,
+            sleep_end_hour=ne_hour
         )
 
         total_effective = main_quality.effective_sleep_hours + nap_quality.effective_sleep_hours
@@ -1384,6 +1411,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz
         )
 
+        nts_day, nts_hour = self._home_tz_day_hour(night_start)
+        nte_day, nte_hour = self._home_tz_day_hour(night_end)
         night_sleep = SleepBlock(
             start_utc=night_start.astimezone(pytz.utc),
             end_utc=night_end.astimezone(pytz.utc),
@@ -1392,10 +1421,10 @@ class UnifiedSleepCalculator:
             quality_factor=night_quality.sleep_efficiency,
             effective_sleep_hours=night_quality.effective_sleep_hours,
             environment=sleep_location,
-            sleep_start_day=night_start.day,
-            sleep_start_hour=night_start.hour + night_start.minute / 60.0,
-            sleep_end_day=night_end.day,
-            sleep_end_hour=night_end.hour + night_end.minute / 60.0
+            sleep_start_day=nts_day,
+            sleep_start_hour=nts_hour,
+            sleep_end_day=nte_day,
+            sleep_end_hour=nte_hour
         )
 
         # Afternoon nap: 1.5h, ending 2h before report
@@ -1419,6 +1448,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz
         )
 
+        nps_day, nps_hour = self._home_tz_day_hour(nap_start)
+        npe_day, npe_hour = self._home_tz_day_hour(nap_end)
         nap_block = SleepBlock(
             start_utc=nap_start.astimezone(pytz.utc),
             end_utc=nap_end.astimezone(pytz.utc),
@@ -1428,10 +1459,10 @@ class UnifiedSleepCalculator:
             effective_sleep_hours=nap_quality.effective_sleep_hours,
             is_anchor_sleep=False,
             environment=sleep_location,
-            sleep_start_day=nap_start.day,
-            sleep_start_hour=nap_start.hour + nap_start.minute / 60.0,
-            sleep_end_day=nap_end.day,
-            sleep_end_hour=nap_end.hour + nap_end.minute / 60.0
+            sleep_start_day=nps_day,
+            sleep_start_hour=nps_hour,
+            sleep_end_day=npe_day,
+            sleep_end_hour=npe_hour
         )
 
         total_effective = night_quality.effective_sleep_hours + nap_quality.effective_sleep_hours
@@ -1517,6 +1548,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz
         )
 
+        ss_day, ss_hour = self._home_tz_day_hour(sleep_start)
+        se_day, se_hour = self._home_tz_day_hour(sleep_end)
         extended_sleep = SleepBlock(
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=sleep_end.astimezone(pytz.utc),
@@ -1525,10 +1558,10 @@ class UnifiedSleepCalculator:
             quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
             environment=sleep_location,
-            sleep_start_day=sleep_start.day,
-            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
-            sleep_end_day=sleep_end.day,
-            sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
+            sleep_start_day=ss_day,
+            sleep_start_hour=ss_hour,
+            sleep_end_day=se_day,
+            sleep_end_hour=se_hour
         )
 
         # High confidence — ample rest
@@ -1774,6 +1807,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz_str if is_layover else None
         )
 
+        ss_day, ss_hour = self._home_tz_day_hour(sleep_start)
+        se_day, se_hour = self._home_tz_day_hour(sleep_end)
         recovery_block = SleepBlock(
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=sleep_end.astimezone(pytz.utc),
@@ -1782,10 +1817,10 @@ class UnifiedSleepCalculator:
             quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
             environment=sleep_location,
-            sleep_start_day=sleep_start.day,
-            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
-            sleep_end_day=sleep_end.day,
-            sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
+            sleep_start_day=ss_day,
+            sleep_start_hour=ss_hour,
+            sleep_end_day=se_day,
+            sleep_end_hour=se_hour
         )
 
         # --- Confidence ---
@@ -1862,6 +1897,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz_for_quality
         )
 
+        ss_day, ss_hour = self._home_tz_day_hour(sleep_start)
+        ne_day, ne_hour = self._home_tz_day_hour(nap_end)
         nap_block = SleepBlock(
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=nap_end.astimezone(pytz.utc),
@@ -1871,10 +1908,10 @@ class UnifiedSleepCalculator:
             effective_sleep_hours=nap_quality.effective_sleep_hours,
             environment=sleep_location,
             is_anchor_sleep=False,  # This is the nap, not the main sleep
-            sleep_start_day=sleep_start.day,
-            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
-            sleep_end_day=nap_end.day,
-            sleep_end_hour=nap_end.hour + nap_end.minute / 60.0
+            sleep_start_day=ss_day,
+            sleep_start_hour=ss_hour,
+            sleep_end_day=ne_day,
+            sleep_end_hour=ne_hour
         )
 
         # --- Block 2: Night sleep ---
@@ -1899,6 +1936,8 @@ class UnifiedSleepCalculator:
             biological_timezone=bio_tz_for_quality
         )
 
+        nts_day, nts_hour = self._home_tz_day_hour(night_start)
+        nte_day, nte_hour = self._home_tz_day_hour(night_end)
         night_block = SleepBlock(
             start_utc=night_start.astimezone(pytz.utc),
             end_utc=night_end.astimezone(pytz.utc),
@@ -1908,10 +1947,10 @@ class UnifiedSleepCalculator:
             effective_sleep_hours=night_quality.effective_sleep_hours,
             environment=sleep_location,
             is_anchor_sleep=True,
-            sleep_start_day=night_start.day,
-            sleep_start_hour=night_start.hour + night_start.minute / 60.0,
-            sleep_end_day=night_end.day,
-            sleep_end_hour=night_end.hour + night_end.minute / 60.0
+            sleep_start_day=nts_day,
+            sleep_start_hour=nts_hour,
+            sleep_end_day=nte_day,
+            sleep_end_hour=nte_hour
         )
 
         # --- Confidence ---

@@ -858,25 +858,30 @@ class BorbelyFatigueModel:
                         'sleep_efficiency': rest_quality.sleep_efficiency,
                         'wocl_overlap_hours': rest_quality.wocl_overlap_hours,
                         'warnings': [w['message'] for w in rest_quality.warnings],
-                        'sleep_start_time': sleep_start_local.strftime('%H:%M'),
-                        'sleep_end_time': sleep_end_local.strftime('%H:%M'),
+                        'sleep_start_time': sleep_start_home.strftime('%H:%M'),
+                        'sleep_end_time': sleep_end_home.strftime('%H:%M'),
                         'sleep_blocks': [{
-                            'sleep_start_time': sleep_start_local.strftime('%H:%M'),
-                            'sleep_end_time': sleep_end_local.strftime('%H:%M'),
-                            'sleep_start_iso': sleep_start_local.isoformat(),
-                            'sleep_end_iso': sleep_end_local.isoformat(),
-                            'sleep_start_day': sleep_start_local.day,
-                            'sleep_start_hour': sleep_start_local.hour + sleep_start_local.minute / 60.0,
-                            'sleep_end_day': sleep_end_local.day,
-                            'sleep_end_hour': sleep_end_local.hour + sleep_end_local.minute / 60.0,
+                            # Primary fields: HOME BASE timezone for chronogram positioning
+                            'sleep_start_time': sleep_start_home.strftime('%H:%M'),
+                            'sleep_end_time': sleep_end_home.strftime('%H:%M'),
+                            'sleep_start_iso': sleep_start_home.isoformat(),
+                            'sleep_end_iso': sleep_end_home.isoformat(),
+                            'sleep_start_day': sleep_start_home.day,
+                            'sleep_start_hour': sleep_start_home.hour + sleep_start_home.minute / 60.0,
+                            'sleep_end_day': sleep_end_home.day,
+                            'sleep_end_hour': sleep_end_home.hour + sleep_end_home.minute / 60.0,
                             'location_timezone': rest_tz.zone,
                             'environment': rest_env,
+                            # Explicit home base timezone (backward compat, same as primary)
                             'sleep_start_time_home_tz': sleep_start_home.strftime('%H:%M'),
                             'sleep_end_time_home_tz': sleep_end_home.strftime('%H:%M'),
                             'sleep_start_day_home_tz': sleep_start_home.day,
                             'sleep_start_hour_home_tz': sleep_start_home.hour + sleep_start_home.minute / 60.0,
                             'sleep_end_day_home_tz': sleep_end_home.day,
                             'sleep_end_hour_home_tz': sleep_end_home.hour + sleep_end_home.minute / 60.0,
+                            # Location timezone (actual local time where pilot sleeps)
+                            'sleep_start_time_location_tz': sleep_start_local.strftime('%H:%M'),
+                            'sleep_end_time_location_tz': sleep_end_local.strftime('%H:%M'),
                             'sleep_type': 'main',
                             'duration_hours': rest_quality.actual_sleep_hours,
                             'effective_hours': rest_quality.effective_sleep_hours,
@@ -932,6 +937,9 @@ class BorbelyFatigueModel:
                             prev.effective_sleep_hours * scale,
                             new_duration  # effective cannot exceed duration
                         )
+                        # Use home base timezone for day/hour fields (consistent
+                        # with chronogram positioning standard).
+                        overlap_end_home = block.start_utc.astimezone(home_tz)
                         resolved_blocks[-1] = SleepBlock(
                             start_utc=prev.start_utc,
                             end_utc=block.start_utc,
@@ -943,8 +951,8 @@ class BorbelyFatigueModel:
                             is_anchor_sleep=prev.is_anchor_sleep,
                             sleep_start_day=prev.sleep_start_day,
                             sleep_start_hour=prev.sleep_start_hour,
-                            sleep_end_day=block.start_utc.day,
-                            sleep_end_hour=block.start_utc.hour + block.start_utc.minute / 60.0
+                            sleep_end_day=overlap_end_home.day,
+                            sleep_end_hour=overlap_end_home.hour + overlap_end_home.minute / 60.0
                         )
                     else:
                         resolved_blocks.pop()
@@ -994,22 +1002,30 @@ class BorbelyFatigueModel:
                     }
 
                 sleep_blocks_response.append({
-                    'sleep_start_time': sleep_start_local.strftime('%H:%M'),
-                    'sleep_end_time': sleep_end_local.strftime('%H:%M'),
-                    'sleep_start_iso': sleep_start_local.isoformat(),
-                    'sleep_end_iso': sleep_end_local.isoformat(),
-                    'sleep_start_day': sleep_start_local.day,
-                    'sleep_start_hour': sleep_start_local.hour + sleep_start_local.minute / 60.0,
-                    'sleep_end_day': sleep_end_local.day,
-                    'sleep_end_hour': sleep_end_local.hour + sleep_end_local.minute / 60.0,
+                    # Primary fields: HOME BASE timezone for chronogram positioning.
+                    # All sleep times use the same reference TZ as duty times,
+                    # preventing misalignment when pilot sleeps at a layover
+                    # location in a different timezone.
+                    'sleep_start_time': sleep_start_home.strftime('%H:%M'),
+                    'sleep_end_time': sleep_end_home.strftime('%H:%M'),
+                    'sleep_start_iso': sleep_start_home.isoformat(),
+                    'sleep_end_iso': sleep_end_home.isoformat(),
+                    'sleep_start_day': sleep_start_home.day,
+                    'sleep_start_hour': sleep_start_home.hour + sleep_start_home.minute / 60.0,
+                    'sleep_end_day': sleep_end_home.day,
+                    'sleep_end_hour': sleep_end_home.hour + sleep_end_home.minute / 60.0,
                     'location_timezone': block.location_timezone,
                     'environment': block.environment,
+                    # Explicit home base timezone (backward compat, same as primary)
                     'sleep_start_time_home_tz': sleep_start_home.strftime('%H:%M'),
                     'sleep_end_time_home_tz': sleep_end_home.strftime('%H:%M'),
                     'sleep_start_day_home_tz': sleep_start_home.day,
                     'sleep_start_hour_home_tz': sleep_start_home.hour + sleep_start_home.minute / 60.0,
                     'sleep_end_day_home_tz': sleep_end_home.day,
                     'sleep_end_hour_home_tz': sleep_end_home.hour + sleep_end_home.minute / 60.0,
+                    # Location timezone (actual local time where pilot sleeps)
+                    'sleep_start_time_location_tz': sleep_start_local.strftime('%H:%M'),
+                    'sleep_end_time_location_tz': sleep_end_local.strftime('%H:%M'),
                     'sleep_type': sleep_type,
                     'duration_hours': block.duration_hours,
                     'effective_hours': block.effective_sleep_hours,
@@ -1018,11 +1034,10 @@ class BorbelyFatigueModel:
                 })
 
             first_block = strategy.sleep_blocks[0]
-            location_tz = pytz.timezone(first_block.location_timezone)
-            sleep_start_local = first_block.start_utc.astimezone(location_tz)
-            sleep_end_local = first_block.end_utc.astimezone(location_tz)
-            sleep_start_time = sleep_start_local.strftime('%H:%M')
-            sleep_end_time = sleep_end_local.strftime('%H:%M')
+            sleep_start_home_top = first_block.start_utc.astimezone(home_tz)
+            sleep_end_home_top = first_block.end_utc.astimezone(home_tz)
+            sleep_start_time = sleep_start_home_top.strftime('%H:%M')
+            sleep_end_time = sleep_end_home_top.strftime('%H:%M')
         else:
             sleep_start_time = None
             sleep_end_time = None
@@ -1144,6 +1159,10 @@ class BorbelyFatigueModel:
             biological_timezone=home_tz_str
         )
 
+        # Use home base timezone for day/hour chronogram positioning fields
+        home_tz_obj = pytz.timezone(home_timezone)
+        start_home = sleep_start.astimezone(home_tz_obj)
+        end_home = sleep_end.astimezone(home_tz_obj)
         block = SleepBlock(
             start_utc=sleep_start.astimezone(pytz.utc),
             end_utc=sleep_end.astimezone(pytz.utc),
@@ -1152,10 +1171,10 @@ class BorbelyFatigueModel:
             quality_factor=sleep_quality.sleep_efficiency,
             effective_sleep_hours=sleep_quality.effective_sleep_hours,
             environment=environment,
-            sleep_start_day=sleep_start.day,
-            sleep_start_hour=sleep_start.hour + sleep_start.minute / 60.0,
-            sleep_end_day=sleep_end.day,
-            sleep_end_hour=sleep_end.hour + sleep_end.minute / 60.0
+            sleep_start_day=start_home.day,
+            sleep_start_hour=start_home.hour + start_home.minute / 60.0,
+            sleep_end_day=end_home.day,
+            sleep_end_hour=end_home.hour + end_home.minute / 60.0
         )
         return block, sleep_quality
 
