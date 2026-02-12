@@ -126,6 +126,18 @@ class SleepBlockResponse(BaseModel):
     effective_hours: float
     quality_factor: float
 
+    # Location context — needed for local-time labels on chronogram
+    location_timezone: Optional[str] = None    # IANA tz where pilot physically sleeps
+    environment: Optional[str] = None          # 'home', 'hotel', 'crew_rest'
+    sleep_start_time_location_tz: Optional[str] = None  # HH:mm in location timezone
+    sleep_end_time_location_tz: Optional[str] = None    # HH:mm in location timezone
+
+    # Numeric grid positioning (home-base TZ)
+    sleep_start_day: Optional[int] = None      # Day of month (1-31)
+    sleep_start_hour: Optional[float] = None   # Decimal hour (0-24)
+    sleep_end_day: Optional[int] = None
+    sleep_end_hour: Optional[float] = None
+
     # Per-block quality factor breakdown (populated for all sleep types)
     quality_factors: Optional[QualityFactorsResponse] = None
 
@@ -195,9 +207,12 @@ class DutyResponse(BaseModel):
     extended_fdp_hours: Optional[float]  # With captain discretion
     used_discretion: bool  # True if exceeded base limit
     
+    # Circadian adaptation state at duty report time
+    circadian_phase_shift: Optional[float] = None  # Hours offset from home base body clock
+
     # Enhanced sleep quality analysis
     sleep_quality: Optional[SleepQualityResponse] = None
-    
+
     # Validation warnings (NEW - BUG FIX #5)
     time_validation_warnings: List[str] = []
 
@@ -258,6 +273,10 @@ class AnalysisResponse(BaseModel):
     
     # Rest days sleep patterns
     rest_days_sleep: List[RestDaySleepResponse] = []
+
+    # Circadian adaptation curve for body-clock chronogram
+    # List of {timestamp_utc, phase_shift_hours, reference_timezone}
+    body_clock_timeline: List[dict] = []
 
 
 class ChronogramRequest(BaseModel):
@@ -418,6 +437,7 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
         max_fdp_hours=duty.max_fdp_hours,
         extended_fdp_hours=duty.extended_fdp_hours,
         used_discretion=duty.used_discretion,
+        circadian_phase_shift=round(duty_timeline.circadian_phase_shift, 2),
         time_validation_warnings=time_warnings,
         sleep_quality=sleep_quality,
     )
@@ -648,9 +668,13 @@ async def analyze_roster(
             worst_duty_id=monthly_analysis.lowest_performance_duty,
             worst_performance=monthly_analysis.lowest_performance_value,
             duties=duties_response,
-            rest_days_sleep=rest_days_sleep
+            rest_days_sleep=rest_days_sleep,
+            body_clock_timeline=[
+                {'timestamp_utc': ts, 'phase_shift_hours': ps, 'reference_timezone': tz}
+                for ts, ps, tz in monthly_analysis.body_clock_timeline
+            ],
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -699,7 +723,11 @@ async def get_analysis(analysis_id: str):
         worst_duty_id=monthly_analysis.lowest_performance_duty,
         worst_performance=monthly_analysis.lowest_performance_value,
         duties=duties_response,
-        rest_days_sleep=rest_days_sleep
+        rest_days_sleep=rest_days_sleep,
+        body_clock_timeline=[
+            {'timestamp_utc': ts, 'phase_shift_hours': ps, 'reference_timezone': tz}
+            for ts, ps, tz in monthly_analysis.body_clock_timeline
+        ],
     )
 
 

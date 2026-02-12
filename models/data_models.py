@@ -615,3 +615,6 @@ class MonthlyAnalysis:
     # Worst events
     lowest_performance_duty: Optional[str] = None
     lowest_performance_value: float = 100.0
+
+    # Circadian adaptation timeline: [(utc_iso, phase_shift_hours, reference_tz)]
+    body_clock_timeline: List[tuple] = field(default_factory=list)

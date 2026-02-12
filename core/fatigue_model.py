@@ -681,7 +681,7 @@ class BorbelyFatigueModel:
             duty_timelines.append(timeline_obj)
             previous_duty = duty
         
-        return self._build_monthly_analysis(roster, duty_timelines)
+        return self._build_monthly_analysis(roster, duty_timelines, body_clock_timeline)
     
     def _extract_sleep_from_roster(
         self,
@@ -1455,7 +1455,8 @@ class BorbelyFatigueModel:
                 return state.current_phase_shift_hours
         return 0.0
     
-    def _build_monthly_analysis(self, roster: Roster, duty_timelines: List[DutyTimeline]) -> MonthlyAnalysis:
+    def _build_monthly_analysis(self, roster: Roster, duty_timelines: List[DutyTimeline],
+                                body_clock_timeline: list = None) -> MonthlyAnalysis:
         """Build monthly summary with aggregate statistics"""
         
         risk_thresholds = self.config.risk_thresholds
@@ -1478,6 +1479,16 @@ class BorbelyFatigueModel:
         
         worst_duty = min(duty_timelines, key=lambda dt: dt.min_performance)
         
+        # Serialize body clock timeline for API exposure
+        bcl = []
+        if body_clock_timeline:
+            for timestamp, state in body_clock_timeline:
+                bcl.append((
+                    timestamp.isoformat(),
+                    round(state.current_phase_shift_hours, 2),
+                    state.reference_timezone,
+                ))
+
         return MonthlyAnalysis(
             roster=roster,
             duty_timelines=duty_timelines,
@@ -1487,7 +1498,8 @@ class BorbelyFatigueModel:
             average_sleep_per_night=avg_sleep,
             max_sleep_debt=max_debt,
             lowest_performance_duty=worst_duty.duty_id,
-            lowest_performance_value=worst_duty.min_performance
+            lowest_performance_value=worst_duty.min_performance,
+            body_clock_timeline=bcl,
         )
 
 
