@@ -391,12 +391,11 @@ class UnifiedSleepCalculator:
 
         # Operational thresholds
         self.NIGHT_FLIGHT_THRESHOLD = 20  # EASA late-type duty
-        self.EARLY_REPORT_THRESHOLD = 6   # Before 06:00 local → early_bedtime
+        self.EARLY_REPORT_THRESHOLD = 7   # Before 07:00 local → early_bedtime (Roach et al. 2012)
         self.AFTERNOON_REPORT_THRESHOLD = 14  # After 14:00 local → afternoon_nap
-        self.ANCHOR_TIMEZONE_SHIFT = 3.0  # ≥3h timezone crossing → anchor strategy
-        self.RESTRICTED_REST_HOURS = 9.0  # <9h rest → restricted strategy
-        self.SPLIT_REST_HOURS = 10.0      # <10h rest → split strategy
-        self.EXTENDED_REST_HOURS = 14.0   # >14h rest → extended strategy
+        self.ANCHOR_TIMEZONE_SHIFT = 3.0  # ≥3h timezone crossing → anchor (Waterhouse 2007; EASA uses 4h)
+        self.RESTRICTED_REST_HOURS = 9.0  # <9h rest → restricted (Belenky 2003: <7h sleep = degradation)
+        self.EXTENDED_REST_HOURS = 14.0   # >14h rest → extended (Banks 2010: more TIB = more recovery)
         
         # WOCL definition — aligned with EASAFatigueFramework (02:00-05:59)
         # per EASA ORO.FTL.105(28). Using 6.0 as float boundary so that
@@ -508,9 +507,12 @@ class UnifiedSleepCalculator:
         if previous_duty:
             rest_hours = (duty.report_time_utc - previous_duty.release_time_utc).total_seconds() / 3600
 
-        # Calculate timezone crossing from home base
+        # Calculate timezone crossing from home base.
+        # Only relevant when the pilot is AWAY from home base (layover
+        # or return leg). A pilot departing from home has slept at home
+        # and has not yet experienced the timezone shift.
         timezone_shift = 0.0
-        if duty.segments:
+        if duty.segments and self.is_layover:
             dep_airport = duty.segments[0].departure_airport
             home_airport_tz = pytz.timezone(duty.home_base_timezone)
             dep_tz = pytz.timezone(dep_airport.timezone)
@@ -521,48 +523,65 @@ class UnifiedSleepCalculator:
 
         # Decision tree: match pilot behavior patterns
         # Priority order: most constrained/specific scenarios first.
+        #
+        # Literature basis for each threshold documented in strategy
+        # method docstrings and _get_strategy_references().
 
         # 1. Anchor sleep — large timezone shift from home base (≥3h).
-        #    Pilot's circadian clock is misaligned; maintain home-base
-        #    sleep window to preserve circadian anchor.
+        #    Only when pilot is at layover (already away from home).
+        #    The circadian clock has not adapted to local time on short
+        #    layovers (<48h, EASA AMC1 ORO.FTL.105); sleep should be
+        #    anchored to biological night.
+        #    Threshold: EASA ORO.FTL.235 uses 4h for acclimatisation
+        #    rules; we use a conservative 3h (Waterhouse et al. 2007).
         if timezone_shift >= self.ANCHOR_TIMEZONE_SHIFT:
             return self._anchor_strategy(duty, previous_duty, timezone_shift)
 
         # 2. Restricted sleep — very short rest (<9h) forces truncated sleep.
         #    Takes priority because the rest period physically constrains
         #    available sleep regardless of report time.
+        #    Threshold: 9h rest ≈ 6h sleep opportunity after 1h transit +
+        #    2h pre-report wake. Below the 7h/night threshold where
+        #    Belenky (2003) showed performance stabilises at reduced level.
         if rest_hours is not None and rest_hours < self.RESTRICTED_REST_HOURS:
             return self._restricted_strategy(duty, previous_duty, rest_hours)
 
-        # 3. Split sleep — short layover (<10h) where one consolidated
-        #    block is impossible. Pilot splits sleep around the gap.
-        if rest_hours is not None and rest_hours < self.SPLIT_REST_HOURS:
-            return self._split_strategy(duty, previous_duty, rest_hours)
-
-        # 4. Early bedtime — report before 06:00 local.
-        #    Pilot goes to bed earlier; circadian opposition limits advance.
+        # 3. Early bedtime — report before 07:00 local.
+        #    Roach et al. (2012): pilots lose ~15 min sleep per hour of
+        #    duty advance before 09:00 (baseline 6.6h at 09:00 report).
+        #    Threshold at 07:00 captures the full early-start sleep-loss
+        #    range per the Roach regression.
         if report_hour < self.EARLY_REPORT_THRESHOLD:
             return self._early_morning_strategy(duty, previous_duty)
 
-        # 5. Nap — night departure (report ≥20:00 or <04:00).
+        # 4. Nap — night departure (report ≥20:00 or <04:00).
         #    Morning sleep + pre-duty nap before evening/night flight.
+        #    Signal et al. (2014): 54% of crew napped pre-trip.
         if report_hour >= self.NIGHT_FLIGHT_THRESHOLD or report_hour < 4:
             return self._night_departure_strategy(duty, previous_duty)
 
-        # 6. Afternoon nap — late report (14:00-20:00 local).
+        # 5. Afternoon nap — late report (14:00-20:00 local).
         #    Normal previous-night sleep + afternoon nap before duty.
+        #    Dinges et al. (1987): naps before extended wakefulness
+        #    improve alertness. Post-lunch dip (13:00-15:00) creates
+        #    a natural nap window (Monk 2005).
         if report_hour >= self.AFTERNOON_REPORT_THRESHOLD:
             return self._afternoon_nap_strategy(duty, previous_duty)
 
-        # 7. Extended sleep — long rest period (>14h) allows extra sleep.
+        # 6. Extended sleep — long rest period (>14h) allows extra sleep.
+        #    Banks et al. (2010): 10h TIB after restriction yielded
+        #    significant recovery. Kitamura (2016): optimal ≈ 8.4h.
         if rest_hours is not None and rest_hours > self.EXTENDED_REST_HOURS:
             return self._extended_strategy(duty, previous_duty, rest_hours)
 
-        # 8. WOCL duty — crosses Window of Circadian Low with long duty.
+        # 7. WOCL duty — crosses Window of Circadian Low with long duty.
+        #    Split sleep pattern: anchor block before duty.
+        #    Jackson et al. (2014), Kosmadopoulos et al. (2014): split
+        #    sleep maintains performance comparably to consolidated sleep.
         if crosses_wocl and duty_duration > 6:
             return self._wocl_duty_strategy(duty, previous_duty)
 
-        # 9. Normal — standard overnight rest, no special constraints.
+        # 8. Normal — standard overnight rest, no special constraints.
         return self._normal_sleep_strategy(duty, previous_duty)
     
     def calculate_sleep_quality(
@@ -1253,10 +1272,15 @@ class UnifiedSleepCalculator:
         ≥3 timezones. The pilot's circadian clock has not adapted to local
         time, so sleep is anchored to the home-base biological night.
 
+        Minors & Waterhouse (1981): a fixed 4h "anchor sleep" at habitual
+        bedtime stabilises circadian rhythms to 24h even with irregular
+        schedules.  Confirmed in their 1983 constant-routine study.
+        Waterhouse et al. (2007) reviews coping strategies for jet lag.
+
         References:
-            Minors & Waterhouse (1981) Int J Chronobiol 8:165-88
-            Minors & Waterhouse (1983) J Physiol 345:1-11
-            Waterhouse et al. (2007) Aviat Space Environ Med 78(5):B1-B10
+            Minors & Waterhouse (1981) Int J Chronobiol 7(3):165-88
+            Minors & Waterhouse (1983) J Physiol 345:451-67
+            Waterhouse et al. (2007) Lancet 369(9567):1117-29
         """
         # Determine sleep location timezone
         if self.is_layover and self.layover_timezone:
@@ -1352,9 +1376,16 @@ class UnifiedSleepCalculator:
         sleep. The pilot sleeps as soon as possible after previous duty
         release and wakes for the next report.
 
+        Belenky (2003): 7h/night stabilises at reduced performance; below
+        that, cumulative degradation.  Van Dongen (2003): cognitive deficits
+        accumulate dose-dependently with restricted sleep.  Roach (2012):
+        short-haul pilots with early starts obtained significantly less
+        pre-duty sleep, providing field evidence for constrained rest.
+
         References:
-            Belenky et al. (2003) J Sleep Res 12:1-12
+            Belenky et al. (2003) J Sleep Res 12(1):1-12
             Van Dongen et al. (2003) Sleep 26(2):117-126
+            Roach et al. (2012) Accid Anal Prev 45 Suppl:22-26
         """
         if self.is_layover and self.layover_timezone:
             sleep_tz = pytz.timezone(self.layover_timezone)
@@ -1440,9 +1471,14 @@ class UnifiedSleepCalculator:
         after previous duty release and may have a short nap before
         next report.
 
+        Jackson et al. (2014): split sleep (2×5h) maintained performance
+        comparably to consolidated 10h.  Kosmadopoulos et al. (2014):
+        split schedule reduced neurobehavioral impairment at circadian
+        nadir compared to consolidated schedule.
+
         References:
-            Jackson et al. (2014) Accid Anal Prev 72:252-261
-            Kosmadopoulos et al. (2017) Chronobiol Int 34(2):190-196
+            Jackson et al. (2014) Chronobiol Int 31(10):1218-30
+            Kosmadopoulos et al. (2014) Chronobiol Int 31(10):1209-17
         """
         if self.is_layover and self.layover_timezone:
             sleep_tz = pytz.timezone(self.layover_timezone)
@@ -1602,9 +1638,16 @@ class UnifiedSleepCalculator:
         Afternoon nap strategy: late report (14:00-20:00 local) allows
         normal previous-night sleep plus an afternoon nap before duty.
 
+        Dinges (1987): naps before extended wakefulness improve alertness;
+        earlier naps yield longer-lasting benefits.  Rosekind (1995):
+        NASA study showed 26-min nap improved alertness 54% and
+        performance 34%.  Caldwell (2009): comprehensive review of
+        napping as an aviation fatigue countermeasure.
+
         References:
             Dinges et al. (1987) Sleep 10(4):313-329
-            Signal et al. (2014) Aviat Space Environ Med 85:1199-1208
+            Rosekind et al. (1995) J Sleep Res 4(S2):62-66
+            Caldwell et al. (2009) Aviat Space Environ Med 80(1):29-59
         """
         if self.is_layover and self.layover_timezone:
             sleep_tz = pytz.timezone(self.layover_timezone)
@@ -3230,41 +3273,46 @@ class BorbelyFatigueModel:
                 {
                     'key': 'dinges_1987',
                     'short': 'Dinges et al. (1987)',
-                    'full': 'Dinges DF et al. Temporal placement of a nap for alertness. Sleep 10(4):313-329',
+                    'full': 'Dinges DF et al. Temporal placement of a nap for alertness: contributions of circadian phase and prior wakefulness. Sleep 10(4):313-329',
                 },
                 {
-                    'key': 'signal_2014',
-                    'short': 'Signal et al. (2014)',
-                    'full': 'Signal TL et al. Mitigating flight crew fatigue on ULR flights. Aviat Space Environ Med 85:1199-1208',
+                    'key': 'rosekind_1995',
+                    'short': 'Rosekind et al. (1995)',
+                    'full': 'Rosekind MR et al. Alertness management: strategic naps in operational settings. J Sleep Res 4(S2):62-66',
+                },
+                {
+                    'key': 'caldwell_2009',
+                    'short': 'Caldwell et al. (2009)',
+                    'full': 'Caldwell JA et al. Fatigue countermeasures in aviation. Aviat Space Environ Med 80(1):29-59',
                 },
             ],
             'anchor': [
                 {
                     'key': 'minors_1981',
                     'short': 'Minors & Waterhouse (1981)',
-                    'full': 'Minors DS, Waterhouse JM. Anchor sleep as a synchronizer. Int J Chronobiol 8:165-88',
+                    'full': 'Minors DS, Waterhouse JM. Anchor sleep as a synchronizer of rhythms on abnormal routines. Int J Chronobiol 7(3):165-88',
                 },
                 {
                     'key': 'minors_1983',
                     'short': 'Minors & Waterhouse (1983)',
-                    'full': 'Minors DS, Waterhouse JM. Does anchor sleep entrain circadian rhythms? J Physiol 345:1-11',
+                    'full': 'Minors DS, Waterhouse JM. Does anchor sleep entrain circadian rhythms? Evidence from constant routine studies. J Physiol 345:451-67',
                 },
                 {
                     'key': 'waterhouse_2007',
                     'short': 'Waterhouse et al. (2007)',
-                    'full': 'Waterhouse J et al. Jet lag: trends and coping strategies. Aviat Space Environ Med 78(5):B1-B10',
+                    'full': 'Waterhouse J et al. Jet lag: trends and coping strategies. Lancet 369(9567):1117-29',
                 },
             ],
             'split': [
                 {
                     'key': 'jackson_2014',
                     'short': 'Jackson et al. (2014)',
-                    'full': 'Jackson ML et al. Investigation of the effectiveness of a split sleep schedule. Accid Anal Prev 72:252-261',
+                    'full': 'Jackson ML et al. Investigation of the effectiveness of a split sleep schedule in sustaining sleep and maintaining performance. Chronobiol Int 31(10):1218-30',
                 },
                 {
-                    'key': 'kosmadopoulos_2017',
-                    'short': 'Kosmadopoulos et al. (2017)',
-                    'full': 'Kosmadopoulos A et al. Split sleep period on sustained performance. Chronobiol Int 34(2):190-196',
+                    'key': 'kosmadopoulos_2014',
+                    'short': 'Kosmadopoulos et al. (2014)',
+                    'full': 'Kosmadopoulos A et al. The effects of a split sleep-wake schedule on neurobehavioural performance under conditions of forced desynchrony. Chronobiol Int 31(10):1209-17',
                 },
             ],
             'restricted': [
@@ -3277,6 +3325,11 @@ class BorbelyFatigueModel:
                     'key': 'van_dongen_2003',
                     'short': 'Van Dongen et al. (2003)',
                     'full': 'Van Dongen HPA et al. The cumulative cost of additional wakefulness. Sleep 26(2):117-126',
+                },
+                {
+                    'key': 'roach_2012',
+                    'short': 'Roach et al. (2012)',
+                    'full': 'Roach GD et al. Duty periods with early start times restrict the amount of sleep obtained by short-haul airline pilots. Accid Anal Prev 45 Suppl:22-26',
                 },
             ],
             'extended': [
