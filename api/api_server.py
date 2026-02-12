@@ -231,6 +231,7 @@ class AnalysisResponse(BaseModel):
     pilot_base: Optional[str]  # Home base airport
     pilot_aircraft: Optional[str]  # Aircraft type
     home_base_timezone: Optional[str] = None  # IANA timezone (e.g., "Asia/Qatar")
+    timezone_format: Optional[str] = None  # 'auto', 'local', 'homebase', 'zulu' — how roster times were interpreted
     month: str
     
     # Summary
@@ -535,7 +536,8 @@ async def analyze_roster(
     month: str = Form("2026-02"),
     home_base: str = Form("DOH"),
     home_timezone: str = Form("Asia/Qatar"),
-    config_preset: str = Form("default")
+    config_preset: str = Form("default"),
+    timezone_format: str = Form("auto")
 ):
     """
     Upload roster file and get fatigue analysis
@@ -559,11 +561,20 @@ async def analyze_roster(
             tmp_path = tmp.name
         
         try:
+            # Validate timezone_format parameter
+            valid_tz_formats = ('auto', 'local', 'homebase', 'zulu')
+            if timezone_format.lower() not in valid_tz_formats:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid timezone_format '{timezone_format}'. Must be one of: {', '.join(valid_tz_formats)}"
+                )
+
             # Parse roster
             if suffix == '.pdf':
                 parser = PDFRosterParser(
                     home_base=home_base,
-                    home_timezone=home_timezone
+                    home_timezone=home_timezone,
+                    timezone_format=timezone_format.lower()
                 )
                 roster = parser.parse_pdf(tmp_path, pilot_id, month)
             else:  # CSV
@@ -612,6 +623,9 @@ async def analyze_roster(
 
         rest_days_sleep = _build_rest_days_sleep(model.sleep_strategies)
         
+        # Get effective timezone format (what the parser actually used)
+        effective_tz_format = getattr(parser, 'effective_timezone_format', timezone_format)
+
         return AnalysisResponse(
             analysis_id=analysis_id,
             roster_id=roster.roster_id,
@@ -620,6 +634,7 @@ async def analyze_roster(
             pilot_base=roster.pilot_base,
             pilot_aircraft=roster.pilot_aircraft,
             home_base_timezone=roster.home_base_timezone,
+            timezone_format=effective_tz_format,
             month=roster.month,
             total_duties=roster.total_duties,
             total_sectors=roster.total_sectors,
