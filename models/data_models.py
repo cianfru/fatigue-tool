@@ -392,12 +392,14 @@ class SleepBlock:
     is_inflight_rest: bool = False     # NEW: Bunk rest during flight
     environment: str = "unknown"       # home, hotel, layover, crew_rest
     
-    # Pre-computed day/hour for timezone-safe chronogram positioning
-    # These prevent frontend timezone conversion issues
-    sleep_start_day: Optional[int] = None      # Day of month (1-31)
-    sleep_start_hour: Optional[float] = None   # Decimal hour in local time (0-24)
-    sleep_end_day: Optional[int] = None        # Day of month (1-31)
-    sleep_end_hour: Optional[float] = None     # Decimal hour in local time (0-24)
+    # Pre-computed day/hour in HOME BASE timezone for chronogram positioning.
+    # Using the same reference timezone as duty times ensures sleep bars
+    # align correctly with duty bars on the chronogram, regardless of
+    # where the pilot actually sleeps (layover vs home).
+    sleep_start_day: Optional[int] = None      # Day of month (1-31) in home base TZ
+    sleep_start_hour: Optional[float] = None   # Decimal hour in home base TZ (0-24)
+    sleep_end_day: Optional[int] = None        # Day of month (1-31) in home base TZ
+    sleep_end_hour: Optional[float] = None     # Decimal hour in home base TZ (0-24)
     
     @property
     def recovery_value(self) -> float:
@@ -613,3 +615,6 @@ class MonthlyAnalysis:
     # Worst events
     lowest_performance_duty: Optional[str] = None
     lowest_performance_value: float = 100.0
+
+    # Circadian adaptation timeline: [(utc_iso, phase_shift_hours, reference_tz)]
+    body_clock_timeline: List[tuple] = field(default_factory=list)

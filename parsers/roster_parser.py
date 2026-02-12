@@ -102,9 +102,21 @@ class PDFRosterParser:
     - Text-based duty listings
     """
     
-    def __init__(self, home_base: str = 'DOH', home_timezone: str = 'Asia/Qatar'):
+    def __init__(self, home_base: str = 'DOH', home_timezone: str = 'Asia/Qatar',
+                 timezone_format: str = 'auto'):
+        """
+        Args:
+            home_base: Home base airport code (e.g., 'DOH')
+            home_timezone: Home base IANA timezone (e.g., 'Asia/Qatar')
+            timezone_format: How times in the roster should be interpreted.
+                'auto' - detect from PDF header (default)
+                'local' - times are in each airport's local timezone
+                'homebase' - times are in home base timezone
+                'zulu' - times are in UTC
+        """
         self.home_base = home_base
         self.home_timezone = home_timezone
+        self.timezone_format = timezone_format
         self.airport_db = AirportDatabase()
         self.roster_year = datetime.now().year  # Default, will be updated from PDF
     
@@ -137,29 +149,34 @@ class PDFRosterParser:
             # Try specialized CrewLink-style grid parser first
             try:
                 print("   Attempting CrewLink grid-format parser...")
-                grid_parser = CrewLinkRosterParser(timezone_format='auto')
+                grid_parser = CrewLinkRosterParser(timezone_format=self.timezone_format)
                 result = grid_parser.parse_roster(pdf_path)
                 duties = result['duties']
                 pilot_info = result.get('pilot_info', {})
-                
+                # Capture the effective timezone format (may differ from input
+                # if 'auto' was specified — the grid parser auto-detects it)
+                self.effective_timezone_format = grid_parser.timezone_format
+
                 # Report unknown airports if any
                 if result.get('unknown_airports'):
                     print(f"   ⚠️  Found {len(result['unknown_airports'])} unknown airports:")
                     for code in sorted(result['unknown_airports']):
                         print(f"      - {code}")
-                
+
                 if duties:
                     print(f"   ✅ Grid parser succeeded")
                 else:
                     print(f"   ℹ️  Grid parser found no duties - Switching to Line Parser")
                     raise ValueError("Grid parser returned empty duties")
-                    
+
             except Exception as e:
                 print(f"   ⚠️  Grid parser: {e}")
-                
+
                 # Fall back to line-based parser (Handles the messy "text soup")
+                # Line parser always treats times as home base timezone
                 print("   Trying line-based CrewLink parser (Stateful)...")
                 duties = self._parse_crewlink_format(full_text)
+                self.effective_timezone_format = 'homebase'
         
         elif roster_format == 'tabular':
             duties = self._parse_tabular_format(full_text)

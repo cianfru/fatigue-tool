@@ -126,6 +126,18 @@ class SleepBlockResponse(BaseModel):
     effective_hours: float
     quality_factor: float
 
+    # Location context — needed for local-time labels on chronogram
+    location_timezone: Optional[str] = None    # IANA tz where pilot physically sleeps
+    environment: Optional[str] = None          # 'home', 'hotel', 'crew_rest'
+    sleep_start_time_location_tz: Optional[str] = None  # HH:mm in location timezone
+    sleep_end_time_location_tz: Optional[str] = None    # HH:mm in location timezone
+
+    # Numeric grid positioning (home-base TZ)
+    sleep_start_day: Optional[int] = None      # Day of month (1-31)
+    sleep_start_hour: Optional[float] = None   # Decimal hour (0-24)
+    sleep_end_day: Optional[int] = None
+    sleep_end_hour: Optional[float] = None
+
     # Per-block quality factor breakdown (populated for all sleep types)
     quality_factors: Optional[QualityFactorsResponse] = None
 
@@ -195,9 +207,12 @@ class DutyResponse(BaseModel):
     extended_fdp_hours: Optional[float]  # With captain discretion
     used_discretion: bool  # True if exceeded base limit
     
+    # Circadian adaptation state at duty report time
+    circadian_phase_shift: Optional[float] = None  # Hours offset from home base body clock
+
     # Enhanced sleep quality analysis
     sleep_quality: Optional[SleepQualityResponse] = None
-    
+
     # Validation warnings (NEW - BUG FIX #5)
     time_validation_warnings: List[str] = []
 
@@ -231,6 +246,7 @@ class AnalysisResponse(BaseModel):
     pilot_base: Optional[str]  # Home base airport
     pilot_aircraft: Optional[str]  # Aircraft type
     home_base_timezone: Optional[str] = None  # IANA timezone (e.g., "Asia/Qatar")
+    timezone_format: Optional[str] = None  # 'auto', 'local', 'homebase', 'zulu' — how roster times were interpreted
     month: str
     
     # Summary
@@ -257,6 +273,10 @@ class AnalysisResponse(BaseModel):
     
     # Rest days sleep patterns
     rest_days_sleep: List[RestDaySleepResponse] = []
+
+    # Circadian adaptation curve for body-clock chronogram
+    # List of {timestamp_utc, phase_shift_hours, reference_timezone}
+    body_clock_timeline: List[dict] = []
 
 
 class ChronogramRequest(BaseModel):
@@ -417,6 +437,7 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
         max_fdp_hours=duty.max_fdp_hours,
         extended_fdp_hours=duty.extended_fdp_hours,
         used_discretion=duty.used_discretion,
+        circadian_phase_shift=round(duty_timeline.circadian_phase_shift, 2),
         time_validation_warnings=time_warnings,
         sleep_quality=sleep_quality,
     )
@@ -535,7 +556,8 @@ async def analyze_roster(
     month: str = Form("2026-02"),
     home_base: str = Form("DOH"),
     home_timezone: str = Form("Asia/Qatar"),
-    config_preset: str = Form("default")
+    config_preset: str = Form("default"),
+    timezone_format: str = Form("auto")
 ):
     """
     Upload roster file and get fatigue analysis
@@ -559,11 +581,20 @@ async def analyze_roster(
             tmp_path = tmp.name
         
         try:
+            # Validate timezone_format parameter
+            valid_tz_formats = ('auto', 'local', 'homebase', 'zulu')
+            if timezone_format.lower() not in valid_tz_formats:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid timezone_format '{timezone_format}'. Must be one of: {', '.join(valid_tz_formats)}"
+                )
+
             # Parse roster
             if suffix == '.pdf':
                 parser = PDFRosterParser(
                     home_base=home_base,
-                    home_timezone=home_timezone
+                    home_timezone=home_timezone,
+                    timezone_format=timezone_format.lower()
                 )
                 roster = parser.parse_pdf(tmp_path, pilot_id, month)
             else:  # CSV
@@ -612,6 +643,9 @@ async def analyze_roster(
 
         rest_days_sleep = _build_rest_days_sleep(model.sleep_strategies)
         
+        # Get effective timezone format (what the parser actually used)
+        effective_tz_format = getattr(parser, 'effective_timezone_format', timezone_format)
+
         return AnalysisResponse(
             analysis_id=analysis_id,
             roster_id=roster.roster_id,
@@ -620,6 +654,7 @@ async def analyze_roster(
             pilot_base=roster.pilot_base,
             pilot_aircraft=roster.pilot_aircraft,
             home_base_timezone=roster.home_base_timezone,
+            timezone_format=effective_tz_format,
             month=roster.month,
             total_duties=roster.total_duties,
             total_sectors=roster.total_sectors,
@@ -633,9 +668,13 @@ async def analyze_roster(
             worst_duty_id=monthly_analysis.lowest_performance_duty,
             worst_performance=monthly_analysis.lowest_performance_value,
             duties=duties_response,
-            rest_days_sleep=rest_days_sleep
+            rest_days_sleep=rest_days_sleep,
+            body_clock_timeline=[
+                {'timestamp_utc': ts, 'phase_shift_hours': ps, 'reference_timezone': tz}
+                for ts, ps, tz in monthly_analysis.body_clock_timeline
+            ],
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -684,7 +723,11 @@ async def get_analysis(analysis_id: str):
         worst_duty_id=monthly_analysis.lowest_performance_duty,
         worst_performance=monthly_analysis.lowest_performance_value,
         duties=duties_response,
-        rest_days_sleep=rest_days_sleep
+        rest_days_sleep=rest_days_sleep,
+        body_clock_timeline=[
+            {'timestamp_utc': ts, 'phase_shift_hours': ps, 'reference_timezone': tz}
+            for ts, ps, tz in monthly_analysis.body_clock_timeline
+        ],
     )
 
 
