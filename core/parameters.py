@@ -16,7 +16,7 @@ Scientific Foundation:
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 
 
 @dataclass
@@ -190,6 +190,17 @@ class ModelConfig:
     risk_thresholds: RiskThresholds
     adaptation_rates: AdaptationRates
     sleep_quality_params: SleepQualityParameters
+    augmented_fdp_params: 'Any' = None  # AugmentedFDPParameters (from core.extended_operations)
+    ulr_params: 'Any' = None            # ULRParameters (from core.extended_operations)
+
+    def __post_init__(self):
+        # Lazy import to avoid circular dependency
+        if self.augmented_fdp_params is None:
+            from core.extended_operations import AugmentedFDPParameters
+            self.augmented_fdp_params = AugmentedFDPParameters()
+        if self.ulr_params is None:
+            from core.extended_operations import ULRParameters
+            self.ulr_params = ULRParameters()
 
     @classmethod
     def default_easa_config(cls):
@@ -198,7 +209,7 @@ class ModelConfig:
             borbely_params=BorbelyParameters(),
             risk_thresholds=RiskThresholds(),
             adaptation_rates=AdaptationRates(),
-            sleep_quality_params=SleepQualityParameters()
+            sleep_quality_params=SleepQualityParameters(),
         )
 
     @classmethod

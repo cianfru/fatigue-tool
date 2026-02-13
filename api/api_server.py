@@ -216,6 +216,15 @@ class DutyResponse(BaseModel):
     # Validation warnings (NEW - BUG FIX #5)
     time_validation_warnings: List[str] = []
 
+    # Augmented crew / ULR data
+    crew_composition: str = "standard"
+    rest_facility_class: Optional[str] = None
+    is_ulr: bool = False
+    acclimatization_state: str = "acclimatized"
+    ulr_compliance: Optional[dict] = None
+    inflight_rest_blocks: List[dict] = []
+    return_to_deck_performance: Optional[float] = None
+
 
 class RestDaySleepResponse(BaseModel):
     """Sleep pattern for a rest day (no duties) with full scientific methodology"""
@@ -277,6 +286,11 @@ class AnalysisResponse(BaseModel):
     # Circadian adaptation curve for body-clock chronogram
     # List of {timestamp_utc, phase_shift_hours, reference_timezone}
     body_clock_timeline: List[dict] = []
+
+    # Augmented crew / ULR summary
+    total_ulr_duties: int = 0
+    total_augmented_duties: int = 0
+    ulr_violations: List[str] = []
 
 
 class ChronogramRequest(BaseModel):
@@ -377,8 +391,10 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
     time_warnings = []
     if duty.report_time_utc >= duty.release_time_utc:
         time_warnings.append("Invalid duty: report time >= release time")
-    if duty.duty_hours > 24:
+    if duty.duty_hours > 24 and not getattr(duty, 'is_ulr', False):
         time_warnings.append(f"Unusual duty length: {duty.duty_hours:.1f} hours")
+    elif duty.duty_hours > 23 and getattr(duty, 'is_ulr', False):
+        time_warnings.append(f"ULR duty exceeds max discretion limit: {duty.duty_hours:.1f} hours")
     if duty.duty_hours < 0.5:
         time_warnings.append(f"Very short duty: {duty.duty_hours:.1f} hours")
 
@@ -412,6 +428,33 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
             sleep_end_hour=first_block.get('sleep_end_hour'),
         )
 
+    # Augmented crew / ULR data
+    ulr_compliance_dict = None
+    if getattr(duty_timeline, 'ulr_compliance', None):
+        uc = duty_timeline.ulr_compliance
+        ulr_compliance_dict = {
+            'is_ulr': uc.is_ulr,
+            'pre_rest_compliant': uc.pre_ulr_rest_compliant,
+            'post_rest_compliant': uc.post_ulr_rest_compliant,
+            'monthly_count': uc.monthly_ulr_count,
+            'monthly_compliant': uc.monthly_ulr_compliant,
+            'fdp_within_limit': uc.fdp_within_limit,
+            'rest_periods_valid': uc.rest_periods_valid,
+            'violations': uc.violations,
+            'warnings': uc.warnings,
+        }
+
+    inflight_blocks = []
+    for block in getattr(duty_timeline, 'inflight_rest_blocks', []):
+        inflight_blocks.append({
+            'start_utc': block.start_utc.isoformat() if block.start_utc else None,
+            'end_utc': block.end_utc.isoformat() if block.end_utc else None,
+            'duration_hours': block.duration_hours,
+            'effective_hours': block.effective_sleep_hours,
+            'quality_factor': block.quality_factor,
+            'environment': block.environment,
+        })
+
     return DutyResponse(
         duty_id=duty_timeline.duty_id,
         date=duty_timeline.duty_date.strftime("%Y-%m-%d"),
@@ -440,6 +483,14 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
         circadian_phase_shift=round(duty_timeline.circadian_phase_shift, 2),
         time_validation_warnings=time_warnings,
         sleep_quality=sleep_quality,
+        # Augmented crew / ULR
+        crew_composition=duty.crew_composition.value if hasattr(duty.crew_composition, 'value') else str(getattr(duty, 'crew_composition', 'standard')),
+        rest_facility_class=duty.rest_facility_class.value if getattr(duty, 'rest_facility_class', None) else None,
+        is_ulr=getattr(duty_timeline, 'is_ulr', False),
+        acclimatization_state=duty_timeline.acclimatization_state.value if hasattr(getattr(duty_timeline, 'acclimatization_state', None), 'value') else str(getattr(duty_timeline, 'acclimatization_state', 'acclimatized')),
+        ulr_compliance=ulr_compliance_dict,
+        inflight_rest_blocks=inflight_blocks,
+        return_to_deck_performance=getattr(duty_timeline, 'return_to_deck_performance', None),
     )
 
 
@@ -557,7 +608,8 @@ async def analyze_roster(
     home_base: str = Form("DOH"),
     home_timezone: str = Form("Asia/Qatar"),
     config_preset: str = Form("default"),
-    timezone_format: str = Form("auto")
+    timezone_format: str = Form("auto"),
+    crew_set: str = Form("crew_b")
 ):
     """
     Upload roster file and get fatigue analysis
@@ -610,6 +662,14 @@ async def analyze_roster(
         # Validate roster
         if not roster.duties:
             raise HTTPException(status_code=400, detail="No duties found in roster")
+
+        # Set crew set for ULR duties (Crew A or Crew B)
+        from models.data_models import ULRCrewSet
+        valid_crew_sets = {'crew_a': ULRCrewSet.CREW_A, 'crew_b': ULRCrewSet.CREW_B}
+        ulr_crew_set = valid_crew_sets.get(crew_set.lower(), ULRCrewSet.CREW_B)
+        for d in roster.duties:
+            if hasattr(d, 'ulr_crew_set'):
+                d.ulr_crew_set = ulr_crew_set
         
         # Get config
         config_map = {
@@ -673,6 +733,9 @@ async def analyze_roster(
                 {'timestamp_utc': ts, 'phase_shift_hours': ps, 'reference_timezone': tz}
                 for ts, ps, tz in monthly_analysis.body_clock_timeline
             ],
+            total_ulr_duties=getattr(monthly_analysis, 'total_ulr_duties', 0),
+            total_augmented_duties=getattr(monthly_analysis, 'total_augmented_duties', 0),
+            ulr_violations=getattr(monthly_analysis, 'ulr_violations', []),
         )
 
     except HTTPException:
@@ -728,6 +791,9 @@ async def get_analysis(analysis_id: str):
             {'timestamp_utc': ts, 'phase_shift_hours': ps, 'reference_timezone': tz}
             for ts, ps, tz in monthly_analysis.body_clock_timeline
         ],
+        total_ulr_duties=getattr(monthly_analysis, 'total_ulr_duties', 0),
+        total_augmented_duties=getattr(monthly_analysis, 'total_augmented_duties', 0),
+        ulr_violations=getattr(monthly_analysis, 'ulr_violations', []),
     )
 
 
@@ -836,7 +902,8 @@ async def get_duty_detail(analysis_id: str, duty_id: str):
             "hours_on_duty": point.hours_on_duty,
             "time_on_task_penalty": 1.0 - point.time_on_task_penalty,
             "flight_phase": point.current_flight_phase.value if point.current_flight_phase else None,
-            "is_critical": point.is_critical_phase
+            "is_critical": point.is_critical_phase,
+            "is_in_rest": getattr(point, 'is_in_rest', False),
         })
 
     return {

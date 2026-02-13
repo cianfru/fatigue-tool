@@ -248,6 +248,10 @@ class UnifiedSleepCalculator:
         # Decision tree: match pilot behavior patterns
         # Priority order: most constrained/specific scenarios first.
 
+        # 0. ULR detection — takes priority (48h pre-rest protocol)
+        if getattr(duty, 'is_ulr_operation', False) or getattr(duty, 'is_ulr', False):
+            return self._ulr_sleep_strategy(duty, previous_duty)
+
         # 1. Anchor sleep — large timezone shift from home base (≥3h).
         #    Pilot's circadian clock is misaligned; maintain home-base
         #    sleep window to preserve circadian anchor.
@@ -1002,6 +1006,136 @@ class UnifiedSleepCalculator:
             quality_analysis=[sleep_quality]
         )
     
+    def _ulr_sleep_strategy(
+        self,
+        duty: Duty,
+        previous_duty: Optional[Duty]
+    ) -> SleepStrategy:
+        """
+        ULR pre-duty sleep strategy per Qatar FTL 7.18.4.3.
+
+        ULR crew must have 48h duty-free with 2 local nights before the FDP.
+        This models the optimistic case: 2 full nights of home sleep plus
+        an optional pre-departure nap for evening departures.
+
+        References:
+            Qatar FTL 7.18.4.3
+            Signal et al. (2014) Aviat Space Environ Med 85:1199-1208
+        """
+        sleep_tz = self.home_tz
+        report_local = duty.report_time_utc.astimezone(sleep_tz)
+
+        blocks = []
+        quality_analyses = []
+
+        # Night 1: 2 nights before duty (23:00-07:00)
+        night1_start = report_local.replace(hour=23, minute=0, second=0) - timedelta(days=2)
+        night1_end = report_local.replace(hour=7, minute=0, second=0) - timedelta(days=1)
+
+        night1_quality = self.calculate_sleep_quality(
+            sleep_start=night1_start,
+            sleep_end=night1_end,
+            location='home',
+            previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
+            next_event=night1_end + timedelta(hours=12),
+            location_timezone=sleep_tz.zone
+        )
+        quality_analyses.append(night1_quality)
+
+        n1s_day, n1s_hour = self._home_tz_day_hour(night1_start)
+        n1e_day, n1e_hour = self._home_tz_day_hour(night1_end)
+        blocks.append(SleepBlock(
+            start_utc=night1_start.astimezone(pytz.utc),
+            end_utc=night1_end.astimezone(pytz.utc),
+            location_timezone=sleep_tz.zone,
+            duration_hours=night1_quality.actual_sleep_hours,
+            quality_factor=night1_quality.sleep_efficiency,
+            effective_sleep_hours=night1_quality.effective_sleep_hours,
+            environment='home',
+            sleep_start_day=n1s_day,
+            sleep_start_hour=n1s_hour,
+            sleep_end_day=n1e_day,
+            sleep_end_hour=n1e_hour,
+        ))
+
+        # Night 2: night before duty (23:00-07:00)
+        night2_start = report_local.replace(hour=23, minute=0, second=0) - timedelta(days=1)
+        night2_end = report_local.replace(hour=7, minute=0, second=0)
+
+        night2_quality = self.calculate_sleep_quality(
+            sleep_start=night2_start,
+            sleep_end=night2_end,
+            location='home',
+            previous_duty_end=None,
+            next_event=report_local,
+            location_timezone=sleep_tz.zone
+        )
+        quality_analyses.append(night2_quality)
+
+        n2s_day, n2s_hour = self._home_tz_day_hour(night2_start)
+        n2e_day, n2e_hour = self._home_tz_day_hour(night2_end)
+        blocks.append(SleepBlock(
+            start_utc=night2_start.astimezone(pytz.utc),
+            end_utc=night2_end.astimezone(pytz.utc),
+            location_timezone=sleep_tz.zone,
+            duration_hours=night2_quality.actual_sleep_hours,
+            quality_factor=night2_quality.sleep_efficiency,
+            effective_sleep_hours=night2_quality.effective_sleep_hours,
+            environment='home',
+            sleep_start_day=n2s_day,
+            sleep_start_hour=n2s_hour,
+            sleep_end_day=n2e_day,
+            sleep_end_hour=n2e_hour,
+        ))
+
+        # Optional pre-departure nap for evening departures
+        report_hour = report_local.hour
+        if report_hour >= 18 or report_hour < 2:
+            nap_start = report_local - timedelta(hours=4)
+            nap_end = report_local - timedelta(hours=2)
+            nap_quality = self.calculate_sleep_quality(
+                sleep_start=nap_start,
+                sleep_end=nap_end,
+                location='home',
+                previous_duty_end=None,
+                next_event=report_local,
+                is_nap=True,
+                location_timezone=sleep_tz.zone
+            )
+            quality_analyses.append(nap_quality)
+
+            nps_day, nps_hour = self._home_tz_day_hour(nap_start)
+            npe_day, npe_hour = self._home_tz_day_hour(nap_end)
+            blocks.append(SleepBlock(
+                start_utc=nap_start.astimezone(pytz.utc),
+                end_utc=nap_end.astimezone(pytz.utc),
+                location_timezone=sleep_tz.zone,
+                duration_hours=nap_quality.actual_sleep_hours,
+                quality_factor=nap_quality.sleep_efficiency,
+                effective_sleep_hours=nap_quality.effective_sleep_hours,
+                is_anchor_sleep=False,
+                environment='home',
+                sleep_start_day=nps_day,
+                sleep_start_hour=nps_hour,
+                sleep_end_day=npe_day,
+                sleep_end_hour=npe_hour,
+            ))
+
+        total_effective = sum(q.effective_sleep_hours for q in quality_analyses)
+
+        return SleepStrategy(
+            strategy_type='ulr_pre_duty',
+            sleep_blocks=blocks,
+            confidence=0.85,
+            explanation=(
+                f"ULR pre-duty: 2 nights home sleep + "
+                f"{'pre-departure nap' if len(blocks) > 2 else 'no nap'} "
+                f"({total_effective:.1f}h effective). "
+                f"48h duty-free per Qatar FTL 7.18.4.3"
+            ),
+            quality_analysis=quality_analyses
+        )
+
     def _anchor_strategy(
         self,
         duty: Duty,
