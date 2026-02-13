@@ -17,9 +17,39 @@ import pytz
 # ============================================================================
 
 class AcclimatizationState(Enum):
-    """EASA ORO.FTL.105 acclimatization states"""
-    ACCLIMATIZED = "acclimatized"
-    UNKNOWN = "unknown"
+    """
+    EASA ORO.FTL.105 acclimatization states
+    Per Qatar FTL Section 7.6.1, Table 7-1
+    """
+    ACCLIMATIZED = "acclimatized"    # 'B' - acclimatized to departure time zone
+    UNKNOWN = "unknown"               # 'X' - unknown state of acclimatisation
+    DEPARTED = "departed"             # 'D' - acclimatized to destination time zone
+
+
+class CrewComposition(Enum):
+    """Crew complement classification per EASA ORO.FTL.205"""
+    STANDARD = "standard"              # 2 pilots (standard FDP)
+    AUGMENTED_3 = "augmented_3"        # 3 pilots (extended range, CS FTL.1.205)
+    AUGMENTED_4 = "augmented_4"        # 4 pilots (ULR - Crew A + Crew B)
+
+
+class RestFacilityClass(Enum):
+    """
+    In-flight rest facility classification per CS FTL.1.205
+    Determines maximum FDP extension for augmented crew operations
+    """
+    CLASS_1 = "class_1"  # Bunk/flat surface, reclines >=80deg, separated from cockpit/cabin
+    CLASS_2 = "class_2"  # Seat reclines >=45deg, >=55" pitch, >=20" width, leg/foot support
+    CLASS_3 = "class_3"  # Seat reclines >=40deg, leg/foot support, curtain separated
+
+
+class ULRCrewSet(Enum):
+    """
+    ULR crew set designation per Qatar FTL Section 7.18.4.1
+    Determines in-flight rest pattern and circadian strategy
+    """
+    CREW_A = "crew_a"  # Operates outbound takeoff/landing, adjusts toward destination time
+    CREW_B = "crew_b"  # Relief crew outbound, operates return takeoff/landing, stays on DOH time
 
 
 class FlightPhase(Enum):
@@ -120,9 +150,17 @@ class Duty:
     
     # EASA FTL limits
     max_fdp_hours: Optional[float] = None  # Base FDP limit from EASA table
-    extended_fdp_hours: Optional[float] = None  # With captain discretion (+2h)
+    extended_fdp_hours: Optional[float] = None  # With captain discretion (+2h or +3h augmented)
     used_discretion: bool = False  # True if actual FDP exceeds base limit
-    
+
+    # Augmented crew / ULR fields
+    crew_composition: CrewComposition = CrewComposition.STANDARD
+    rest_facility_class: Optional[RestFacilityClass] = None
+    inflight_rest_plan: Optional['InFlightRestPlan'] = None
+    is_ulr: bool = False
+    ulr_crew_set: Optional[ULRCrewSet] = None  # Crew A or B for ULR operations
+    acclimatization_state: AcclimatizationState = AcclimatizationState.ACCLIMATIZED
+
     @property
     def duty_hours(self) -> float:
         """Total duty period (report to release)"""
@@ -166,6 +204,16 @@ class Duty:
     def release_time_local(self) -> datetime:
         tz = pytz.timezone(self.segments[-1].arrival_airport.timezone)
         return self.release_time_utc.astimezone(tz)
+
+    @property
+    def is_ulr_operation(self) -> bool:
+        """Detect ULR: scheduled FDP > 18h per Qatar FTL 7.18.1"""
+        return self.fdp_hours > 18.0
+
+    @property
+    def is_augmented_crew(self) -> bool:
+        """Check if duty uses augmented crew (3 or 4 pilots)"""
+        return self.crew_composition in (CrewComposition.AUGMENTED_3, CrewComposition.AUGMENTED_4)
 
 
 @dataclass
@@ -451,7 +499,78 @@ class SleepBlock:
                     f"Inflight rest marked with environment '{self.environment}', "
                     "expected 'crew_rest'"
                 )
-                
+
+
+
+# ============================================================================
+# IN-FLIGHT REST STRUCTURES
+# ============================================================================
+
+@dataclass
+class InFlightRestPeriod:
+    """
+    Single in-flight rest period in crew rest facility.
+    Per EASA CS FTL.1.205 and Qatar FTL Section 7.18.
+    """
+    start_offset_hours: float       # Hours into FDP when rest starts
+    duration_hours: float           # Duration of rest period
+    start_utc: Optional[datetime] = None   # Computed absolute time
+    end_utc: Optional[datetime] = None     # Computed absolute time
+    is_during_wocl: bool = False    # Whether rest overlaps with WOCL
+    crew_member_id: str = ""        # Identifier for which crew member rests
+    crew_set: str = "B"             # "A" or "B" for ULR operations
+
+
+@dataclass
+class InFlightRestPlan:
+    """
+    In-flight rest allocation for augmented crew operations.
+
+    For 3-pilot (AUGMENTED_3): 1 rest period per pilot, rotating through cruise.
+    For 4-pilot ULR (AUGMENTED_4): 2 rest periods per crew set (Crew A / Crew B).
+
+    References:
+        EASA CS FTL.1.205(c)(2) — augmented crew FDP limits
+        Qatar FTL 7.18.9 — ULR rest strategy
+        Signal et al. (2013) — crew rest facility sleep efficiency 70%
+    """
+    rest_periods: List[InFlightRestPeriod]
+    crew_composition: CrewComposition
+    rest_facility_class: RestFacilityClass = RestFacilityClass.CLASS_1
+    total_rest_hours: float = 0.0
+    rest_facility_quality: float = 0.70  # Signal et al. (2013) PSG
+
+    def __post_init__(self):
+        if self.total_rest_hours == 0.0 and self.rest_periods:
+            self.total_rest_hours = sum(p.duration_hours for p in self.rest_periods)
+        # Set quality based on facility class
+        quality_map = {
+            RestFacilityClass.CLASS_1: 0.70,
+            RestFacilityClass.CLASS_2: 0.55,
+            RestFacilityClass.CLASS_3: 0.45,
+        }
+        self.rest_facility_quality = quality_map.get(
+            self.rest_facility_class, 0.70
+        )
+
+
+@dataclass
+class ULRComplianceResult:
+    """
+    Results of ULR-specific compliance checks per Qatar FTL 7.18.
+    """
+    is_ulr: bool
+    pre_ulr_rest_compliant: bool = True       # 48h free + 2 local nights
+    post_ulr_rest_compliant: bool = True      # 4 local nights (base) or 48h + 2 nights (away)
+    monthly_ulr_count: int = 0                # Count this month
+    monthly_ulr_compliant: bool = True        # Max 2 per calendar month
+    crew_acclimatized: bool = True
+    fdp_within_limit: bool = True             # FDP <= 20h (or 23h with discretion)
+    rest_periods_valid: bool = True           # At least 2 rest periods, one >= 4h
+    violations: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
 # ============================================================================
 # PERFORMANCE & ANALYSIS STRUCTURES
 # ============================================================================
@@ -478,7 +597,8 @@ class PerformancePoint:
     current_flight_phase: Optional[FlightPhase] = None
     is_critical_phase: bool = False
     risk_level: str = "unknown"
-    
+    is_in_rest: bool = False  # True when pilot is in crew rest facility
+
     def __post_init__(self):
         """Validation"""
         assert 0 <= self.circadian_component <= 1, f"C out of range: {self.circadian_component}"
@@ -593,6 +713,14 @@ class DutyTimeline:
     sleep_confidence: Optional[float] = None
     sleep_quality_data: Optional[Dict[str, Any]] = None
 
+    # Augmented crew / ULR data
+    is_ulr: bool = False
+    crew_composition: CrewComposition = CrewComposition.STANDARD
+    inflight_rest_blocks: List[SleepBlock] = field(default_factory=list)
+    ulr_compliance: Optional[ULRComplianceResult] = None
+    return_to_deck_performance: Optional[float] = None  # Performance at wake from last rest
+    acclimatization_state: AcclimatizationState = AcclimatizationState.ACCLIMATIZED
+
 
 @dataclass
 class MonthlyAnalysis:
@@ -618,3 +746,8 @@ class MonthlyAnalysis:
 
     # Circadian adaptation timeline: [(utc_iso, phase_shift_hours, reference_tz)]
     body_clock_timeline: List[tuple] = field(default_factory=list)
+
+    # Augmented crew / ULR statistics
+    total_ulr_duties: int = 0
+    total_augmented_duties: int = 0
+    ulr_violations: List[str] = field(default_factory=list)

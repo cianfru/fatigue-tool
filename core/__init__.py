@@ -24,6 +24,15 @@ from core.compliance import EASAComplianceValidator
 from core.workload import WorkloadParameters, WorkloadModel
 from core.fatigue_model import BorbelyFatigueModel
 
+from core.extended_operations import (
+    AugmentedFDPParameters,
+    ULRParameters,
+    AcclimatizationCalculator,
+    AugmentedCrewRestPlanner,
+    ULRRestPlanner,
+    ULRComplianceValidator,
+)
+
 __all__ = [
     # Parameters
     'EASAFatigueFramework',
@@ -42,4 +51,11 @@ __all__ = [
     'WorkloadModel',
     # Main model
     'BorbelyFatigueModel',
+    # Extended operations (ULR / Augmented crew)
+    'AugmentedFDPParameters',
+    'ULRParameters',
+    'AcclimatizationCalculator',
+    'AugmentedCrewRestPlanner',
+    'ULRRestPlanner',
+    'ULRComplianceValidator',
 ]

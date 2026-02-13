@@ -21,8 +21,38 @@ import pytz
 import airportsdata
 
 # Ensure you have these models defined in your project
-from models.data_models import Airport, FlightSegment, Duty, Roster
+from models.data_models import Airport, FlightSegment, Duty, Roster, CrewComposition, RestFacilityClass
 from parsers.qatar_crewlink_parser import CrewLinkRosterParser
+
+
+# ============================================================================
+# AUTO-DETECTION: Crew Augmentation & ULR
+# ============================================================================
+
+def auto_detect_crew_augmentation(roster: Roster) -> None:
+    """
+    Post-parse pass: auto-detect augmented crew and ULR duties.
+
+    Rules (based on EASA CS FTL.1.205 and Qatar FTL 7.18):
+    - FDP > 18h → ULR, AUGMENTED_4, Class 1 rest facility
+    - FDP > 13h with a single segment >9h block → likely AUGMENTED_3, Class 1
+    - Otherwise → STANDARD (no change)
+
+    These are defaults that the pilot/API can override.
+    """
+    for duty in roster.duties:
+        if duty.fdp_hours > 18.0:
+            # ULR operation — 4-pilot augmented crew
+            duty.is_ulr = True
+            duty.crew_composition = CrewComposition.AUGMENTED_4
+            duty.rest_facility_class = RestFacilityClass.CLASS_1
+        elif duty.fdp_hours > 13.0 and any(
+            seg.block_time_hours > 9.0 for seg in duty.segments
+        ):
+            # Extended FDP with long sector — likely 3-pilot augmented
+            duty.crew_composition = CrewComposition.AUGMENTED_3
+            duty.rest_facility_class = RestFacilityClass.CLASS_1
+
 
 # ============================================================================
 # AIRPORT DATABASE (backed by airportsdata ~7,800 IATA airports)
@@ -203,7 +233,10 @@ class PDFRosterParser:
             duties=duties,
             home_base_timezone=self.home_timezone
         )
-        
+
+        # Auto-detect augmented crew / ULR duties
+        auto_detect_crew_augmentation(roster)
+
         print(f"✓ Parsed {len(duties)} duties, {roster.total_sectors} sectors")
         return roster
     
@@ -532,6 +565,10 @@ class CSVRosterParser:
             duties=duties,
             home_base_timezone=self.home_timezone
         )
+
+        # Auto-detect augmented crew / ULR duties
+        auto_detect_crew_augmentation(roster)
+
         print(f"✓ Parsed {len(duties)} duties, {roster.total_sectors} sectors")
         return roster
     

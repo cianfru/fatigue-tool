@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, time
 from typing import Dict, List, Optional
 import pytz
 
-from models.data_models import Duty
+from models.data_models import Duty, CrewComposition, RestFacilityClass
 from core.parameters import EASAFatigueFramework
 
 class EASAComplianceValidator:
@@ -20,14 +20,62 @@ class EASAComplianceValidator:
     def __init__(self, framework: EASAFatigueFramework = None):
         self.framework = framework or EASAFatigueFramework()
     
-    def calculate_fdp_limits(self, duty: Duty) -> Dict[str, float]:
-        """Calculate EASA FDP limits based on ORO.FTL.205"""
+    def calculate_fdp_limits(self, duty: Duty, augmented_params=None, ulr_params=None) -> Dict[str, float]:
+        """
+        Calculate EASA FDP limits based on ORO.FTL.205.
+
+        Supports:
+        - Standard 2-pilot operations (Table 1)
+        - Augmented crew 3/4-pilot operations (CS FTL.1.205(c)(2))
+        - ULR operations (Qatar FTL 7.18)
+        """
         tz = pytz.timezone(duty.home_base_timezone)
         report_local = duty.report_time_utc.astimezone(tz)
         report_hour = report_local.hour
         sectors = len(duty.segments)
-        
-        # EASA ORO.FTL.205 Table 1 - Basic FDP limits
+        actual_fdp = (duty.release_time_utc - duty.report_time_utc).total_seconds() / 3600
+
+        # ULR operations — Qatar FTL 7.18
+        if getattr(duty, 'is_ulr', False) or (
+            getattr(duty, 'is_ulr_operation', False) and
+            getattr(duty, 'crew_composition', CrewComposition.STANDARD) == CrewComposition.AUGMENTED_4
+        ):
+            if ulr_params:
+                max_fdp = ulr_params.ulr_max_planned_fdp_hours
+                discretion = ulr_params.ulr_discretion_max_hours
+            else:
+                max_fdp = 20.0
+                discretion = 3.0
+            return {
+                'max_fdp': max_fdp,
+                'extended_fdp': max_fdp + discretion,
+                'actual_fdp': actual_fdp,
+                'used_discretion': actual_fdp > max_fdp,
+                'exceeds_discretion': actual_fdp > max_fdp + discretion,
+                'is_ulr': True,
+                'crew_composition': getattr(duty, 'crew_composition', CrewComposition.STANDARD).value
+                    if hasattr(getattr(duty, 'crew_composition', None), 'value') else 'standard',
+            }
+
+        # Augmented crew (3 or 4 pilots, non-ULR) — CS FTL.1.205(c)(2)
+        if getattr(duty, 'is_augmented_crew', False) and augmented_params:
+            facility = getattr(duty, 'rest_facility_class', None) or RestFacilityClass.CLASS_1
+            max_fdp = augmented_params.get_max_fdp(
+                duty.crew_composition, facility, duty.segments
+            )
+            discretion = augmented_params.augmented_discretion_hours
+            return {
+                'max_fdp': max_fdp,
+                'extended_fdp': max_fdp + discretion,
+                'actual_fdp': actual_fdp,
+                'used_discretion': actual_fdp > max_fdp,
+                'exceeds_discretion': actual_fdp > max_fdp + discretion,
+                'is_ulr': False,
+                'crew_composition': duty.crew_composition.value
+                    if hasattr(duty.crew_composition, 'value') else 'standard',
+            }
+
+        # Standard 2-pilot operations — EASA ORO.FTL.205 Table 1
         fdp_table = {
             6: {1: 13.0, 2: 12.5, 3: 12.0, 4: 11.5, 5: 11.0, 6: 10.5, 7: 10.0, 8: 10.0, 9: 9.5},
             7: {1: 13.0, 2: 12.5, 3: 12.0, 4: 11.5, 5: 11.0, 6: 10.5, 7: 10.0, 8: 10.0, 9: 9.5},
@@ -48,19 +96,21 @@ class EASAComplianceValidator:
             4: {1: 11.0, 2: 11.0, 3: 10.5, 4: 10.0, 5: 10.0, 6: 10.0, 7: 9.5, 8: 9.5, 9: 9.5},
             5: {1: 12.0, 2: 12.0, 3: 11.5, 4: 11.0, 5: 10.5, 6: 10.0, 7: 10.0, 8: 9.5, 9: 9.5},
         }
-        
+
         sectors_capped = min(sectors, 9)
         max_fdp = fdp_table.get(report_hour, {}).get(sectors_capped, 13.0)
         extended_fdp = max_fdp + 2.0
-        actual_fdp = (duty.release_time_utc - duty.report_time_utc).total_seconds() / 3600
         used_discretion = actual_fdp > max_fdp
-        
+
         return {
             'max_fdp': max_fdp,
             'extended_fdp': extended_fdp,
             'actual_fdp': actual_fdp,
             'used_discretion': used_discretion,
-            'exceeds_discretion': actual_fdp > extended_fdp
+            'exceeds_discretion': actual_fdp > extended_fdp,
+            'is_ulr': False,
+            'crew_composition': getattr(duty, 'crew_composition', CrewComposition.STANDARD).value
+                if hasattr(getattr(duty, 'crew_composition', None), 'value') else 'standard',
         }
     
     def calculate_wocl_encroachment(
