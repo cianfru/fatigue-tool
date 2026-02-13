@@ -49,7 +49,8 @@ class CrewLinkRosterParser:
     
     KEY DESIGN: Pattern recognition, not airline-specific
     - Detects RPT:HH:MM pattern (reporting time)
-    - Detects flight pattern: NNNN AAA HH:MM AAA HH:MM
+    - Detects flight pattern: [prefix]NNNN AAA HH:MM AAA HH:MM
+      (prefix = optional airline code like 6E, QR, EK)
     - Handles unknown airports gracefully (auto-creates with UTC)
     - Works with ANY airline using similar grid layout
     
@@ -407,19 +408,40 @@ class CrewLinkRosterParser:
         for date_col in date_columns:
             col_idx = date_col['col_idx']
             date = date_col['date']
-            
+
             # Collect all non-empty cells in this column
             column_data = []
             for row_idx in range(1, len(table)):
                 cell = table[row_idx][col_idx]
                 if cell and cell.strip():
                     column_data.append(cell.strip())
-            
+
             # Parse this column's data into a duty (if any)
             duty = self._parse_column_to_duty(date, column_data)
             if duty:
-                duties.append(duty)
-        
+                # Check if this is a continuation of the previous duty:
+                # - No RPT line in this column (used departure-1h fallback)
+                # - Previous duty exists and its last arrival airport matches
+                #   this duty's first departure airport
+                has_rpt = any(
+                    re.match(r'RPT\s*:', line)
+                    for item in column_data
+                    for line in item.split('\n')
+                )
+                if (not has_rpt
+                        and duties
+                        and duty.segments
+                        and duties[-1].segments
+                        and duties[-1].segments[-1].arrival_airport.code == duty.segments[0].departure_airport.code):
+                    # Merge: append segments to previous duty, update release time
+                    prev_duty = duties[-1]
+                    prev_duty.segments.extend(duty.segments)
+                    prev_duty.release_time_utc = duty.release_time_utc
+                    print(f"  ✓ Merged {date.strftime('%d%b')} segments into previous duty "
+                          f"({prev_duty.date.strftime('%d%b')}) — continuation, no RPT")
+                else:
+                    duties.append(duty)
+
         return duties
     
     def _parse_column_to_duty(self, date: datetime, column_data: List[str]) -> Optional[Duty]:
@@ -453,7 +475,7 @@ class CrewLinkRosterParser:
         report_minute = None
         
         for line in lines:
-            rpt_match = re.match(r'RPT:(\d{2}):(\d{2})', line)
+            rpt_match = re.match(r'RPT\s*:\s*(\d{2})\s*:\s*(\d{2})', line)
             if rpt_match:
                 report_hour = int(rpt_match.group(1))
                 report_minute = int(rpt_match.group(2))
@@ -501,6 +523,7 @@ class CrewLinkRosterParser:
         else:
             # Fallback: report time = departure time - 1 hour
             report_time = segments[0].scheduled_departure_utc - timedelta(hours=1)
+            print(f"  ⚠️  No RPT line found for {date.strftime('%d%b')} — using departure-1h as fallback")
         
         if not report_time:
             return None  # No valid duty
@@ -509,6 +532,9 @@ class CrewLinkRosterParser:
         # EASA defines FDP as report time to END OF LAST LANDING (not +1 hour)
         last_landing = segments[-1].scheduled_arrival_utc
         release_time = last_landing + timedelta(minutes=30)
+        # Ensure release_time is in UTC
+        if release_time.tzinfo and release_time.utcoffset() != timedelta(0):
+            release_time = release_time.astimezone(pytz.utc)
         
         # Final validation: ensure report < release
         if report_time >= release_time:
@@ -537,7 +563,7 @@ class CrewLinkRosterParser:
         Extract flight segments using PATTERN DETECTION
         
         Pattern recognition (works with any flights):
-        - Flight number: 3-4 digits
+        - Flight number: 3-4 digits OR airline prefix + digits (e.g., 6E1306, QR490)
         - Airport code: 3 uppercase letters
         - Time: HH:MM format
         - Sequence: FlightNum to Airport to Time to Airport to Time
@@ -548,8 +574,21 @@ class CrewLinkRosterParser:
         while i < len(lines):
             line = lines[i]
             
-            # PATTERN 1: Look for flight number (3-4 digits, not a time)
-            if re.match(r'^\d{3,4}$', line) and ':' not in line:
+            # PATTERN 1: Look for flight number
+            # Case A: Pure numeric (490, 1060) - 3 to 4 digits
+            # Case B: Airline-prefixed (6E1306, QR490, EK231) - 1-3 alphanumeric prefix + digits
+            # Must NOT be a time (contains ':'), airport code (exactly 3 uppercase letters),
+            # or annotation like (320), PIC, REQ, SR, etc.
+            is_flight_number = (
+                ':' not in line
+                and not re.match(r'^[A-Z]{3}$', line)
+                and not re.match(r'^\(', line)
+                and (
+                    re.match(r'^\d{3,4}$', line)  # Pure numeric: 490, 1060
+                    or re.match(r'^[A-Z0-9]{2}[A-Z]?\d{1,5}$', line)  # Prefixed: 6E1306, QR490
+                )
+            )
+            if is_flight_number:
                 flight_num = line
                 
                 # Look ahead for: AIRPORT TIME AIRPORT TIME
@@ -620,6 +659,11 @@ class CrewLinkRosterParser:
                         dep_utc = pytz.utc.localize(dep_time)
                         arr_utc = pytz.utc.localize(arr_time)
                     
+                    # Safety: if arrival is before departure, the flight crosses midnight
+                    # This handles cases where (+1) marker was missing or stripped
+                    if arr_utc <= dep_utc:
+                        arr_utc += timedelta(days=1)
+
                     segment = FlightSegment(
                         flight_number=flight_num,  # Keep as-is from PDF
                         departure_airport=dep_airport,
@@ -642,17 +686,26 @@ class CrewLinkRosterParser:
         return segments
     
     def _parse_time(self, time_str: str, date: datetime) -> Optional[datetime]:
-        """Parse time string like "07:45" or "02:25(+1)" into datetime"""
-        # Remove (+1) marker
+        """Parse time string like "07:45" or "02:25(+1)" into datetime.
+
+        The (+N) marker indicates the time is N days after the base date.
+        """
+        # Extract (+N) day offset before removing it
+        day_offset = 0
+        offset_match = re.search(r'\(\+(\d+)\)', time_str)
+        if offset_match:
+            day_offset = int(offset_match.group(1))
+
+        # Remove (+N) marker for time parsing
         time_str = re.sub(r'\(\+\d+\)', '', time_str).strip()
-        
+
         # Parse HH:MM
         match = re.match(r'(\d{2}):(\d{2})', time_str)
         if match:
             hour = int(match.group(1))
             minute = int(match.group(2))
-            return datetime(date.year, date.month, date.day, hour, minute)
-        
+            return datetime(date.year, date.month, date.day, hour, minute) + timedelta(days=day_offset)
+
         return None
     
     def _extract_statistics(self, page) -> Dict:
