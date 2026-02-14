@@ -1837,47 +1837,89 @@ class UnifiedSleepCalculator:
             # Short duty → slightly less recovery needed
             base_duration = max(6.5, 7.5 - 0.2 * (10 - prior_wake_estimate))
 
-        # Morning arrivals (biological clock): circadian opposition caps
-        # daytime nap duration.  Pilots whose body clock says morning
+        # Morning arrivals (biological clock): circadian opposition truncates
+        # daytime recovery nap.  Pilots whose body clock says morning
         # struggle to maintain sleep against the circadian wake signal.
+        # National Academies (2011): ~2.5h actual sleep from a daytime nap
+        # opportunity.  General sleep science: post-deprivation daytime naps
+        # truncated to 3-5h by circadian opposition.  We use 3-4h as the
+        # realistic range (higher end when prior wake > 16h).
         # Include pre-dawn arrivals (04:00-06:00) — functionally similar
         # to morning: pilot arrives near dawn and needs daytime nap + night.
         is_morning_arrival = 4 <= bio_release_hour < 12
         if is_morning_arrival:
-            base_duration = min(base_duration, 6.0)
+            # Recovery nap: 3-4h depending on prior wakefulness
+            # National Academies (2011): 2.5h actual from 3h opportunity
+            # Higher pressure (>16h awake) allows slightly longer nap
+            if prior_wake_estimate > 16:
+                base_duration = min(base_duration, 4.0)
+            else:
+                base_duration = min(base_duration, 3.5)
 
         # --- 3. Determine if gap is long enough for nap + night sleep ---
-        # For morning arrivals with a long gap (>14h), the pilot will have:
-        #   (a) A daytime recovery nap (capped at ~6h)
-        #   (b) A normal night sleep before the next duty
+        # For morning arrivals with a long gap, the pilot will have:
+        #   (a) A short daytime recovery nap (2.5-4h, circadian-truncated)
+        #   (b) A normal or anticipated night sleep before the next duty
         # For shorter gaps or evening/night arrivals, one block suffices.
+        #
+        # References:
+        #   National Academies (2011): recovery nap + anticipated bedtime
+        #   Arsintescu et al. (2022): pilots advance bedtime by 1-2h max
+        #   Rempe et al. (2025): WOCL-window arrivals → ~6.8h total/24h
         total_gap_hours = (report_utc - previous_duty.release_time_utc).total_seconds() / 3600
         report_local = report_utc.astimezone(sleep_tz)
         latest_wake_utc = report_utc - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
 
-        # Check if there's room for a nap + waking period + night sleep
+        # Determine anticipated bedtime based on next duty report time.
+        # Arsintescu et al. (2022) found pilots averaged 21:15 bedtime
+        # before early starts — roughly 1-2h advance from habitual ~23:00.
+        # National Academies (2011): attempting bed at 21:00, actual onset
+        # ~22:00 due to the wake maintenance zone (WMZ, 19:00-22:00 bio).
+        #
+        # Strategy: use habitual bedtime (23:00) as default, then advance
+        # by 1-2h when next duty requires it (report before ~07:00 bio).
+        report_bio = report_utc.astimezone(bio_tz)
+        report_bio_hour = report_bio.hour + report_bio.minute / 60.0
+
+        if report_bio_hour < 7.0 or report_bio_hour >= 22.0:
+            # Early/WOCL duty: anticipate bedtime by 1-2h
+            # Arsintescu (2022): avg 21:15 for 05:00-07:00 starts
+            # For WOCL (report 22:00-04:00): use 21:00 bio time
+            anticipated_bedtime_hour = 21.0
+        else:
+            anticipated_bedtime_hour = float(self.NORMAL_BEDTIME_HOUR)  # 23.0
+
+        # Compute anticipated bedtime in sleep timezone
         nap_end_time = sleep_start + timedelta(hours=base_duration)
-        # Calculate biological bedtime (~23:00 bio time) for the night block
         nap_end_bio = nap_end_time.astimezone(bio_tz)
         bio_bedtime = nap_end_bio.replace(
-            hour=self.NORMAL_BEDTIME_HOUR, minute=0, second=0, microsecond=0
+            hour=int(anticipated_bedtime_hour),
+            minute=int((anticipated_bedtime_hour % 1) * 60),
+            second=0, microsecond=0
         )
         if bio_bedtime <= nap_end_bio:
             bio_bedtime += timedelta(days=1)
         bio_bedtime_in_sleep_tz = bio_bedtime.astimezone(sleep_tz)
 
-        # Time from nap end to biological bedtime (waking gap between sleeps)
+        # Time from nap end to anticipated bedtime (waking gap between sleeps)
         waking_gap = (bio_bedtime_in_sleep_tz - nap_end_time).total_seconds() / 3600
-        # Time from biological bedtime to next duty latest wake
+        # Time from anticipated bedtime to next duty latest wake
         night_available = (latest_wake_utc - bio_bedtime.astimezone(pytz.utc)).total_seconds() / 3600
 
         # Two-block condition: morning/daytime arrival AND enough gap for
         # a waking period of >=2h between nap and night sleep AND
-        # night sleep of >=4h
+        # pre-duty sleep of >=1.5h (one full NREM cycle ≈ 90 min).
+        #
+        # The 1.5h minimum covers pre-WOCL anticipatory sleep (e.g. report
+        # 00:55 → latest wake 22:55, bedtime 21:00 → ~2h sleep). This is
+        # short but realistic: pilots attempt pre-duty sleep even when
+        # the window is constrained by the WMZ and early report.
+        # Rempe et al. (2025): WOCL-window arrivals yield ~6.8h total/24h,
+        # often split across a short daytime nap + short pre-duty sleep.
         needs_two_blocks = (
             is_morning_arrival
             and waking_gap >= 2.0
-            and night_available >= 4.0
+            and night_available >= 1.5
         )
 
         if needs_two_blocks:

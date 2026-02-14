@@ -1593,8 +1593,8 @@ class BorbelyFatigueModel:
                 },
                 {
                     'key': 'roach_2025',
-                    'short': 'Roach et al. (2025)',
-                    'full': 'Roach GD et al. Layover start timing predicts layover sleep. PMC11879054',
+                    'short': 'Rempe et al. (2025)',
+                    'full': 'Rempe MJ et al. Layover start timing predicts layover sleep quantity in long-range airline pilots. SLEEP Advances 6(1):zpaf009. PMC11879054',
                 },
                 {
                     'key': 'banks_2010',
@@ -1605,6 +1605,21 @@ class BorbelyFatigueModel:
                     'key': 'kitamura_2016',
                     'short': 'Kitamura et al. (2016)',
                     'full': 'Kitamura S et al. Estimating individual optimal sleep duration and potential sleep debt. Sci Rep 6:35812',
+                },
+                {
+                    'key': 'arsintescu_2022',
+                    'short': 'Arsintescu et al. (2022)',
+                    'full': 'Arsintescu L et al. Early starts and late finishes in short-haul aviation: effects on sleep and alertness. J Sleep Res 31(3):e13521',
+                },
+                {
+                    'key': 'national_academies_2011',
+                    'short': 'National Academies (2011)',
+                    'full': 'National Research Council. The Effects of Commuting on Pilot Fatigue. Washington, DC: The National Academies Press. Ch.5: Sleep Regulation and Circadian Rhythms',
+                },
+                {
+                    'key': 'dijk_czeisler_1994',
+                    'short': 'Dijk & Czeisler (1994)',
+                    'full': 'Dijk D-J, Czeisler CA. Paradoxical timing of the circadian rhythm of sleep propensity: wake maintenance zone. J Neurosci 14(7):3522-3530',
                 },
             ],
         }
