@@ -445,14 +445,21 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
         }
 
     inflight_blocks = []
-    for block in getattr(duty_timeline, 'inflight_rest_blocks', []):
+    rest_periods = []
+    if hasattr(duty, 'inflight_rest_plan') and duty.inflight_rest_plan:
+        rest_periods = duty.inflight_rest_plan.rest_periods
+    for i, block in enumerate(getattr(duty_timeline, 'inflight_rest_blocks', [])):
+        period = rest_periods[i] if i < len(rest_periods) else None
         inflight_blocks.append({
             'start_utc': block.start_utc.isoformat() if block.start_utc else None,
             'end_utc': block.end_utc.isoformat() if block.end_utc else None,
             'duration_hours': block.duration_hours,
-            'effective_hours': block.effective_sleep_hours,
+            'effective_sleep_hours': block.effective_sleep_hours,
             'quality_factor': block.quality_factor,
             'environment': block.environment,
+            'crew_member_id': period.crew_member_id if period else None,
+            'crew_set': period.crew_set if period else None,
+            'is_during_wocl': period.is_during_wocl if period else False,
         })
 
     return DutyResponse(
