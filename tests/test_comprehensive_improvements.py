@@ -8,7 +8,7 @@ import pytz
 from core import BorbelyFatigueModel, ModelConfig
 from models.data_models import Duty, FlightSegment, Airport, SleepBlock
 
-def test_scenario(model, scenario_name, sleep_duration, sleep_efficiency, report_hour=7):
+def run_scenario(model, scenario_name, sleep_duration, sleep_efficiency, report_hour=7):
     """Test a specific sleep/duty scenario"""
     
     home_tz = pytz.timezone('Asia/Qatar')
@@ -125,7 +125,7 @@ def main():
     
     results = []
     for name, duration, efficiency in scenarios:
-        result = test_scenario(model, name, duration, efficiency)
+        result = run_scenario(model, name, duration, efficiency)
         results.append(result)
         
         print(f"{result['scenario']:<25} {result['sleep_duration']:>5.1f}h {result['sleep_efficiency']:>4.0%} "

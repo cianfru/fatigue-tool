@@ -14,11 +14,12 @@ from core.parameters import (
     ModelConfig
 )
 
+from core.sleep_quality import SleepQualityAnalysis, SleepQualityEngine
 from core.sleep_calculator import (
-    SleepQualityAnalysis,
     SleepStrategy,
     UnifiedSleepCalculator
 )
+from core.strategy_references import get_confidence_basis, get_strategy_references
 
 from core.compliance import EASAComplianceValidator
 from core.workload import WorkloadParameters, WorkloadModel
