@@ -138,6 +138,14 @@ class SleepBlockResponse(BaseModel):
     sleep_end_day: Optional[int] = None
     sleep_end_hour: Optional[float] = None
 
+    # Explicit home-base timezone positioning (preferred by frontend)
+    sleep_start_day_home_tz: Optional[int] = None
+    sleep_start_hour_home_tz: Optional[float] = None
+    sleep_end_day_home_tz: Optional[int] = None
+    sleep_end_hour_home_tz: Optional[float] = None
+    sleep_start_time_home_tz: Optional[str] = None    # HH:mm
+    sleep_end_time_home_tz: Optional[str] = None      # HH:mm
+
     # Per-block quality factor breakdown (populated for all sleep types)
     quality_factors: Optional[QualityFactorsResponse] = None
 
@@ -163,6 +171,20 @@ class SleepQualityResponse(BaseModel):
     sleep_end_time: Optional[str] = None    # Primary sleep end (HH:mm)
     sleep_start_iso: Optional[str] = None   # Primary sleep start (ISO format with date for chronogram)
     sleep_end_iso: Optional[str] = None     # Primary sleep end (ISO format with date for chronogram)
+
+    # Numeric grid positioning from primary sleep block (home-base TZ)
+    sleep_start_day: Optional[int] = None       # Day of month (1-31)
+    sleep_start_hour: Optional[float] = None    # Decimal hour (0-24)
+    sleep_end_day: Optional[int] = None
+    sleep_end_hour: Optional[float] = None
+
+    # Explicit home-base timezone positioning (preferred by frontend)
+    sleep_start_day_home_tz: Optional[int] = None
+    sleep_start_hour_home_tz: Optional[float] = None
+    sleep_end_day_home_tz: Optional[int] = None
+    sleep_end_hour_home_tz: Optional[float] = None
+    sleep_start_time_home_tz: Optional[str] = None    # HH:mm
+    sleep_end_time_home_tz: Optional[str] = None      # HH:mm
 
     # Scientific methodology (new — surfaces calculation transparency)
     explanation: Optional[str] = None              # Human-readable strategy description
@@ -426,6 +448,13 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
             sleep_start_hour=first_block.get('sleep_start_hour'),
             sleep_end_day=first_block.get('sleep_end_day'),
             sleep_end_hour=first_block.get('sleep_end_hour'),
+            # Home-base TZ positioning (preferred by frontend)
+            sleep_start_day_home_tz=first_block.get('sleep_start_day_home_tz'),
+            sleep_start_hour_home_tz=first_block.get('sleep_start_hour_home_tz'),
+            sleep_end_day_home_tz=first_block.get('sleep_end_day_home_tz'),
+            sleep_end_hour_home_tz=first_block.get('sleep_end_hour_home_tz'),
+            sleep_start_time_home_tz=first_block.get('sleep_start_time_home_tz'),
+            sleep_end_time_home_tz=first_block.get('sleep_end_time_home_tz'),
         )
 
     # Augmented crew / ULR data
