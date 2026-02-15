@@ -101,6 +101,9 @@ class DutySegmentResponse(BaseModel):
     departure_utc_offset: Optional[float] = None  # UTC offset at departure (hours, e.g. +3.0)
     arrival_utc_offset: Optional[float] = None     # UTC offset at arrival (hours, e.g. +5.5)
     block_hours: float
+    # Activity code from roster PDF (IR = inflight rest, DH = deadhead)
+    activity_code: Optional[str] = None
+    is_deadhead: bool = False
 
 
 class QualityFactorsResponse(BaseModel):
@@ -402,7 +405,9 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
             arrival_timezone=seg.arrival_airport.timezone,
             departure_utc_offset=dep_utc_offset,
             arrival_utc_offset=arr_utc_offset,
-            block_hours=seg.block_time_hours
+            block_hours=seg.block_time_hours,
+            activity_code=getattr(seg, 'activity_code', None),
+            is_deadhead=getattr(seg, 'is_deadhead', False),
         ))
 
     # Convert report/release to home timezone for display

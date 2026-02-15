@@ -132,7 +132,18 @@ class FlightSegment:
     arrival_airport: Airport
     scheduled_departure_utc: datetime
     scheduled_arrival_utc: datetime
-    
+    activity_code: Optional[str] = None  # "IR", "DH", etc. from roster PDF
+
+    @property
+    def is_deadhead(self) -> bool:
+        """DH = pilot is passenger, not operating. Counts toward duty time but no cockpit workload."""
+        return self.activity_code == 'DH'
+
+    @property
+    def is_inflight_rest(self) -> bool:
+        """IR = Inflight Rest. Pilot is relief crew (Crew B) on this sector — always 4-pilot augmented."""
+        return self.activity_code == 'IR'
+
     @property
     def block_time_hours(self) -> float:
         return (self.scheduled_arrival_utc - self.scheduled_departure_utc).total_seconds() / 3600
@@ -214,6 +225,16 @@ class Duty:
     def is_augmented_crew(self) -> bool:
         """Check if duty uses augmented crew (3 or 4 pilots)"""
         return self.crew_composition in (CrewComposition.AUGMENTED_3, CrewComposition.AUGMENTED_4)
+
+    @property
+    def has_deadhead_segments(self) -> bool:
+        """True if any segment is a deadhead (pilot as passenger)"""
+        return any(seg.is_deadhead for seg in self.segments)
+
+    @property
+    def has_inflight_rest_segments(self) -> bool:
+        """True if any segment has IR marker (pilot is relief crew = 4-pilot augmented)"""
+        return any(seg.is_inflight_rest for seg in self.segments)
 
 
 @dataclass
