@@ -582,12 +582,10 @@ class BorbelyFatigueModel:
         Only one pinch event is flagged per critical phase of flight.
         """
         pinch_events = []
-        
-        # Balanced thresholds - scientifically calibrated but not overly strict
-        # C < 0.40 = circadian low period (roughly 23:00-08:00)
-        # S > 0.70 = elevated sleep pressure (~10+ hours awake)
-        CIRCADIAN_THRESHOLD = 0.40
-        SLEEP_PRESSURE_THRESHOLD = 0.70
+
+        # Thresholds are configurable per airline/preset via parameters.py
+        CIRCADIAN_THRESHOLD = self.params.pinch_circadian_threshold
+        SLEEP_PRESSURE_THRESHOLD = self.params.pinch_sleep_pressure_threshold
         
         current_critical_phase = None
         current_phase_worst_point = None
@@ -769,21 +767,27 @@ class BorbelyFatigueModel:
             else:
                 days_since_last = 1
 
-            # Use EFFECTIVE sleep hours for debt calculation.
-            # Research (Van Dongen 2003) shows that recovering from sleep debt
-            # is LESS efficient: 1h of debt requires ~1.1-1.3h of recovery sleep.
-            # This is modeled by reducing the efficiency of debt repayment when
-            # surplus sleep is available (see debt reduction calculation below).
-            period_sleep_effective = sum(
-                s.effective_sleep_hours for s in relevant_sleep
+            # Use RAW (duration) sleep hours for debt accounting.
+            #
+            # Previous code used effective_sleep_hours (= duration × quality_factor),
+            # which double-penalised sleep: quality_factor reduced the hours
+            # counted toward the 8 h baseline, AND the recovery-inefficiency
+            # divisor (1.30) further reduced surplus credit.  Quality_factor
+            # already feeds into Process S recovery calculations, so applying
+            # it again here overstated cumulative debt.
+            #
+            # Using duration_hours means the debt ledger tracks *actual time
+            # in bed*.  Recovery inefficiency (÷1.30) is the sole penalty on
+            # the repayment side, consistent with Banks et al. (2010, 2023).
+            period_sleep_raw = sum(
+                s.duration_hours for s in relevant_sleep
                 if s.start_utc >= (
                     previous_duty.release_time_utc
                     if previous_duty
                     else duty.report_time_utc - timedelta(days=1)
                 )
             )
-            # Use effective sleep directly (no multiplier on obtained sleep)
-            period_sleep = period_sleep_effective
+            period_sleep = period_sleep_raw
 
             # Scale need by gap length so multi-day rest periods
             # are evaluated fairly (8 h × N days, not a flat 8 h).
@@ -1128,9 +1132,9 @@ class BorbelyFatigueModel:
                             prev.effective_sleep_hours * scale,
                             new_duration  # effective cannot exceed duration
                         )
-                        # Use home base timezone for day/hour fields (consistent
-                        # with chronogram positioning standard).
-                        overlap_end_home = block.start_utc.astimezone(home_tz)
+                        # Recalculate home-base TZ positioning for truncated end.
+                        # Start position is unchanged; only end moves earlier.
+                        new_end_home = block.start_utc.astimezone(home_tz)
                         resolved_blocks[-1] = SleepBlock(
                             start_utc=prev.start_utc,
                             end_utc=block.start_utc,
@@ -1138,12 +1142,14 @@ class BorbelyFatigueModel:
                             duration_hours=new_duration,
                             quality_factor=prev.quality_factor,
                             effective_sleep_hours=new_effective,
-                            environment=prev.environment,
+                            circadian_misalignment_hours=prev.circadian_misalignment_hours,
                             is_anchor_sleep=prev.is_anchor_sleep,
+                            is_inflight_rest=prev.is_inflight_rest,
+                            environment=prev.environment,
                             sleep_start_day=prev.sleep_start_day,
                             sleep_start_hour=prev.sleep_start_hour,
-                            sleep_end_day=overlap_end_home.day,
-                            sleep_end_hour=overlap_end_home.hour + overlap_end_home.minute / 60.0
+                            sleep_end_day=new_end_home.day,
+                            sleep_end_hour=new_end_home.hour + new_end_home.minute / 60.0,
                         )
                     else:
                         resolved_blocks.pop()
@@ -1257,117 +1263,10 @@ class BorbelyFatigueModel:
             'references': get_strategy_references(strategy.strategy_type),
         }
 
-    def _generate_post_duty_sleep(
-        self,
-        duty: Duty,
-        next_duty: Optional[Duty],
-        home_timezone: str,
-        home_base: Optional[str]
-    ) -> Optional[Tuple[SleepBlock, 'SleepQualityAnalysis']]:
-        """
-        Generate post-duty recovery sleep at layover or home.
-
-        Handles all arrival times (not just morning arrivals). Pilots need
-        to sleep at layover locations regardless of arrival time.
-
-        Logic:
-        - Night arrival (20:00-06:00): immediate sleep after 1.5hr buffer
-        - Morning arrival (06:00-12:00): afternoon nap-style sleep after 2.5hr
-        - Afternoon/evening arrival (12:00-20:00): evening/night sleep
-
-        Fixed: 2AM landings now correctly treated as night arrivals, not morning.
-        """
-        if not duty.segments:
-            return None
-
-        arrival_airport = duty.segments[-1].arrival_airport
-        arrival_timezone = arrival_airport.timezone
-        sleep_tz = pytz.timezone(arrival_timezone)
-        is_home_base = home_base and arrival_airport.code == home_base
-
-        # Determine environment (home vs hotel)
-        # If pilot arrives at home base, they sleep at home
-        # Otherwise, they sleep at a hotel (layover)
-        environment = 'home' if is_home_base else 'hotel'
-
-        release_local = duty.release_time_utc.astimezone(sleep_tz)
-        release_hour = release_local.hour + release_local.minute / 60.0
-
-        # Calculate sleep window based on arrival time
-        # Night arrivals (00:00-06:00 and 20:00-23:59) should sleep immediately
-        # Morning arrivals (06:00-12:00) get afternoon rest
-        # Afternoon arrivals (12:00-20:00) get evening sleep
-        if 6 <= release_hour < 12:  # Morning arrival (dawn to noon)
-            # Post-duty nap/rest after morning arrival
-            sleep_start = release_local + timedelta(hours=2.5)
-            desired_duration = 6.0
-        elif 12 <= release_hour < 20:  # Afternoon/evening arrival
-            # Evening sleep starting at normal bedtime
-            # Calculate hours until normal bedtime (23:00)
-            hours_until_bedtime = (23 - release_hour) if release_hour < 23 else 0
-            # Add buffer for post-duty activities (shower, meal, etc.)
-            sleep_start = release_local + timedelta(hours=max(2, hours_until_bedtime))
-            desired_duration = 8.0
-        else:  # Night arrival (20:00-06:00) - includes late night and early morning
-            # Immediate night sleep after short buffer (hotel check-in, shower, etc.)
-            sleep_start = release_local + timedelta(hours=1.5)
-            desired_duration = 8.0
-
-        # Determine sleep end based on next duty or standard duration
-        if next_duty:
-            next_report_local = next_duty.report_time_utc.astimezone(sleep_tz)
-            latest_end = next_report_local - timedelta(
-                hours=self.sleep_calculator.MIN_WAKE_BEFORE_REPORT
-            )
-        else:
-            # No next duty: use standard sleep duration
-            latest_end = sleep_start + timedelta(hours=desired_duration)
-
-        sleep_end = min(sleep_start + timedelta(hours=desired_duration), latest_end)
-
-        # Minimum viable sleep duration: 2 hours
-        if sleep_end <= sleep_start + timedelta(hours=2):
-            return None
-
-        # Determine next event for time pressure calculation
-        if next_duty:
-            next_event = next_duty.report_time_utc.astimezone(sleep_tz)
-        else:
-            next_event = sleep_end + timedelta(hours=12)  # No time pressure
-
-        # For layover post-duty sleep, the pilot's circadian clock is still
-        # on home-base time.  Use home TZ as biological reference so WOCL
-        # overlap is evaluated against the pilot's actual biological night.
-        home_tz_str = home_timezone if not is_home_base else None
-
-        sleep_quality = self.sleep_calculator.calculate_sleep_quality(
-            sleep_start=sleep_start,
-            sleep_end=sleep_end,
-            location=environment,
-            previous_duty_end=duty.release_time_utc,
-            next_event=next_event,
-            location_timezone=sleep_tz.zone,
-            biological_timezone=home_tz_str
-        )
-
-        # Use home base timezone for day/hour chronogram positioning fields
-        home_tz_obj = pytz.timezone(home_timezone)
-        start_home = sleep_start.astimezone(home_tz_obj)
-        end_home = sleep_end.astimezone(home_tz_obj)
-        block = SleepBlock(
-            start_utc=sleep_start.astimezone(pytz.utc),
-            end_utc=sleep_end.astimezone(pytz.utc),
-            location_timezone=sleep_tz.zone,
-            duration_hours=sleep_quality.actual_sleep_hours,
-            quality_factor=sleep_quality.sleep_efficiency,
-            effective_sleep_hours=sleep_quality.effective_sleep_hours,
-            environment=environment,
-            sleep_start_day=start_home.day,
-            sleep_start_hour=start_home.hour + start_home.minute / 60.0,
-            sleep_end_day=end_home.day,
-            sleep_end_hour=end_home.hour + end_home.minute / 60.0
-        )
-        return block, sleep_quality
+    # NOTE: _generate_post_duty_sleep() was removed in cleanup.
+    # All sleep generation routes through UnifiedSleepCalculator and
+    # generate_inter_duty_sleep().  The removed method was dead code
+    # (~110 lines) never called from any active code path.
 
     # _get_confidence_basis and _get_strategy_references have been
     # extracted to core/strategy_references.py for maintainability.
