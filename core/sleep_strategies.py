@@ -523,6 +523,128 @@ class SleepStrategyMixin:
             quality_analysis=quality_analyses
         )
 
+    def _augmented_3_pilot_strategy(
+        self,
+        duty: Duty,
+        previous_duty: Optional[Duty]
+    ) -> 'SleepStrategy':
+        """
+        Sleep strategy for 3-pilot augmented crews (AUGMENTED_3).
+
+        Different from ULR (4-pilot) strategy:
+        - Single night of enhanced sleep (not 48h protocol)
+        - May include pre-duty nap for night departures
+        - EASA CS-FTL.1.205 allows FDP extension to 16h with 3 pilots
+
+        References:
+            EASA CS FTL.1.205(c)(2) - 3-pilot augmented crew requirements
+        """
+        from core.sleep_calculator import SleepStrategy
+
+        sleep_tz = self.home_tz
+        report_local = duty.report_time_utc.astimezone(sleep_tz)
+
+        blocks = []
+        quality_analyses = []
+
+        # Single night: night before duty (enhanced quality for augmented crew)
+        night_start = report_local.replace(hour=22, minute=0, second=0) - timedelta(days=1)
+        night_end = report_local.replace(hour=7, minute=0, second=0)
+
+        # Validate against duty overlaps
+        night_start_utc, night_end_utc, warnings = self._validate_sleep_no_overlap(
+            night_start.astimezone(pytz.utc),
+            night_end.astimezone(pytz.utc),
+            duty,
+            previous_duty
+        )
+        night_start = night_start_utc.astimezone(sleep_tz)
+        night_end = night_end_utc.astimezone(sleep_tz)
+
+        night_quality = self.calculate_sleep_quality(
+            sleep_start=night_start,
+            sleep_end=night_end,
+            location='home',
+            previous_duty_end=previous_duty.release_time_utc if previous_duty else None,
+            next_event=report_local,
+            location_timezone=sleep_tz.zone
+        )
+        quality_analyses.append(night_quality)
+
+        n_day, n_hour = self._home_tz_day_hour(night_start)
+        ne_day, ne_hour = self._home_tz_day_hour(night_end)
+        blocks.append(SleepBlock(
+            start_utc=night_start.astimezone(pytz.utc),
+            end_utc=night_end.astimezone(pytz.utc),
+            location_timezone=sleep_tz.zone,
+            duration_hours=night_quality.actual_sleep_hours,
+            quality_factor=night_quality.sleep_efficiency,
+            effective_sleep_hours=night_quality.effective_sleep_hours,
+            environment='home',
+            sleep_start_day=n_day,
+            sleep_start_hour=n_hour,
+            sleep_end_day=ne_day,
+            sleep_end_hour=ne_hour,
+        ))
+
+        # Optional pre-duty nap for night departures (report ≥20:00 or <04:00)
+        report_hour = report_local.hour
+        if report_hour >= 20 or report_hour < 4:
+            nap_start = report_local - timedelta(hours=3)
+            nap_end = report_local - timedelta(hours=self.MIN_WAKE_BEFORE_REPORT)
+
+            nap_start_utc, nap_end_utc, nap_warnings = self._validate_sleep_no_overlap(
+                nap_start.astimezone(pytz.utc),
+                nap_end.astimezone(pytz.utc),
+                duty,
+                previous_duty
+            )
+            nap_start = nap_start_utc.astimezone(sleep_tz)
+            nap_end = nap_end_utc.astimezone(sleep_tz)
+
+            nap_quality = self.calculate_sleep_quality(
+                sleep_start=nap_start,
+                sleep_end=nap_end,
+                location='home',
+                previous_duty_end=None,
+                next_event=report_local,
+                is_nap=True,
+                location_timezone=sleep_tz.zone
+            )
+            quality_analyses.append(nap_quality)
+
+            nps_day, nps_hour = self._home_tz_day_hour(nap_start)
+            npe_day, npe_hour = self._home_tz_day_hour(nap_end)
+            blocks.append(SleepBlock(
+                start_utc=nap_start.astimezone(pytz.utc),
+                end_utc=nap_end.astimezone(pytz.utc),
+                location_timezone=sleep_tz.zone,
+                duration_hours=nap_quality.actual_sleep_hours,
+                quality_factor=nap_quality.sleep_efficiency,
+                effective_sleep_hours=nap_quality.effective_sleep_hours,
+                is_anchor_sleep=False,
+                environment='home',
+                sleep_start_day=nps_day,
+                sleep_start_hour=nps_hour,
+                sleep_end_day=npe_day,
+                sleep_end_hour=npe_hour,
+            ))
+
+        total_effective = sum(q.effective_sleep_hours for q in quality_analyses)
+
+        return SleepStrategy(
+            strategy_type='augmented_3_pilot',
+            sleep_blocks=blocks,
+            confidence=0.80,
+            explanation=(
+                f"3-pilot augmented crew: Enhanced night sleep + "
+                f"{'pre-duty nap' if len(blocks) > 1 else 'no nap'} "
+                f"({total_effective:.1f}h effective). "
+                f"EASA CS-FTL.1.205 augmented crew operation"
+            ),
+            quality_analysis=quality_analyses
+        )
+
     def _anchor_strategy(
         self,
         duty: Duty,
