@@ -104,10 +104,20 @@ class BorbelyParameters:
     #   nights → exp(-0.35*3)=0.35 (65 % recovered in 3 d).
     # Previous value of 0.50 was too generous — implied near-full recovery
     # in ~2 nights, inconsistent with Banks (2010) findings.
-    # Debt is calculated against EFFECTIVE sleep hours to maintain
-    # consistency with Process S recovery calculations.
+    # Debt is calculated against RAW sleep duration (time in bed).
+    # Quality factor feeds into Process S recovery separately.
     baseline_sleep_need_hours: float = 8.0
     sleep_debt_decay_rate: float = 0.35
+
+    # Pinch event detection thresholds.
+    # A "pinch" occurs when high sleep pressure coincides with circadian low,
+    # creating a dangerous fatigue state during critical flight phases.
+    # C < threshold = circadian low period (roughly 23:00-08:00 biological time)
+    # S > threshold = elevated sleep pressure (~10+ hours awake)
+    # Calibrated to avoid false positives from normal night operations with
+    # adequate rest, while catching genuinely dangerous combinations.
+    pinch_circadian_threshold: float = 0.40
+    pinch_sleep_pressure_threshold: float = 0.70
 
 
 @dataclass

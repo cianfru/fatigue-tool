@@ -7,8 +7,7 @@ RESTful API exposing your Python fatigue model to frontend.
 Endpoints:
 - POST /api/analyze - Upload roster, get analysis
 - GET /api/analysis/{id} - Get stored analysis
-- POST /api/visualize/chronogram - Generate chronogram image
-- POST /api/visualize/calendar - Generate aviation calendar
+- GET /api/duty/{analysis_id}/{duty_id} - Detailed duty timeline
 
 Usage:
     uvicorn api_server:app --reload --host 0.0.0.0 --port 8000
@@ -21,16 +20,16 @@ from pydantic import BaseModel
 from typing import Optional, List
 import tempfile
 import os
+import logging
 from datetime import datetime
-import base64
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Import your fatigue model
 from core import BorbelyFatigueModel, ModelConfig
 from parsers.roster_parser import PDFRosterParser, CSVRosterParser, AirportDatabase
 from models.data_models import MonthlyAnalysis, DutyTimeline
-from visualization.chronogram import FatigueChronogram
-from visualization.aviation_calendar import AviationCalendar
 
 # ============================================================================
 # FASTAPI APP INITIALIZATION
@@ -86,10 +85,10 @@ class DutySegmentResponse(BaseModel):
     arrival: str
     departure_time: str  # UTC ISO format
     arrival_time: str    # UTC ISO format
-    # Home base timezone times (HH:mm) - same reference TZ for all segments
-    departure_time_local: str  # Home base local time in HH:mm format (kept for backward compat)
-    arrival_time_local: str    # Home base local time in HH:mm format (kept for backward compat)
-    # Explicit home-base timezone times (identical to _local, but unambiguous naming)
+    # DEPRECATED: use _home_tz fields below (identical values, clearer name).
+    departure_time_local: str  # Home base TZ HH:mm (backward compat)
+    arrival_time_local: str    # Home base TZ HH:mm (backward compat)
+    # Canonical home-base timezone times
     departure_time_home_tz: str = ""  # HH:mm in home base timezone
     arrival_time_home_tz: str = ""    # HH:mm in home base timezone
     # Airport-local times (in the actual departure/arrival airport timezone)
@@ -119,12 +118,21 @@ class QualityFactorsResponse(BaseModel):
 
 
 class SleepBlockResponse(BaseModel):
-    """Individual sleep period with timing and optional quality breakdown"""
+    """Individual sleep period with timing and optional quality breakdown.
+
+    Timezone convention:
+    - Primary fields (sleep_start_time, _iso, _day, _hour) are in HOME BASE TZ.
+    - _home_tz suffixed fields are IDENTICAL to the primary fields and exist
+      only for backward compatibility.  Frontend should prefer _home_tz fields;
+      base fields will be removed in a future release.
+    - _location_tz fields are in the IANA timezone where the pilot physically
+      sleeps (hotel/home).
+    """
     sleep_start_time: str  # HH:mm in home-base timezone
     sleep_end_time: str    # HH:mm in home-base timezone
-    sleep_start_iso: str   # ISO format with date for proper chronogram positioning
-    sleep_end_iso: str     # ISO format with date for proper chronogram positioning
-    sleep_type: str        # 'main', 'nap', 'anchor'
+    sleep_start_iso: str   # ISO format with date (home-base TZ)
+    sleep_end_iso: str     # ISO format with date (home-base TZ)
+    sleep_type: str        # 'main', 'nap', 'anchor', 'inflight'
     duration_hours: float
     effective_hours: float
     quality_factor: float
@@ -135,13 +143,14 @@ class SleepBlockResponse(BaseModel):
     sleep_start_time_location_tz: Optional[str] = None  # HH:mm in location timezone
     sleep_end_time_location_tz: Optional[str] = None    # HH:mm in location timezone
 
-    # Numeric grid positioning (home-base TZ)
-    sleep_start_day: Optional[int] = None      # Day of month (1-31)
-    sleep_start_hour: Optional[float] = None   # Decimal hour (0-24)
+    # DEPRECATED: use _home_tz fields below instead (identical values).
+    # Kept for backward compatibility; will be removed in a future release.
+    sleep_start_day: Optional[int] = None      # Day of month (1-31) — home-base TZ
+    sleep_start_hour: Optional[float] = None   # Decimal hour (0-24) — home-base TZ
     sleep_end_day: Optional[int] = None
     sleep_end_hour: Optional[float] = None
 
-    # Explicit home-base timezone positioning (preferred by frontend)
+    # Canonical home-base timezone positioning (preferred by frontend)
     sleep_start_day_home_tz: Optional[int] = None
     sleep_start_hour_home_tz: Optional[float] = None
     sleep_end_day_home_tz: Optional[int] = None
@@ -161,7 +170,12 @@ class ReferenceResponse(BaseModel):
 
 
 class SleepQualityResponse(BaseModel):
-    """Sleep quality analysis with scientific methodology transparency"""
+    """Sleep quality analysis with scientific methodology transparency.
+
+    Top-level positioning fields represent the FULL sleep window across all
+    blocks (earliest start → latest end).  Individual block positions are
+    in the sleep_blocks array.
+    """
     total_sleep_hours: float
     effective_sleep_hours: float
     sleep_efficiency: float
@@ -170,18 +184,18 @@ class SleepQualityResponse(BaseModel):
     confidence: float
     warnings: List[str]
     sleep_blocks: List[SleepBlockResponse] = []  # All sleep periods
-    sleep_start_time: Optional[str] = None  # Primary sleep start (HH:mm)
-    sleep_end_time: Optional[str] = None    # Primary sleep end (HH:mm)
-    sleep_start_iso: Optional[str] = None   # Primary sleep start (ISO format with date for chronogram)
-    sleep_end_iso: Optional[str] = None     # Primary sleep end (ISO format with date for chronogram)
+    sleep_start_time: Optional[str] = None  # HH:mm of earliest block (home-base TZ)
+    sleep_end_time: Optional[str] = None    # HH:mm of latest block (home-base TZ)
+    sleep_start_iso: Optional[str] = None   # Earliest block start (ISO, home-base TZ)
+    sleep_end_iso: Optional[str] = None     # Latest block end (ISO, home-base TZ)
 
-    # Numeric grid positioning from primary sleep block (home-base TZ)
-    sleep_start_day: Optional[int] = None       # Day of month (1-31)
-    sleep_start_hour: Optional[float] = None    # Decimal hour (0-24)
+    # DEPRECATED: use _home_tz fields below instead (identical values).
+    sleep_start_day: Optional[int] = None       # Day of month (1-31) — home-base TZ
+    sleep_start_hour: Optional[float] = None    # Decimal hour (0-24) — home-base TZ
     sleep_end_day: Optional[int] = None
     sleep_end_hour: Optional[float] = None
 
-    # Explicit home-base timezone positioning (preferred by frontend)
+    # Canonical home-base timezone positioning (preferred by frontend)
     sleep_start_day_home_tz: Optional[int] = None
     sleep_start_hour_home_tz: Optional[float] = None
     sleep_end_day_home_tz: Optional[int] = None
@@ -189,7 +203,7 @@ class SleepQualityResponse(BaseModel):
     sleep_start_time_home_tz: Optional[str] = None    # HH:mm
     sleep_end_time_home_tz: Optional[str] = None      # HH:mm
 
-    # Scientific methodology (new — surfaces calculation transparency)
+    # Scientific methodology (surfaces calculation transparency)
     explanation: Optional[str] = None              # Human-readable strategy description
     confidence_basis: Optional[str] = None         # Why confidence is at this level
     quality_factors: Optional[QualityFactorsResponse] = None  # Factor breakdown
@@ -318,17 +332,6 @@ class AnalysisResponse(BaseModel):
     ulr_violations: List[str] = []
 
 
-class ChronogramRequest(BaseModel):
-    analysis_id: str
-    mode: str = "risk"  # "risk", "state", "hybrid"
-    theme: str = "light"
-    show_annotations: bool = True
-
-
-class CalendarRequest(BaseModel):
-    analysis_id: str
-    theme: str = "light"
-
 
 # ============================================================================
 # IN-MEMORY STORAGE (Replace with database in production)
@@ -357,31 +360,25 @@ def classify_risk(performance: Optional[float]) -> str:
         return "extreme"
 
 
-def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
-    """Shared serialization for a single duty — used by both POST and GET endpoints."""
+def _build_segments(duty, home_tz) -> list:
+    """Serialize flight segments with timezone conversions."""
     import pytz
 
-    risk = classify_risk(duty_timeline.landing_performance)
-    home_tz = pytz.timezone(duty.home_base_timezone)
-
-    # Build segments
     segments = []
     for seg in duty.segments:
         dep_utc = seg.scheduled_departure_utc
         arr_utc = seg.scheduled_arrival_utc
 
-        # Convert to HOME BASE timezone for chronogram positioning
-        # All times in the same reference TZ keeps duty bars proportional.
+        # Home base timezone for chronogram alignment
         dep_home = dep_utc.astimezone(home_tz)
         arr_home = arr_utc.astimezone(home_tz)
 
-        # Also convert to actual airport-local timezone for display
+        # Actual airport-local timezone for display
         dep_airport_tz = pytz.timezone(seg.departure_airport.timezone)
         arr_airport_tz = pytz.timezone(seg.arrival_airport.timezone)
         dep_airport_local = dep_utc.astimezone(dep_airport_tz)
         arr_airport_local = arr_utc.astimezone(arr_airport_tz)
 
-        # Calculate UTC offsets at the time of departure/arrival (DST-aware)
         dep_utc_offset = dep_airport_local.utcoffset().total_seconds() / 3600
         arr_utc_offset = arr_airport_local.utcoffset().total_seconds() / 3600
 
@@ -391,16 +388,12 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
             arrival=seg.arrival_airport.code,
             departure_time=dep_utc.isoformat(),
             arrival_time=arr_utc.isoformat(),
-            # Backward-compatible fields (home base TZ)
             departure_time_local=dep_home.strftime("%H:%M"),
             arrival_time_local=arr_home.strftime("%H:%M"),
-            # Explicit home-base TZ fields
             departure_time_home_tz=dep_home.strftime("%H:%M"),
             arrival_time_home_tz=arr_home.strftime("%H:%M"),
-            # Actual airport-local times
             departure_time_airport_local=dep_airport_local.strftime("%H:%M"),
             arrival_time_airport_local=arr_airport_local.strftime("%H:%M"),
-            # Timezone metadata
             departure_timezone=seg.departure_airport.timezone,
             arrival_timezone=seg.arrival_airport.timezone,
             departure_utc_offset=dep_utc_offset,
@@ -409,60 +402,79 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
             activity_code=getattr(seg, 'activity_code', None),
             is_deadhead=getattr(seg, 'is_deadhead', False),
         ))
+    return segments
 
-    # Convert report/release to home timezone for display
-    report_local = duty.report_time_utc.astimezone(home_tz)
-    release_local = duty.release_time_utc.astimezone(home_tz)
 
-    # Time validation warnings
-    time_warnings = []
+def _validate_duty_times(duty) -> list:
+    """Return time-validation warnings for a single duty."""
+    warnings = []
     if duty.report_time_utc >= duty.release_time_utc:
-        time_warnings.append("Invalid duty: report time >= release time")
+        warnings.append("Invalid duty: report time >= release time")
     if duty.duty_hours > 24 and not getattr(duty, 'is_ulr', False):
-        time_warnings.append(f"Unusual duty length: {duty.duty_hours:.1f} hours")
+        warnings.append(f"Unusual duty length: {duty.duty_hours:.1f} hours")
     elif duty.duty_hours > 23 and getattr(duty, 'is_ulr', False):
-        time_warnings.append(f"ULR duty exceeds max discretion limit: {duty.duty_hours:.1f} hours")
+        warnings.append(f"ULR duty exceeds max discretion limit: {duty.duty_hours:.1f} hours")
     if duty.duty_hours < 0.5:
-        time_warnings.append(f"Very short duty: {duty.duty_hours:.1f} hours")
+        warnings.append(f"Very short duty: {duty.duty_hours:.1f} hours")
+    return warnings
 
-    # Sleep quality (with scientific methodology)
-    sleep_quality = None
-    if duty_timeline.sleep_quality_data:
-        sqd = duty_timeline.sleep_quality_data
-        first_block = sqd.get('sleep_blocks', [{}])[0] if sqd.get('sleep_blocks') else {}
-        sleep_quality = SleepQualityResponse(
-            total_sleep_hours=sqd.get('total_sleep_hours', 0.0),
-            effective_sleep_hours=sqd.get('effective_sleep_hours', 0.0),
-            sleep_efficiency=sqd.get('sleep_efficiency', 0.0),
-            wocl_overlap_hours=sqd.get('wocl_overlap_hours', 0.0),
-            sleep_strategy=sqd.get('strategy_type', 'unknown'),
-            confidence=sqd.get('confidence', 0.0),
-            warnings=sqd.get('warnings', []),
-            sleep_blocks=sqd.get('sleep_blocks', []),
-            sleep_start_time=sqd.get('sleep_start_time'),
-            sleep_end_time=sqd.get('sleep_end_time'),
-            # Scientific methodology
-            explanation=sqd.get('explanation'),
-            confidence_basis=sqd.get('confidence_basis'),
-            quality_factors=sqd.get('quality_factors'),
-            references=sqd.get('references', []),
-            # Chronogram positioning from first sleep block
-            sleep_start_iso=first_block.get('sleep_start_iso'),
-            sleep_end_iso=first_block.get('sleep_end_iso'),
-            sleep_start_day=first_block.get('sleep_start_day'),
-            sleep_start_hour=first_block.get('sleep_start_hour'),
-            sleep_end_day=first_block.get('sleep_end_day'),
-            sleep_end_hour=first_block.get('sleep_end_hour'),
-            # Home-base TZ positioning (preferred by frontend)
-            sleep_start_day_home_tz=first_block.get('sleep_start_day_home_tz'),
-            sleep_start_hour_home_tz=first_block.get('sleep_start_hour_home_tz'),
-            sleep_end_day_home_tz=first_block.get('sleep_end_day_home_tz'),
-            sleep_end_hour_home_tz=first_block.get('sleep_end_hour_home_tz'),
-            sleep_start_time_home_tz=first_block.get('sleep_start_time_home_tz'),
-            sleep_end_time_home_tz=first_block.get('sleep_end_time_home_tz'),
-        )
 
-    # Augmented crew / ULR data
+def _build_sleep_quality(duty_timeline) -> Optional[SleepQualityResponse]:
+    """Assemble SleepQualityResponse from strategy data.
+
+    Top-level positioning spans the full sleep window (earliest start → latest
+    end) so multi-block strategies are represented correctly.
+    """
+    if not duty_timeline.sleep_quality_data:
+        return None
+
+    sqd = duty_timeline.sleep_quality_data
+    blocks = sqd.get('sleep_blocks', [])
+
+    if blocks:
+        earliest = blocks[0]
+        latest = blocks[0]
+        for b in blocks[1:]:
+            if (b.get('sleep_start_iso') or '') < (earliest.get('sleep_start_iso') or ''):
+                earliest = b
+            if (b.get('sleep_end_iso') or '') > (latest.get('sleep_end_iso') or ''):
+                latest = b
+    else:
+        earliest = {}
+        latest = {}
+
+    return SleepQualityResponse(
+        total_sleep_hours=sqd.get('total_sleep_hours', 0.0),
+        effective_sleep_hours=sqd.get('effective_sleep_hours', 0.0),
+        sleep_efficiency=sqd.get('sleep_efficiency', 0.0),
+        wocl_overlap_hours=sqd.get('wocl_overlap_hours', 0.0),
+        sleep_strategy=sqd.get('strategy_type', 'unknown'),
+        confidence=sqd.get('confidence', 0.0),
+        warnings=sqd.get('warnings', []),
+        sleep_blocks=blocks,
+        sleep_start_time=sqd.get('sleep_start_time'),
+        sleep_end_time=sqd.get('sleep_end_time'),
+        explanation=sqd.get('explanation'),
+        confidence_basis=sqd.get('confidence_basis'),
+        quality_factors=sqd.get('quality_factors'),
+        references=sqd.get('references', []),
+        sleep_start_iso=earliest.get('sleep_start_iso'),
+        sleep_end_iso=latest.get('sleep_end_iso'),
+        sleep_start_day=earliest.get('sleep_start_day'),
+        sleep_start_hour=earliest.get('sleep_start_hour'),
+        sleep_end_day=latest.get('sleep_end_day'),
+        sleep_end_hour=latest.get('sleep_end_hour'),
+        sleep_start_day_home_tz=earliest.get('sleep_start_day_home_tz'),
+        sleep_start_hour_home_tz=earliest.get('sleep_start_hour_home_tz'),
+        sleep_end_day_home_tz=latest.get('sleep_end_day_home_tz'),
+        sleep_end_hour_home_tz=latest.get('sleep_end_hour_home_tz'),
+        sleep_start_time_home_tz=earliest.get('sleep_start_time_home_tz'),
+        sleep_end_time_home_tz=latest.get('sleep_end_time_home_tz'),
+    )
+
+
+def _build_ulr_data(duty_timeline, duty) -> tuple:
+    """Extract ULR compliance dict and inflight rest blocks."""
     ulr_compliance_dict = None
     if getattr(duty_timeline, 'ulr_compliance', None):
         uc = duty_timeline.ulr_compliance
@@ -495,6 +507,23 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
             'crew_set': period.crew_set if period else None,
             'is_during_wocl': period.is_during_wocl if period else False,
         })
+    return ulr_compliance_dict, inflight_blocks
+
+
+def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
+    """Shared serialization for a single duty — used by both POST and GET endpoints."""
+    import pytz
+
+    risk = classify_risk(duty_timeline.landing_performance)
+    home_tz = pytz.timezone(duty.home_base_timezone)
+
+    segments = _build_segments(duty, home_tz)
+    time_warnings = _validate_duty_times(duty)
+    sleep_quality = _build_sleep_quality(duty_timeline)
+    ulr_compliance_dict, inflight_blocks = _build_ulr_data(duty_timeline, duty)
+
+    report_local = duty.report_time_utc.astimezone(home_tz)
+    release_local = duty.release_time_utc.astimezone(home_tz)
 
     return DutyResponse(
         duty_id=duty_timeline.duty_id,
@@ -849,73 +878,6 @@ async def get_analysis(analysis_id: str):
         total_augmented_duties=getattr(monthly_analysis, 'total_augmented_duties', 0),
         ulr_violations=getattr(monthly_analysis, 'ulr_violations', []),
     )
-
-
-@app.post("/api/visualize/chronogram")
-async def generate_chronogram(request: ChronogramRequest):
-    """
-    Generate high-resolution chronogram image
-    Returns base64-encoded PNG
-    """
-
-    if request.analysis_id not in analysis_store:
-        raise HTTPException(status_code=404, detail="Analysis not found")
-
-    monthly_analysis, roster, _sleep_strategies = analysis_store[request.analysis_id]
-
-    try:
-        chrono = FatigueChronogram(theme=request.theme)
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
-            chrono.plot_monthly_chronogram(
-                monthly_analysis,
-                save_path=tmp.name,
-                mode=request.mode,
-                show_annotations=request.show_annotations
-            )
-
-            # Read and encode as base64
-            with open(tmp.name, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode()
-
-            os.unlink(tmp.name)
-
-        return {
-            "image": f"data:image/png;base64,{image_data}",
-            "format": "png"
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Chronogram generation failed: {str(e)}")
-
-
-@app.post("/api/visualize/calendar")
-async def generate_calendar(request: CalendarRequest):
-    """Generate aviation calendar image"""
-
-    if request.analysis_id not in analysis_store:
-        raise HTTPException(status_code=404, detail="Analysis not found")
-
-    monthly_analysis, roster, _sleep_strategies = analysis_store[request.analysis_id]
-
-    try:
-        cal = AviationCalendar(theme=request.theme)
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp:
-            cal.plot_monthly_roster(monthly_analysis, save_path=tmp.name)
-
-            with open(tmp.name, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode()
-
-            os.unlink(tmp.name)
-
-        return {
-            "image": f"data:image/png;base64,{image_data}",
-            "format": "png"
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Calendar generation failed: {str(e)}")
 
 
 @app.get("/api/duty/{analysis_id}/{duty_id}")

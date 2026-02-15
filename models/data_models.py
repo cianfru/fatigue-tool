@@ -675,7 +675,6 @@ class PerformancePoint:
 
 
 @dataclass
-@dataclass
 class PinchEvent:
     """
     'Pinch' event: High sleep pressure during circadian minimum
