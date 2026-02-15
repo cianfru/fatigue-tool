@@ -645,7 +645,8 @@ async def analyze_roster(
     home_timezone: str = Form("Asia/Qatar"),
     config_preset: str = Form("default"),
     timezone_format: str = Form("auto"),
-    crew_set: str = Form("crew_b")
+    crew_set: str = Form("crew_b"),
+    duty_crew_overrides: str = Form("{}")
 ):
     """
     Upload roster file and get fatigue analysis
@@ -699,13 +700,25 @@ async def analyze_roster(
         if not roster.duties:
             raise HTTPException(status_code=400, detail="No duties found in roster")
 
-        # Set crew set for ULR duties (Crew A or Crew B)
+        # Set crew set for ULR duties (Crew A or Crew B) with per-duty override support
+        import json
         from models.data_models import ULRCrewSet
+
+        # Parse per-duty crew overrides
+        overrides_dict = {}
+        try:
+            overrides_dict = json.loads(duty_crew_overrides) if duty_crew_overrides else {}
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Invalid duty_crew_overrides JSON, using global setting")
+
+        # Apply crew set to each duty (with per-duty override support)
         valid_crew_sets = {'crew_a': ULRCrewSet.CREW_A, 'crew_b': ULRCrewSet.CREW_B}
-        ulr_crew_set = valid_crew_sets.get(crew_set.lower(), ULRCrewSet.CREW_B)
+
         for d in roster.duties:
             if hasattr(d, 'ulr_crew_set'):
-                d.ulr_crew_set = ulr_crew_set
+                # Priority: duty-specific override > global setting
+                crew_set_key = overrides_dict.get(d.duty_id, crew_set.lower())
+                d.ulr_crew_set = valid_crew_sets.get(crew_set_key, ULRCrewSet.CREW_B)
         
         # Get config
         config_map = {
