@@ -379,7 +379,7 @@ class ULRRestPlanner:
         if not duty.segments:
             return InFlightRestPlan(
                 rest_periods=[],
-                crew_composition=CrewComposition.AUGMENTED_4,
+                crew_composition=duty.crew_composition,  # Use duty's actual composition
                 rest_facility_class=RestFacilityClass.CLASS_1,
             )
 
@@ -397,7 +397,7 @@ class ULRRestPlanner:
         if available_hours < 4:
             return InFlightRestPlan(
                 rest_periods=[],
-                crew_composition=CrewComposition.AUGMENTED_4,
+                crew_composition=duty.crew_composition,  # Use duty's actual composition
                 rest_facility_class=RestFacilityClass.CLASS_1,
             )
 
@@ -428,7 +428,7 @@ class ULRRestPlanner:
 
         return InFlightRestPlan(
             rest_periods=periods,
-            crew_composition=CrewComposition.AUGMENTED_4,
+            crew_composition=duty.crew_composition,  # Use duty's actual composition
             rest_facility_class=RestFacilityClass.CLASS_1,
         )
 

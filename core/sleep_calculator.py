@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 # Import data models
 from models.data_models import (
     Duty, Roster, FlightSegment, SleepBlock, CircadianState,
-    PerformancePoint, PinchEvent, DutyTimeline, MonthlyAnalysis, FlightPhase
+    PerformancePoint, PinchEvent, DutyTimeline, MonthlyAnalysis, FlightPhase,
+    CrewComposition
 )
 from core.parameters import ModelConfig
 from core.sleep_quality import SleepQualityAnalysis, SleepQualityEngine
@@ -231,8 +232,22 @@ class UnifiedSleepCalculator(SleepStrategyMixin):
         # Priority order: most constrained/specific scenarios first.
 
         # 0. ULR detection — takes priority (48h pre-rest protocol)
-        if getattr(duty, 'is_ulr_operation', False) or getattr(duty, 'is_ulr', False):
+        # IMPORTANT: Only use ULR sleep strategy for TRUE 4-pilot ULR operations
+        crew_comp = getattr(duty, 'crew_composition', CrewComposition.STANDARD)
+        is_ulr_flagged = getattr(duty, 'is_ulr_operation', False) or getattr(duty, 'is_ulr', False)
+
+        if is_ulr_flagged and crew_comp == CrewComposition.AUGMENTED_4:
             return self._ulr_sleep_strategy(duty, previous_duty)
+        elif is_ulr_flagged and crew_comp != CrewComposition.AUGMENTED_4:
+            logger.warning(
+                f"Duty {duty.duty_id} has ULR flags but crew_composition={crew_comp.value}, "
+                f"not AUGMENTED_4. Using standard sleep strategies."
+            )
+            # Fall through to other strategies
+
+        # 0.5. 3-pilot augmented crew — different from ULR (single enhanced night + optional nap)
+        if crew_comp == CrewComposition.AUGMENTED_3:
+            return self._augmented_3_pilot_strategy(duty, previous_duty)
 
         # 1. Anchor sleep — large timezone shift from home base (≥3h).
         #    Pilot's circadian clock is misaligned; maintain home-base

@@ -832,19 +832,31 @@ class BorbelyFatigueModel:
 
             # Generate in-flight rest plan for augmented crew / ULR duties
             if getattr(duty, 'is_ulr_operation', False) or getattr(duty, 'is_ulr', False):
+                # Only upgrade if crew composition is STANDARD (not already set)
                 if duty.crew_composition == CrewComposition.STANDARD:
                     duty.crew_composition = CrewComposition.AUGMENTED_4
-                duty.is_ulr = True
-                if not duty.rest_facility_class:
-                    duty.rest_facility_class = RestFacilityClass.CLASS_1
-                ulr_params = self.config.ulr_params if hasattr(self.config, 'ulr_params') else None
-                ulr_planner = ULRRestPlanner(ulr_params)
-                crew_set = getattr(duty, 'ulr_crew_set', None) or ULRCrewSet.CREW_B
-                duty.inflight_rest_plan = ulr_planner.generate_rest_plan(
-                    duty=duty,
-                    crew_set=crew_set,
-                    home_timezone=roster.home_base_timezone,
-                )
+                    logger.info(f"Upgraded duty {duty.duty_id} to AUGMENTED_4 for ULR")
+                elif duty.crew_composition == CrewComposition.AUGMENTED_3:
+                    # 3-pilot crew with ULR flag - likely extended operation, NOT true ULR
+                    logger.warning(
+                        f"Duty {duty.duty_id} has ULR flags but crew_composition=AUGMENTED_3. "
+                        f"Treating as augmented 3-pilot, NOT ULR."
+                    )
+                    duty.is_ulr = False  # Clear ULR flag to prevent ULR sleep strategies
+
+                # Only use ULR rest planner for 4-pilot crews
+                if duty.crew_composition == CrewComposition.AUGMENTED_4:
+                    duty.is_ulr = True
+                    if not duty.rest_facility_class:
+                        duty.rest_facility_class = RestFacilityClass.CLASS_1
+                    ulr_params = self.config.ulr_params if hasattr(self.config, 'ulr_params') else None
+                    ulr_planner = ULRRestPlanner(ulr_params)
+                    crew_set = getattr(duty, 'ulr_crew_set', None) or ULRCrewSet.CREW_B
+                    duty.inflight_rest_plan = ulr_planner.generate_rest_plan(
+                        duty=duty,
+                        crew_set=crew_set,
+                        home_timezone=roster.home_base_timezone,
+                    )
             elif getattr(duty, 'is_augmented_crew', False):
                 if not duty.rest_facility_class:
                     duty.rest_facility_class = RestFacilityClass.CLASS_1
