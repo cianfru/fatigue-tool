@@ -78,6 +78,7 @@ class CrewLinkRosterParser:
             raise ValueError(f"timezone_format must be 'auto', 'local', 'zulu', or 'homebase', got '{timezone_format}'")
 
         self.home_timezone = 'Asia/Qatar'  # Default DOH, will be updated from pilot_info
+        self.home_base_code = 'DOH'  # Default, will be updated from pilot_info
 
     def _get_or_create_airport(self, code: str) -> Optional[Airport]:
         """
@@ -114,6 +115,10 @@ class CrewLinkRosterParser:
 
         return placeholder
     
+    def _get_home_base_code(self) -> str:
+        """Return the pilot's home base IATA code (e.g. 'DOH')."""
+        return self.home_base_code
+
     def parse_roster(self, pdf_path: str) -> Dict:
         """
         Main entry point - parses airline grid-format roster PDF
@@ -133,8 +138,9 @@ class CrewLinkRosterParser:
             # Extract pilot info from header
             pilot_info = self._extract_pilot_info(page)
             
-            # FIXED: Update home timezone from pilot base
+            # FIXED: Update home timezone and base code from pilot base
             if pilot_info.get('base'):
+                self.home_base_code = pilot_info['base']
                 base_airport = self._get_or_create_airport(pilot_info['base'])
                 if base_airport:
                     self.home_timezone = base_airport.timezone
@@ -419,26 +425,41 @@ class CrewLinkRosterParser:
             # Parse this column's data into a duty (if any)
             duty = self._parse_column_to_duty(date, column_data)
             if duty:
-                # Check if this is a continuation of the previous duty:
-                # - No RPT line in this column (used departure-1h fallback)
-                # - Previous duty exists and its last arrival airport matches
-                #   this duty's first departure airport
+                # Check if this is a TRUE continuation of the previous duty:
+                # A continuation means the pilot is at an outstation (layover)
+                # and the next day's flights depart FROM that outstation back home,
+                # with no separate RPT because it's the same duty period.
+                #
+                # Conditions (ALL must be true):
+                # 1. No RPT line in this column (used departure-1h fallback)
+                # 2. Previous duty's last arrival is NOT the home base
+                #    (home base departures are always new duties, not continuations)
+                # 3. Previous duty's last arrival matches this duty's first departure
+                #    (pilot is at the outstation)
+                # 4. Previous duty exists and both have segments
                 has_rpt = any(
-                    re.match(r'RPT\s*:', line)
+                    re.match(r'R\s*P\s*T\s*:', line)
                     for item in column_data
                     for line in item.split('\n')
                 )
-                if (not has_rpt
-                        and duties
-                        and duty.segments
-                        and duties[-1].segments
-                        and duties[-1].segments[-1].arrival_airport.code == duty.segments[0].departure_airport.code):
+                prev_ended_at_outstation = (
+                    duties
+                    and duties[-1].segments
+                    and duties[-1].segments[-1].arrival_airport.code != self._get_home_base_code()
+                )
+                is_continuation = (
+                    not has_rpt
+                    and prev_ended_at_outstation
+                    and duty.segments
+                    and duties[-1].segments[-1].arrival_airport.code == duty.segments[0].departure_airport.code
+                )
+                if is_continuation:
                     # Merge: append segments to previous duty, update release time
                     prev_duty = duties[-1]
                     prev_duty.segments.extend(duty.segments)
                     prev_duty.release_time_utc = duty.release_time_utc
                     print(f"  ✓ Merged {date.strftime('%d%b')} segments into previous duty "
-                          f"({prev_duty.date.strftime('%d%b')}) — continuation, no RPT")
+                          f"({prev_duty.date.strftime('%d%b')}) — layover continuation, no RPT")
                 else:
                     duties.append(duty)
 
@@ -459,14 +480,18 @@ class CrewLinkRosterParser:
         if not lines:
             return None
         
-        # Check if OFF day
+        # Check if non-flying day (OFF, standby, leave, sick, rest, training)
+        # These activity codes mean the pilot has no operating duty on this date.
         first_item = lines[0].upper()
-        if 'OFF' in first_item or 'GOFF' in first_item:
-            return None  # OFF day, no duty
-        
-        # Check if standby
-        if 'PSBY' in first_item or 'STANDBY' in first_item:
-            return None  # Standby, not a flying duty
+        _NON_FLYING_CODES = {
+            'OFF', 'GOFF', 'DOFF',          # Days off
+            'SBY', 'PSBY', 'STANDBY',       # Standby (home or phone)
+            'LVE', 'LEAVE',                  # Annual/other leave
+            'SICK', 'REST', 'SR',            # Sick, rest, special rest
+            '6ESEC', '6EVS', 'EVNT',         # Training/events
+        }
+        if any(code in first_item for code in _NON_FLYING_CODES):
+            return None  # Non-flying day, no duty
         
         # Extract report time (RPT) and flight segments first
         # We need to know the departure airport to properly localize report time
@@ -475,7 +500,9 @@ class CrewLinkRosterParser:
         report_minute = None
         
         for line in lines:
-            rpt_match = re.match(r'RPT\s*:\s*(\d{2})\s*:\s*(\d{2})', line)
+            # Tolerate OCR artifacts that insert spaces inside "RPT"
+            # (e.g., "R PT:05:55" or "RP T:05:55" from pdfplumber)
+            rpt_match = re.match(r'R\s*P\s*T\s*:\s*(\d{2})\s*:\s*(\d{2})', line)
             if rpt_match:
                 report_hour = int(rpt_match.group(1))
                 report_minute = int(rpt_match.group(2))
