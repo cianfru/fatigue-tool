@@ -21,7 +21,7 @@ import pytz
 import airportsdata
 
 # Ensure you have these models defined in your project
-from models.data_models import Airport, FlightSegment, Duty, Roster, CrewComposition, RestFacilityClass
+from models.data_models import Airport, FlightSegment, Duty, Roster, CrewComposition, RestFacilityClass, ULRCrewSet
 from parsers.qatar_crewlink_parser import CrewLinkRosterParser
 
 
@@ -31,27 +31,95 @@ from parsers.qatar_crewlink_parser import CrewLinkRosterParser
 
 def auto_detect_crew_augmentation(roster: Roster) -> None:
     """
-    Post-parse pass: auto-detect augmented crew and ULR duties.
+    Post-parse pass: detect augmented crew and ULR duties from activity codes + FDP.
 
-    Rules (based on EASA CS FTL.1.205 and Qatar FTL 7.18):
-    - FDP > 18h → ULR, AUGMENTED_4, Class 1 rest facility
-    - FDP > 13h with a single segment >9h block → likely AUGMENTED_3, Class 1
-    - Otherwise → STANDARD (no change)
+    Priority order (highest wins):
+      1. IR activity code on segment → AUGMENTED_4, Crew B (definitive 4-pilot)
+      2. Return leg of IR duty (same layover station) → AUGMENTED_4, Crew A
+      3. FDP > 18h (no IR marker) → AUGMENTED_4, fallback heuristic
+      4. FDP > 13h with single segment > 9h block → AUGMENTED_3, fallback heuristic
+      5. Otherwise → STANDARD (no change)
+
+    IR semantics (Qatar CrewLink PDF):
+      IR = Inflight Rest. Pilot is relief crew (Crew B) on that sector.
+      The paired return sector has the same 4-pilot crew with pilot as Crew A.
+
+    DH semantics:
+      DH = Deadhead. Pilot is passenger, not operating. Flagged on segment
+      but does not change crew composition (DH duty is still STANDARD).
 
     These are defaults that the pilot/API can override.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # Track IR duty arrival airport for return-leg pairing
+    previous_ir_arrival = None
+
     for duty in roster.duties:
+        if not duty.segments:
+            previous_ir_arrival = None
+            continue
+
+        # --- Rule 1: IR on any segment → definitive 4-pilot, Crew B ---
+        if duty.has_inflight_rest_segments:
+            duty.crew_composition = CrewComposition.AUGMENTED_4
+            duty.is_ulr = True
+            duty.ulr_crew_set = ULRCrewSet.CREW_B
+            duty.rest_facility_class = RestFacilityClass.CLASS_1
+            # Remember arrival station for return-leg pairing
+            previous_ir_arrival = duty.segments[-1].arrival_airport.code
+            logger.info(
+                f"Duty {duty.duty_id}: IR detected → AUGMENTED_4 / CREW_B "
+                f"(layover at {previous_ir_arrival})"
+            )
+            continue
+
+        # --- Rule 2: Return leg of IR duty ---
+        if previous_ir_arrival:
+            dep_code = duty.segments[0].departure_airport.code
+            if dep_code == previous_ir_arrival:
+                duty.crew_composition = CrewComposition.AUGMENTED_4
+                duty.is_ulr = True
+                duty.ulr_crew_set = ULRCrewSet.CREW_A
+                duty.rest_facility_class = RestFacilityClass.CLASS_1
+                logger.info(
+                    f"Duty {duty.duty_id}: return leg from {dep_code} "
+                    f"→ AUGMENTED_4 / CREW_A (paired with previous IR duty)"
+                )
+                previous_ir_arrival = None  # Pairing consumed
+                continue
+            # Duty doesn't depart from IR layover — reset tracker
+            previous_ir_arrival = None
+
+        # --- Rule 3: FDP > 18h (no IR marker) → AUGMENTED_4 fallback ---
         if duty.fdp_hours > 18.0:
-            # ULR operation — 4-pilot augmented crew
             duty.is_ulr = True
             duty.crew_composition = CrewComposition.AUGMENTED_4
             duty.rest_facility_class = RestFacilityClass.CLASS_1
+            logger.info(
+                f"Duty {duty.duty_id}: FDP {duty.fdp_hours:.1f}h > 18h "
+                f"→ AUGMENTED_4 (FDP heuristic, no IR marker)"
+            )
+
+        # --- Rule 4: FDP > 13h with long sector → AUGMENTED_3 fallback ---
         elif duty.fdp_hours > 13.0 and any(
             seg.block_time_hours > 9.0 for seg in duty.segments
         ):
-            # Extended FDP with long sector — likely 3-pilot augmented
             duty.crew_composition = CrewComposition.AUGMENTED_3
             duty.rest_facility_class = RestFacilityClass.CLASS_1
+            logger.info(
+                f"Duty {duty.duty_id}: FDP {duty.fdp_hours:.1f}h > 13h "
+                f"with long sector → AUGMENTED_3 (FDP heuristic)"
+            )
+
+        # --- DH segments: logged but no crew composition change ---
+        if duty.has_deadhead_segments:
+            dh_segs = [s.flight_number for s in duty.segments if s.is_deadhead]
+            logger.info(
+                f"Duty {duty.duty_id}: deadhead segment(s) {dh_segs} "
+                f"→ counts toward duty time, no cockpit workload"
+            )
 
 
 # ============================================================================

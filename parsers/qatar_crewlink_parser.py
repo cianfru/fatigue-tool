@@ -671,14 +671,45 @@ class CrewLinkRosterParser:
                         scheduled_departure_utc=dep_utc,
                         scheduled_arrival_utc=arr_utc
                     )
-                    
+
                     segments.append(segment)
-                    
+
                 except Exception as e:
                     print(f"⚠️  Error creating segment for flight {flight_num}: {e}")
-                
-                # Skip past this flight's data
+
+                # Skip past the 5 standard elements
                 i += 5
+
+                # Scan trailing lines for activity codes (IR, DH) and aircraft type.
+                # These appear AFTER the arrival time in Qatar CrewLink PDF columns.
+                # Known activity codes with operational meaning:
+                #   IR = Inflight Rest (pilot is relief crew, always 4-pilot augmented)
+                #   DH = Deadhead (pilot as passenger, not operating)
+                # Ignored codes (no fatigue relevance):
+                #   REQ = Requested duty (bidding metadata)
+                #   PIC, SR, CB, SIM, GND = other annotations
+                _ACTIVITY_CODES = {'IR', 'DH'}
+                _IGNORED_CODES = {'REQ', 'PIC', 'SR', 'CB', 'SIM', 'GND', 'DOFF'}
+
+                scan_limit = min(i + 3, len(lines))
+                while i < scan_limit:
+                    token = lines[i].strip().upper()
+                    clean = token.strip('()')  # "(359)" -> "359"
+
+                    if token in _ACTIVITY_CODES:
+                        segment.activity_code = token
+                        i += 1
+                    elif token in _IGNORED_CODES:
+                        i += 1  # Skip irrelevant codes
+                    elif re.match(r'^\(\w{2,3}\)$', token):
+                        # Parenthesized aircraft type e.g. (359), (351), (77W)
+                        i += 1
+                    elif re.match(r'^[A-Z0-9]{2,3}$', clean) and not re.match(r'^[A-Z]{3}$', token):
+                        # Bare aircraft type code e.g. 359, 77W (not an airport)
+                        i += 1
+                    else:
+                        break  # Unknown token — likely start of next segment
+
                 continue
             
             i += 1

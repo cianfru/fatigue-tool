@@ -418,7 +418,14 @@ class BorbelyFatigueModel:
                     effective_wake_hours = 0.0
                     wake_time = current_time
 
-                workload_multiplier = self.workload_model.get_combined_multiplier(phase, current_sector)
+                # Check if pilot is on a deadhead segment (passenger, no cockpit tasks).
+                # DH counts toward time awake but at reduced workload — no monitoring,
+                # no decision-making, just passive travel fatigue.
+                is_on_deadhead = self._is_on_deadhead_segment(duty.segments, current_time)
+                if is_on_deadhead:
+                    workload_multiplier = 0.3  # Passive travel fatigue only
+                else:
+                    workload_multiplier = self.workload_model.get_combined_multiplier(phase, current_sector)
                 effective_step_duration = step_duration_hours * workload_multiplier
                 effective_wake_hours += effective_step_duration
 
@@ -655,10 +662,19 @@ class BorbelyFatigueModel:
                     return period
         return None
 
+    @staticmethod
+    def _is_on_deadhead_segment(segments: list, current_time: datetime) -> bool:
+        """Check if current time falls within a deadhead (DH) segment."""
+        for seg in segments:
+            if (getattr(seg, 'is_deadhead', False)
+                    and seg.scheduled_departure_utc <= current_time <= seg.scheduled_arrival_utc):
+                return True
+        return False
+
     # ========================================================================
     # ROSTER SIMULATION
     # ========================================================================
-    
+
     def simulate_roster(self, roster: Roster) -> MonthlyAnalysis:
         """Process entire roster with cumulative tracking"""
         if not roster.duties or len(roster.duties) == 0:
@@ -869,7 +885,7 @@ class BorbelyFatigueModel:
                 )
 
             if i == 0:
-                # First duty only: estimate pre-duty sleep (no previous duty context)
+                # First duty: pre-duty sleep (no previous duty context)
                 strategy = self.sleep_calculator.estimate_sleep_for_duty(
                     duty=duty,
                     previous_duty=None,
@@ -877,9 +893,21 @@ class BorbelyFatigueModel:
                     home_base=roster.pilot_base
                 )
                 strategy_key = duty.duty_id
+            elif duty.is_augmented_crew:
+                # Augmented/ULR duties need crew-specific pre-duty sleep strategies
+                # (NOT generic inter_duty_recovery which ignores crew composition).
+                # estimate_sleep_for_duty() checks crew_composition to dispatch:
+                #   AUGMENTED_4 → _ulr_sleep_strategy()
+                #   AUGMENTED_3 → _augmented_3_pilot_strategy()
+                strategy = self.sleep_calculator.estimate_sleep_for_duty(
+                    duty=duty,
+                    previous_duty=previous_duty,
+                    home_timezone=roster.home_base_timezone,
+                    home_base=roster.pilot_base
+                )
+                strategy_key = duty.duty_id
             else:
-                # Inter-duty gap: single recovery block replaces both
-                # post-duty and pre-duty sleep to avoid double-counting
+                # Standard duties: inter-duty recovery block
                 strategy = self.sleep_calculator.generate_inter_duty_sleep(
                     previous_duty=previous_duty,
                     next_duty=duty,
