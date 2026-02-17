@@ -156,6 +156,137 @@ class UnifiedSleepCalculator(SleepStrategyMixin):
 
         return False, None, 'home'
 
+    def _classify_strategy_type(
+        self,
+        duty: Duty,
+        previous_duty: Optional[Duty],
+        home_timezone: str,
+        home_base: Optional[str],
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Pure classification: determine which sleep strategy applies based on
+        duty characteristics.
+
+        This extracts the decision tree logic so it can be shared between
+        estimate_sleep_for_duty() and generate_inter_duty_sleep().
+
+        Returns:
+            (strategy_type, context_dict) where context_dict contains keys
+            like timezone_shift, rest_hours, report_hour for use in
+            explanation text and strategy dispatch.
+        """
+        home_tz = pytz.timezone(home_timezone)
+        effective_home_base = home_base or (
+            duty.segments[0].departure_airport.code if duty.segments else None
+        )
+
+        # Detect layover for acclimatization logic
+        is_layover, layover_tz, _ = self._detect_layover(
+            duty, previous_duty, effective_home_base
+        )
+
+        # Strategy timezone: home for short layovers, local for acclimated
+        strategy_tz = home_tz
+        layover_duration_hours = 0.0
+        if is_layover and layover_tz and previous_duty:
+            layover_duration_hours = (
+                duty.report_time_utc - previous_duty.release_time_utc
+            ).total_seconds() / 3600
+            if layover_duration_hours > 48:
+                strategy_tz = pytz.timezone(layover_tz)
+
+        report_local = duty.report_time_utc.astimezone(strategy_tz)
+        report_hour = report_local.hour
+
+        # Duty characteristics
+        duty_duration = (
+            duty.release_time_utc - duty.report_time_utc
+        ).total_seconds() / 3600
+        crosses_wocl = self._duty_crosses_wocl(duty)
+
+        # Rest period before this duty
+        rest_hours = None
+        if previous_duty:
+            rest_hours = (
+                duty.report_time_utc - previous_duty.release_time_utc
+            ).total_seconds() / 3600
+
+        # Timezone crossing from home base
+        timezone_shift = 0.0
+        if duty.segments:
+            dep_airport = duty.segments[0].departure_airport
+            home_airport_tz = pytz.timezone(duty.home_base_timezone)
+            dep_tz = pytz.timezone(dep_airport.timezone)
+            home_offset = duty.report_time_utc.astimezone(
+                home_airport_tz
+            ).utcoffset().total_seconds() / 3600
+            dep_offset = duty.report_time_utc.astimezone(
+                dep_tz
+            ).utcoffset().total_seconds() / 3600
+            timezone_shift = abs(dep_offset - home_offset)
+
+        # Build context dict for callers
+        ctx = {
+            'timezone_shift': timezone_shift,
+            'rest_hours': rest_hours,
+            'report_hour': report_hour,
+            'duty_duration': duty_duration,
+            'crosses_wocl': crosses_wocl,
+            'is_layover': is_layover,
+            'layover_duration_hours': layover_duration_hours,
+        }
+
+        # --- Decision tree (same priority order as estimate_sleep_for_duty) ---
+
+        # 0. ULR detection
+        crew_comp = getattr(duty, 'crew_composition', CrewComposition.STANDARD)
+        is_ulr_flagged = (
+            getattr(duty, 'is_ulr_operation', False)
+            or getattr(duty, 'is_ulr', False)
+        )
+
+        if is_ulr_flagged and crew_comp == CrewComposition.AUGMENTED_4:
+            return 'ulr_pre_duty', ctx
+
+        # 0.5. 3-pilot augmented crew
+        if crew_comp == CrewComposition.AUGMENTED_3:
+            return 'augmented_3_pilot', ctx
+
+        # 1. Anchor sleep — large timezone shift (≥3h)
+        if timezone_shift >= self.ANCHOR_TIMEZONE_SHIFT:
+            return 'anchor', ctx
+
+        # 2. Restricted sleep — very short rest (<9h)
+        if rest_hours is not None and rest_hours < self.RESTRICTED_REST_HOURS:
+            return 'restricted', ctx
+
+        # 3. Split sleep — short layover (<10h)
+        if rest_hours is not None and rest_hours < self.SPLIT_REST_HOURS:
+            return 'split', ctx
+
+        # 4. Early bedtime — report before 06:00
+        if report_hour < self.EARLY_REPORT_THRESHOLD:
+            return 'early_bedtime', ctx
+
+        # 5. Nap — night departure (report ≥20:00 or <04:00)
+        if report_hour >= self.NIGHT_FLIGHT_THRESHOLD or report_hour < 4:
+            return 'nap', ctx
+
+        # 6. Afternoon nap — late report (14:00-20:00)
+        if report_hour >= self.AFTERNOON_REPORT_THRESHOLD:
+            return 'afternoon_nap', ctx
+
+        # 7. Extended sleep — long rest period (>14h)
+        if rest_hours is not None and rest_hours > self.EXTENDED_REST_HOURS:
+            return 'extended', ctx
+
+        # 8. WOCL duty — crosses WOCL with long duty
+        if crosses_wocl and duty_duration > 6:
+            return 'wocl_split', ctx
+
+        # 9. Normal — standard overnight rest
+        return 'normal', ctx
+
     def estimate_sleep_for_duty(
         self,
         duty: Duty,
@@ -192,105 +323,46 @@ class UnifiedSleepCalculator(SleepStrategyMixin):
         if is_layover and previous_duty:
             self.layover_duration_hours = (duty.report_time_utc - previous_duty.release_time_utc).total_seconds() / 3600
 
-        # Use layover timezone for strategy selection ONLY after acclimatization (>48h).
-        # For short layovers (<48h), pilot's circadian clock remains on home base time
-        # (EASA AMC1 ORO.FTL.105). A 05:00 home-time report at a layover should use
-        # home timezone for strategy selection, not local timezone.
-        strategy_tz = self.home_tz  # Default to home timezone
+        # Classify strategy using shared decision tree
+        strategy_type, ctx = self._classify_strategy_type(
+            duty, previous_duty, home_timezone, home_base
+        )
+        timezone_shift = ctx['timezone_shift']
+        rest_hours = ctx['rest_hours']
 
-        if is_layover and layover_tz and previous_duty:
-            # Calculate layover duration from previous duty release to current duty report
-            layover_duration_hours = (duty.report_time_utc - previous_duty.release_time_utc).total_seconds() / 3600
-            # Only use layover timezone if pilot has been at this location >48h (acclimated)
-            if layover_duration_hours > 48:
-                strategy_tz = pytz.timezone(layover_tz)
-
-        report_local = duty.report_time_utc.astimezone(strategy_tz)
-        report_hour = report_local.hour
-
-        # Calculate duty characteristics
-        duty_duration = (duty.release_time_utc - duty.report_time_utc).total_seconds() / 3600
-        crosses_wocl = self._duty_crosses_wocl(duty)
-
-        # Calculate rest period before this duty
-        rest_hours = None
-        if previous_duty:
-            rest_hours = (duty.report_time_utc - previous_duty.release_time_utc).total_seconds() / 3600
-
-        # Calculate timezone crossing from home base
-        timezone_shift = 0.0
-        if duty.segments:
-            dep_airport = duty.segments[0].departure_airport
-            home_airport_tz = pytz.timezone(duty.home_base_timezone)
-            dep_tz = pytz.timezone(dep_airport.timezone)
-            # Correctly convert UTC time to each timezone to get the offset
-            home_offset = duty.report_time_utc.astimezone(home_airport_tz).utcoffset().total_seconds() / 3600
-            dep_offset = duty.report_time_utc.astimezone(dep_tz).utcoffset().total_seconds() / 3600
-            timezone_shift = abs(dep_offset - home_offset)
-
-        # Decision tree: match pilot behavior patterns
-        # Priority order: most constrained/specific scenarios first.
-
-        # 0. ULR detection — takes priority (48h pre-rest protocol)
-        # IMPORTANT: Only use ULR sleep strategy for TRUE 4-pilot ULR operations
+        # Log ULR flag mismatch (preserved from original)
         crew_comp = getattr(duty, 'crew_composition', CrewComposition.STANDARD)
         is_ulr_flagged = getattr(duty, 'is_ulr_operation', False) or getattr(duty, 'is_ulr', False)
-
-        if is_ulr_flagged and crew_comp == CrewComposition.AUGMENTED_4:
-            return self._ulr_sleep_strategy(duty, previous_duty)
-        elif is_ulr_flagged and crew_comp != CrewComposition.AUGMENTED_4:
+        if is_ulr_flagged and crew_comp != CrewComposition.AUGMENTED_4:
             logger.warning(
                 f"Duty {duty.duty_id} has ULR flags but crew_composition={crew_comp.value}, "
                 f"not AUGMENTED_4. Using standard sleep strategies."
             )
-            # Fall through to other strategies
 
-        # 0.5. 3-pilot augmented crew — different from ULR (single enhanced night + optional nap)
-        if crew_comp == CrewComposition.AUGMENTED_3:
+        # Dispatch to strategy-specific implementations
+        if strategy_type == 'ulr_pre_duty':
+            return self._ulr_sleep_strategy(duty, previous_duty)
+        elif strategy_type == 'augmented_3_pilot':
             return self._augmented_3_pilot_strategy(duty, previous_duty)
-
-        # 1. Anchor sleep — large timezone shift from home base (≥3h).
-        #    Pilot's circadian clock is misaligned; maintain home-base
-        #    sleep window to preserve circadian anchor.
-        if timezone_shift >= self.ANCHOR_TIMEZONE_SHIFT:
+        elif strategy_type == 'anchor':
             return self._anchor_strategy(duty, previous_duty, timezone_shift)
-
-        # 2. Restricted sleep — very short rest (<9h) forces truncated sleep.
-        #    Takes priority because the rest period physically constrains
-        #    available sleep regardless of report time.
-        if rest_hours is not None and rest_hours < self.RESTRICTED_REST_HOURS:
+        elif strategy_type == 'restricted':
             return self._restricted_strategy(duty, previous_duty, rest_hours)
-
-        # 3. Split sleep — short layover (<10h) where one consolidated
-        #    block is impossible. Pilot splits sleep around the gap.
-        if rest_hours is not None and rest_hours < self.SPLIT_REST_HOURS:
+        elif strategy_type == 'split':
             return self._split_strategy(duty, previous_duty, rest_hours)
-
-        # 4. Early bedtime — report before 06:00 local.
-        #    Pilot goes to bed earlier; circadian opposition limits advance.
-        if report_hour < self.EARLY_REPORT_THRESHOLD:
+        elif strategy_type == 'early_bedtime':
             return self._early_morning_strategy(duty, previous_duty)
-
-        # 5. Nap — night departure (report ≥20:00 or <04:00).
-        #    Morning sleep + pre-duty nap before evening/night flight.
-        if report_hour >= self.NIGHT_FLIGHT_THRESHOLD or report_hour < 4:
+        elif strategy_type == 'nap':
             return self._night_departure_strategy(duty, previous_duty)
-
-        # 6. Afternoon nap — late report (14:00-20:00 local).
-        #    Normal previous-night sleep + afternoon nap before duty.
-        if report_hour >= self.AFTERNOON_REPORT_THRESHOLD:
+        elif strategy_type == 'afternoon_nap':
             return self._afternoon_nap_strategy(duty, previous_duty)
-
-        # 7. Extended sleep — long rest period (>14h) allows extra sleep.
-        if rest_hours is not None and rest_hours > self.EXTENDED_REST_HOURS:
+        elif strategy_type == 'extended':
             return self._extended_strategy(duty, previous_duty, rest_hours)
-
-        # 8. WOCL duty — crosses Window of Circadian Low with long duty.
-        if crosses_wocl and duty_duration > 6:
+        elif strategy_type == 'wocl_split':
             return self._wocl_duty_strategy(duty, previous_duty)
-
-        # 9. Normal — standard overnight rest, no special constraints.
-        return self._normal_sleep_strategy(duty, previous_duty)
+        else:
+            # 'normal' or any unrecognized type
+            return self._normal_sleep_strategy(duty, previous_duty)
     
     def calculate_sleep_quality(
         self,
@@ -389,6 +461,33 @@ class UnifiedSleepCalculator(SleepStrategyMixin):
             else self.home_tz.zone
         )
         bio_tz = pytz.timezone(bio_tz_str)
+
+        # --- Classify strategy type for labeling ---
+        # The timing logic below (bio-onset, circadian gate, etc.) remains
+        # unchanged — only the strategy_type label changes.
+        strategy_type, _strategy_ctx = self._classify_strategy_type(
+            duty=next_duty, previous_duty=previous_duty,
+            home_timezone=home_timezone, home_base=home_base,
+        )
+        # Guard: ULR/augmented types are routed by fatigue_model.py before
+        # reaching generate_inter_duty_sleep(); fall back if they slip through.
+        if strategy_type in ('ulr_pre_duty', 'augmented_3_pilot'):
+            strategy_type = 'inter_duty_recovery'
+
+        # Strategy-specific labels for explanation text
+        _STRATEGY_LABELS = {
+            'normal': 'Normal sleep',
+            'early_bedtime': 'Early bedtime',
+            'nap': 'Night departure sleep',
+            'afternoon_nap': 'Afternoon nap',
+            'anchor': 'Anchor sleep',
+            'restricted': 'Restricted sleep',
+            'split': 'Split sleep',
+            'extended': 'Extended recovery',
+            'wocl_split': 'WOCL split sleep',
+            'inter_duty_recovery': 'Inter-duty recovery',
+        }
+        strategy_label = _STRATEGY_LABELS.get(strategy_type, 'Inter-duty recovery')
 
         # --- 1. Sleep onset: release time + arrival-window delay ---
         # Roach et al. (2025): layover sleep onset predicted by layover start
@@ -541,6 +640,8 @@ class UnifiedSleepCalculator(SleepStrategyMixin):
                 onset_delay_hours=onset_delay_hours,
                 duty_duration_hours=duty_duration_hours,
                 prior_wake_estimate=prior_wake_estimate,
+                strategy_type=strategy_type,
+                strategy_label=strategy_label,
             )
 
         # --- Single block path (evening/night arrival or short gap) ---
@@ -619,11 +720,11 @@ class UnifiedSleepCalculator(SleepStrategyMixin):
 
         location_desc = f"{sleep_location} (layover)" if is_layover else sleep_location
         return SleepStrategy(
-            strategy_type='inter_duty_recovery',
+            strategy_type=strategy_type,
             sleep_blocks=[recovery_block],
             confidence=confidence,
             explanation=(
-                f"Inter-duty recovery at {location_desc}: "
+                f"{strategy_label} at {location_desc}: "
                 f"{onset_delay_hours:.1f}h wind-down after {duty_duration_hours:.0f}h duty, "
                 f"{sleep_quality.actual_sleep_hours:.1f}h sleep "
                 f"({sleep_quality.effective_sleep_hours:.1f}h effective, "
