@@ -1056,7 +1056,10 @@ class BorbelyFatigueModel:
                         'sleep_start_time': sleep_start_home.strftime('%H:%M'),
                         'sleep_end_time': sleep_end_home.strftime('%H:%M'),
                         'sleep_blocks': [{
-                            # Primary fields: HOME BASE timezone for chronogram positioning
+                            # --- UTC timestamps (canonical) ---
+                            'sleep_start_utc': sleep_start.astimezone(pytz.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                            'sleep_end_utc': sleep_end.astimezone(pytz.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                            # --- DEPRECATED fields (home-base TZ, no suffix) ---
                             'sleep_start_time': sleep_start_home.strftime('%H:%M'),
                             'sleep_end_time': sleep_end_home.strftime('%H:%M'),
                             'sleep_start_iso': sleep_start_home.isoformat(),
@@ -1067,16 +1070,23 @@ class BorbelyFatigueModel:
                             'sleep_end_hour': sleep_end_home.hour + sleep_end_home.minute / 60.0,
                             'location_timezone': rest_tz.zone,
                             'environment': rest_env,
-                            # Explicit home base timezone (backward compat, same as primary)
+                            # --- Home-base TZ positioning (canonical for chronogram) ---
                             'sleep_start_time_home_tz': sleep_start_home.strftime('%H:%M'),
                             'sleep_end_time_home_tz': sleep_end_home.strftime('%H:%M'),
                             'sleep_start_day_home_tz': sleep_start_home.day,
                             'sleep_start_hour_home_tz': sleep_start_home.hour + sleep_start_home.minute / 60.0,
                             'sleep_end_day_home_tz': sleep_end_home.day,
                             'sleep_end_hour_home_tz': sleep_end_home.hour + sleep_end_home.minute / 60.0,
-                            # Location timezone (actual local time where pilot sleeps)
+                            'sleep_start_iso_home_tz': sleep_start_home.isoformat(),
+                            'sleep_end_iso_home_tz': sleep_end_home.isoformat(),
+                            # --- Location TZ (actual local time where pilot sleeps) ---
                             'sleep_start_time_location_tz': sleep_start_local.strftime('%H:%M'),
                             'sleep_end_time_location_tz': sleep_end_local.strftime('%H:%M'),
+                            'sleep_start_day_location_tz': sleep_start_local.day,
+                            'sleep_start_hour_location_tz': sleep_start_local.hour + sleep_start_local.minute / 60.0,
+                            'sleep_end_day_location_tz': sleep_end_local.day,
+                            'sleep_end_hour_location_tz': sleep_end_local.hour + sleep_end_local.minute / 60.0,
+                            # --- Block metadata ---
                             'sleep_type': 'main',
                             'duration_hours': rest_quality.actual_sleep_hours,
                             'effective_hours': rest_quality.effective_sleep_hours,
@@ -1199,10 +1209,10 @@ class BorbelyFatigueModel:
                     }
 
                 sleep_blocks_response.append({
-                    # Primary fields: HOME BASE timezone for chronogram positioning.
-                    # All sleep times use the same reference TZ as duty times,
-                    # preventing misalignment when pilot sleeps at a layover
-                    # location in a different timezone.
+                    # --- UTC timestamps (canonical) ---
+                    'sleep_start_utc': block.start_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    'sleep_end_utc': block.end_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    # --- DEPRECATED fields (home-base TZ, no suffix) ---
                     'sleep_start_time': sleep_start_home.strftime('%H:%M'),
                     'sleep_end_time': sleep_end_home.strftime('%H:%M'),
                     'sleep_start_iso': sleep_start_home.isoformat(),
@@ -1213,16 +1223,23 @@ class BorbelyFatigueModel:
                     'sleep_end_hour': sleep_end_home.hour + sleep_end_home.minute / 60.0,
                     'location_timezone': block.location_timezone,
                     'environment': block.environment,
-                    # Explicit home base timezone (backward compat, same as primary)
+                    # --- Home-base TZ positioning (canonical for chronogram) ---
                     'sleep_start_time_home_tz': sleep_start_home.strftime('%H:%M'),
                     'sleep_end_time_home_tz': sleep_end_home.strftime('%H:%M'),
                     'sleep_start_day_home_tz': sleep_start_home.day,
                     'sleep_start_hour_home_tz': sleep_start_home.hour + sleep_start_home.minute / 60.0,
                     'sleep_end_day_home_tz': sleep_end_home.day,
                     'sleep_end_hour_home_tz': sleep_end_home.hour + sleep_end_home.minute / 60.0,
-                    # Location timezone (actual local time where pilot sleeps)
+                    'sleep_start_iso_home_tz': sleep_start_home.isoformat(),
+                    'sleep_end_iso_home_tz': sleep_end_home.isoformat(),
+                    # --- Location TZ (actual local time where pilot sleeps) ---
                     'sleep_start_time_location_tz': sleep_start_local.strftime('%H:%M'),
                     'sleep_end_time_location_tz': sleep_end_local.strftime('%H:%M'),
+                    'sleep_start_day_location_tz': sleep_start_local.day,
+                    'sleep_start_hour_location_tz': sleep_start_local.hour + sleep_start_local.minute / 60.0,
+                    'sleep_end_day_location_tz': sleep_end_local.day,
+                    'sleep_end_hour_location_tz': sleep_end_local.hour + sleep_end_local.minute / 60.0,
+                    # --- Block metadata ---
                     'sleep_type': sleep_type,
                     'duration_hours': block.duration_hours,
                     'effective_hours': block.effective_sleep_hours,

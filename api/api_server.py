@@ -99,6 +99,11 @@ class DutySegmentResponse(BaseModel):
     arrival_timezone: str = ""    # IANA timezone of arrival airport
     departure_utc_offset: Optional[float] = None  # UTC offset at departure (hours, e.g. +3.0)
     arrival_utc_offset: Optional[float] = None     # UTC offset at arrival (hours, e.g. +5.5)
+    # Home-TZ day/hour for chronogram positioning (consistent with sleep blocks)
+    departure_day_home_tz: Optional[int] = None    # Day of month (1-31) in home base TZ
+    departure_hour_home_tz: Optional[float] = None # Decimal hour (0-24) in home base TZ
+    arrival_day_home_tz: Optional[int] = None
+    arrival_hour_home_tz: Optional[float] = None
     block_hours: float
     # Activity code from roster PDF (IR = inflight rest, DH = deadhead)
     activity_code: Optional[str] = None
@@ -120,43 +125,63 @@ class QualityFactorsResponse(BaseModel):
 class SleepBlockResponse(BaseModel):
     """Individual sleep period with timing and optional quality breakdown.
 
-    Timezone convention:
-    - Primary fields (sleep_start_time, _iso, _day, _hour) are in HOME BASE TZ.
-    - _home_tz suffixed fields are IDENTICAL to the primary fields and exist
-      only for backward compatibility.  Frontend should prefer _home_tz fields;
-      base fields will be removed in a future release.
-    - _location_tz fields are in the IANA timezone where the pilot physically
-      sleeps (hotel/home).
+    Timezone convention (three coordinate systems):
+
+    1. UTC (_utc suffix): Canonical timestamps. Frontend can derive any TZ.
+       - sleep_start_utc, sleep_end_utc: ISO 8601 with Z suffix
+
+    2. Home-base TZ (_home_tz suffix): For chronogram positioning.
+       All duty and sleep bars use the same reference TZ so they align.
+       - sleep_start_day_home_tz, sleep_start_hour_home_tz, etc.
+
+    3. Location TZ (_location_tz suffix): Actual local time where pilot sleeps.
+       For tooltip display ("landed at 02:00 local").
+       - sleep_start_time_location_tz, sleep_start_day_location_tz, etc.
+
+    DEPRECATED fields (no suffix): sleep_start_time, sleep_start_iso,
+    sleep_start_day, sleep_start_hour — identical to _home_tz variants.
+    Will be removed in a future release; prefer _home_tz fields.
     """
-    sleep_start_time: str  # HH:mm in home-base timezone
-    sleep_end_time: str    # HH:mm in home-base timezone
-    sleep_start_iso: str   # ISO format with date (home-base TZ)
-    sleep_end_iso: str     # ISO format with date (home-base TZ)
+    sleep_start_time: str  # DEPRECATED: use sleep_start_time_home_tz
+    sleep_end_time: str    # DEPRECATED: use sleep_end_time_home_tz
+    sleep_start_iso: str   # DEPRECATED: use sleep_start_utc or sleep_start_iso_home_tz
+    sleep_end_iso: str     # DEPRECATED: use sleep_end_utc or sleep_end_iso_home_tz
     sleep_type: str        # 'main', 'nap', 'anchor', 'inflight'
     duration_hours: float
     effective_hours: float
     quality_factor: float
 
-    # Location context — needed for local-time labels on chronogram
+    # --- UTC timestamps (canonical, Z suffix) ---
+    sleep_start_utc: Optional[str] = None      # ISO 8601 UTC (e.g. 2026-02-12T23:00:00Z)
+    sleep_end_utc: Optional[str] = None        # ISO 8601 UTC
+
+    # --- Location context ---
     location_timezone: Optional[str] = None    # IANA tz where pilot physically sleeps
     environment: Optional[str] = None          # 'home', 'hotel', 'crew_rest'
+
+    # Location TZ times (actual local time at sleep location)
     sleep_start_time_location_tz: Optional[str] = None  # HH:mm in location timezone
     sleep_end_time_location_tz: Optional[str] = None    # HH:mm in location timezone
+    sleep_start_day_location_tz: Optional[int] = None   # Day of month (1-31) in location TZ
+    sleep_start_hour_location_tz: Optional[float] = None  # Decimal hour (0-24) in location TZ
+    sleep_end_day_location_tz: Optional[int] = None
+    sleep_end_hour_location_tz: Optional[float] = None
 
-    # DEPRECATED: use _home_tz fields below instead (identical values).
-    # Kept for backward compatibility; will be removed in a future release.
+    # --- DEPRECATED fields (identical to _home_tz, kept for backward compat) ---
     sleep_start_day: Optional[int] = None      # Day of month (1-31) — home-base TZ
     sleep_start_hour: Optional[float] = None   # Decimal hour (0-24) — home-base TZ
     sleep_end_day: Optional[int] = None
     sleep_end_hour: Optional[float] = None
 
-    # Canonical home-base timezone positioning (preferred by frontend)
+    # --- Canonical home-base timezone positioning (preferred by frontend) ---
     sleep_start_day_home_tz: Optional[int] = None
     sleep_start_hour_home_tz: Optional[float] = None
     sleep_end_day_home_tz: Optional[int] = None
     sleep_end_hour_home_tz: Optional[float] = None
     sleep_start_time_home_tz: Optional[str] = None    # HH:mm
     sleep_end_time_home_tz: Optional[str] = None      # HH:mm
+    sleep_start_iso_home_tz: Optional[str] = None     # Full ISO in home-base TZ
+    sleep_end_iso_home_tz: Optional[str] = None       # Full ISO in home-base TZ
 
     # Per-block quality factor breakdown (populated for all sleep types)
     quality_factors: Optional[QualityFactorsResponse] = None
@@ -212,40 +237,41 @@ class SleepQualityResponse(BaseModel):
 
 class DutyResponse(BaseModel):
     duty_id: str
-    date: str
+    date: str  # YYYY-MM-DD from roster (departure-local) — kept for backward compat
+    date_home_tz: Optional[str] = None  # YYYY-MM-DD in home base TZ (use for chronogram row)
     report_time_utc: str
     release_time_utc: str
-    # Local time strings for direct display (HH:MM in home timezone)
+    # DEPRECATED: use _home_tz fields below (identical values, unambiguous naming)
     report_time_local: Optional[str] = None    # Kept for backward compat
     release_time_local: Optional[str] = None   # Kept for backward compat
-    # Explicit home-base timezone times (identical to _local, unambiguous naming)
+    # Explicit home-base timezone times
     report_time_home_tz: Optional[str] = None  # HH:MM in home base timezone
     release_time_home_tz: Optional[str] = None # HH:MM in home base timezone
     duty_hours: float
     sectors: int
     segments: List[DutySegmentResponse]
     
-    # Performance metrics
-    min_performance: float
-    avg_performance: float
-    landing_performance: Optional[float]
-    
+    # Performance metrics — defaults ensure frontend .toFixed() never crashes on null
+    min_performance: float = 0.0
+    avg_performance: float = 0.0
+    landing_performance: Optional[float] = None
+
     # Fatigue metrics
-    sleep_debt: float
-    wocl_hours: float
-    prior_sleep: float
+    sleep_debt: float = 0.0
+    wocl_hours: float = 0.0
+    prior_sleep: float = 0.0
     pre_duty_awake_hours: float = 0.0  # hours awake before report
-    
+
     # Risk
-    risk_level: str  # "low", "moderate", "high", "critical", "extreme"
-    is_reportable: bool
-    pinch_events: int
-    
+    risk_level: str = "unknown"  # "low", "moderate", "high", "critical", "extreme", "unknown"
+    is_reportable: bool = False
+    pinch_events: int = 0
+
     # EASA FDP limits
-    max_fdp_hours: Optional[float]  # Base FDP limit
-    extended_fdp_hours: Optional[float]  # With captain discretion
-    used_discretion: bool  # True if exceeded base limit
-    
+    max_fdp_hours: Optional[float] = None  # Base FDP limit
+    extended_fdp_hours: Optional[float] = None  # With captain discretion
+    used_discretion: bool = False  # True if exceeded base limit
+
     # Circadian adaptation state at duty report time
     circadian_phase_shift: Optional[float] = None  # Hours offset from home base body clock
 
@@ -398,6 +424,11 @@ def _build_segments(duty, home_tz) -> list:
             arrival_timezone=seg.arrival_airport.timezone,
             departure_utc_offset=dep_utc_offset,
             arrival_utc_offset=arr_utc_offset,
+            # Home-TZ day/hour for chronogram positioning (same coord system as sleep blocks)
+            departure_day_home_tz=dep_home.day,
+            departure_hour_home_tz=dep_home.hour + dep_home.minute / 60.0,
+            arrival_day_home_tz=arr_home.day,
+            arrival_hour_home_tz=arr_home.hour + arr_home.minute / 60.0,
             block_hours=seg.block_time_hours,
             activity_code=getattr(seg, 'activity_code', None),
             is_deadhead=getattr(seg, 'is_deadhead', False),
@@ -435,9 +466,14 @@ def _build_sleep_quality(duty_timeline) -> Optional[SleepQualityResponse]:
         earliest = blocks[0]
         latest = blocks[0]
         for b in blocks[1:]:
-            if (b.get('sleep_start_iso') or '') < (earliest.get('sleep_start_iso') or ''):
+            # Prefer UTC for ordering (canonical); fall back to home-TZ ISO
+            b_start = b.get('sleep_start_utc') or b.get('sleep_start_iso') or ''
+            e_start = earliest.get('sleep_start_utc') or earliest.get('sleep_start_iso') or ''
+            if b_start < e_start:
                 earliest = b
-            if (b.get('sleep_end_iso') or '') > (latest.get('sleep_end_iso') or ''):
+            b_end = b.get('sleep_end_utc') or b.get('sleep_end_iso') or ''
+            l_end = latest.get('sleep_end_utc') or latest.get('sleep_end_iso') or ''
+            if b_end > l_end:
                 latest = b
     else:
         earliest = {}
@@ -496,13 +532,19 @@ def _build_ulr_data(duty_timeline, duty) -> tuple:
         rest_periods = duty.inflight_rest_plan.rest_periods
     for i, block in enumerate(getattr(duty_timeline, 'inflight_rest_blocks', [])):
         period = rest_periods[i] if i < len(rest_periods) else None
+        duration = getattr(block, 'duration_hours', 0.0) or 0.0
+        # Ensure effective_sleep_hours is never None/missing — frontend calls .toFixed() on it.
+        # Default to duration * 0.8 (80% bunk rest efficiency) if not explicitly calculated.
+        effective = getattr(block, 'effective_sleep_hours', None)
+        if effective is None:
+            effective = duration * 0.8
         inflight_blocks.append({
             'start_utc': block.start_utc.isoformat() if block.start_utc else None,
             'end_utc': block.end_utc.isoformat() if block.end_utc else None,
-            'duration_hours': block.duration_hours,
-            'effective_sleep_hours': block.effective_sleep_hours,
-            'quality_factor': block.quality_factor,
-            'environment': block.environment,
+            'duration_hours': duration,
+            'effective_sleep_hours': effective,
+            'quality_factor': getattr(block, 'quality_factor', 0.8) or 0.8,
+            'environment': getattr(block, 'environment', 'crew_rest'),
             'crew_member_id': period.crew_member_id if period else None,
             'crew_set': period.crew_set if period else None,
             'is_during_wocl': period.is_during_wocl if period else False,
@@ -528,6 +570,7 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
     return DutyResponse(
         duty_id=duty_timeline.duty_id,
         date=duty_timeline.duty_date.strftime("%Y-%m-%d"),
+        date_home_tz=report_local.strftime("%Y-%m-%d"),  # Home-TZ date for chronogram row alignment
         report_time_utc=duty.report_time_utc.isoformat(),
         release_time_utc=duty.release_time_utc.isoformat(),
         report_time_local=report_local.strftime("%H:%M"),
@@ -537,16 +580,16 @@ def _build_duty_response(duty_timeline, duty, roster) -> DutyResponse:
         duty_hours=duty.duty_hours,
         sectors=len(duty.segments),
         segments=segments,
-        min_performance=duty_timeline.min_performance,
-        avg_performance=duty_timeline.average_performance,
+        min_performance=duty_timeline.min_performance or 0.0,
+        avg_performance=duty_timeline.average_performance or 0.0,
         landing_performance=duty_timeline.landing_performance,
-        sleep_debt=duty_timeline.cumulative_sleep_debt,
-        wocl_hours=duty_timeline.wocl_encroachment_hours,
-        prior_sleep=duty_timeline.prior_sleep_hours,
-        pre_duty_awake_hours=duty_timeline.pre_duty_awake_hours,
-        risk_level=risk,
+        sleep_debt=duty_timeline.cumulative_sleep_debt or 0.0,
+        wocl_hours=duty_timeline.wocl_encroachment_hours or 0.0,
+        prior_sleep=duty_timeline.prior_sleep_hours or 0.0,
+        pre_duty_awake_hours=getattr(duty_timeline, 'pre_duty_awake_hours', 0.0) or 0.0,
+        risk_level=risk or "unknown",
         is_reportable=(risk in ["critical", "extreme"]),
-        pinch_events=len(duty_timeline.pinch_events),
+        pinch_events=len(duty_timeline.pinch_events) if duty_timeline.pinch_events else 0,
         max_fdp_hours=duty.max_fdp_hours,
         extended_fdp_hours=duty.extended_fdp_hours,
         used_discretion=duty.used_discretion,
