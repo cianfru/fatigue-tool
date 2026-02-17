@@ -77,7 +77,8 @@ class TestInterDutyRecoverySingleBlock:
             prev_duty, next_duty, home_timezone='Asia/Qatar', home_base='DOH'
         )
 
-        assert strategy.strategy_type == 'inter_duty_recovery'
+        # DOH→LHR = 3h timezone shift → classifier selects 'anchor'
+        assert strategy.strategy_type == 'anchor'
         assert len(strategy.sleep_blocks) >= 1
 
         # No overlapping blocks

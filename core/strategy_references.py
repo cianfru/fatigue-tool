@@ -34,12 +34,40 @@ def get_confidence_basis(strategy) -> str:
             '54% of crew nap before evening departures; nap timing and '
             'duration vary between individuals'
         )
-    elif st == 'split_sleep':
+    elif st == 'split' or st == 'wocl_split':
         return (
-            f'Lower confidence ({c:.0%}) — anchor sleep concept validated '
-            'in laboratory (Minors & Waterhouse 1983) but limited field '
-            'data on pilot adoption of this specific pattern'
+            f'Lower confidence ({c:.0%}) — split sleep validated '
+            'in laboratory (Jackson et al. 2014, Kosmadopoulos et al. 2017) '
+            'but limited field data on pilot adoption of this specific pattern'
         )
+    elif st == 'anchor':
+        return (
+            f'Lower confidence ({c:.0%}) — anchor sleep maintains home-base '
+            'circadian window across timezone shift; limited field data on '
+            'pilot adoption (Minors & Waterhouse 1981, Waterhouse et al. 2007)'
+        )
+    elif st == 'restricted':
+        return (
+            f'Low confidence ({c:.0%}) — rest period < 9h physically constrains '
+            'sleep opportunity; high variability in actual sleep obtained '
+            '(Belenky et al. 2003, Van Dongen et al. 2003)'
+        )
+    elif st == 'nap':
+        return (
+            f'Moderate confidence ({c:.0%}) — night departure: morning sleep + '
+            'pre-duty nap; Signal et al. (2014) found 54% nap compliance'
+        )
+    elif st == 'extended':
+        if c >= 0.80:
+            return (
+                f'Good confidence ({c:.0%}) — long rest period (>14h) allows '
+                'full recovery sleep'
+            )
+        else:
+            return (
+                f'Moderate confidence ({c:.0%}) — extended rest at layover; '
+                'hotel environment reduces certainty'
+            )
     elif st == 'recovery':
         return (
             f'High confidence ({c:.0%}) — home environment, no duty constraints. '
@@ -313,4 +341,6 @@ _STRATEGY_REFS: Dict[str, List[Dict[str, str]]] = {
 
 def get_strategy_references(strategy_type: str) -> list:
     """Return peer-reviewed references supporting this sleep strategy."""
-    return _COMMON_REFS + _STRATEGY_REFS.get(strategy_type, [])
+    # wocl_split uses the same references as split
+    effective_type = 'split' if strategy_type == 'wocl_split' else strategy_type
+    return _COMMON_REFS + _STRATEGY_REFS.get(effective_type, [])

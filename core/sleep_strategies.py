@@ -1178,6 +1178,8 @@ class SleepStrategyMixin:
         onset_delay_hours: float,
         duty_duration_hours: float,
         prior_wake_estimate: float,
+        strategy_type: str = 'inter_duty_recovery',
+        strategy_label: str = 'Inter-duty recovery',
     ) -> 'SleepStrategy':
         """
         Two-block recovery for morning arrivals with long inter-duty gaps:
@@ -1264,11 +1266,11 @@ class SleepStrategyMixin:
 
         location_desc = f"{sleep_location} (layover)" if is_layover else sleep_location
         return SleepStrategy(
-            strategy_type='inter_duty_recovery',
+            strategy_type=strategy_type,
             sleep_blocks=[nap_block, night_block],
             confidence=confidence,
             explanation=(
-                f"Inter-duty recovery at {location_desc}: "
+                f"{strategy_label} at {location_desc}: "
                 f"{onset_delay_hours:.1f}h wind-down after {duty_duration_hours:.0f}h duty, "
                 f"{nap_quality.actual_sleep_hours:.1f}h daytime nap + "
                 f"{night_quality.actual_sleep_hours:.1f}h night sleep = "
