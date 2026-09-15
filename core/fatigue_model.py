@@ -301,7 +301,6 @@ class BorbelyFatigueModel:
         circadian_phase_shift: float = 0.0,
         initial_s: float = 0.3,
         resolution_minutes: int = 5,
-        cached_s: Optional[float] = None,
         cumulative_sleep_debt: float = 0.0
     ) -> DutyTimeline:
         """Simulate single duty with high-resolution timeline"""
@@ -344,16 +343,21 @@ class BorbelyFatigueModel:
         s_at_wake = min(self.params.S_max, s_at_wake + debt_offset)
         
         def get_current_sector(current_time: datetime) -> int:
-            sector = 1
-            for seg in duty.segments:
-                if current_time >= seg.scheduled_departure_utc:
-                    if seg == duty.segments[0]:
-                        sector = 1
-                    else:
-                        prev_seg = duty.segments[duty.segments.index(seg) - 1]
-                        if seg.scheduled_departure_utc > prev_seg.scheduled_arrival_utc:
-                            sector += 1
-            return sector
+            """
+            Which sector the crew is on: the count of segments already departed.
+
+            The previous version only advanced the count when a segment departed
+            strictly after the previous one arrived, so a back-to-back pairing
+            with no ground time stayed on sector 1 and never picked up the
+            per-sector workload penalty. It also located segments with
+            list.index(), which matches by equality and would return the wrong
+            position for two identical segments.
+            """
+            departed = sum(
+                1 for seg in duty.segments
+                if current_time >= seg.scheduled_departure_utc
+            )
+            return max(1, departed)
         
         # Initialize with pre-duty wakefulness so that hours already awake
         # before report contribute to homeostatic pressure at duty start.
@@ -731,8 +735,7 @@ class BorbelyFatigueModel:
         self.sleep_strategies = sleep_strategies
         
         previous_duty = None
-        previous_timeline = None
-        
+
         # Simulate each duty
         for i, duty in enumerate(roster.duties):
             phase_shift = self._get_phase_shift_at_time(duty.report_time_utc, body_clock_timeline)
@@ -744,10 +747,6 @@ class BorbelyFatigueModel:
                    s.end_utc >= duty.report_time_utc - timedelta(hours=48)
             ]
             
-            cached_s_value = None
-            if previous_timeline and previous_timeline.final_process_s > 0:
-                cached_s_value = previous_timeline.final_process_s
-
             # ── Cumulative sleep debt ─────────────────────────────────────
             # Settled BEFORE the duty is simulated, so debt carried into this
             # duty raises its starting homeostatic pressure rather than being
@@ -802,10 +801,8 @@ class BorbelyFatigueModel:
             timeline_obj = self.simulate_duty(
                 duty, relevant_sleep, phase_shift,
                 initial_s=current_s,
-                cached_s=cached_s_value,
                 cumulative_sleep_debt=cumulative_sleep_debt
             )
-            previous_timeline = timeline_obj
 
             # Calculate EASA FDP limits (augmented-crew-aware)
             fdp_limits = self.validator.calculate_fdp_limits(

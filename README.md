@@ -60,7 +60,7 @@ AviationCalendar().plot_monthly_roster(analysis, save_path='calendar.png')
 
 ### Key Metrics
 
-**Landing Performance**: Most critical - performance at touchdown
+**Landing Performance**: Most critical - the worst touchdown of the duty (multi-sector duties report their lowest landing, not the last)
 **Minimum Performance**: Worst performance during entire duty
 **Cumulative Sleep Debt**: Total sleep deficit accumulated
 **WOCL Encroachment**: Time spent working during 02:00-06:00 home time

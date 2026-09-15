@@ -203,6 +203,12 @@ All `/api/analyze` responses include:
 
 Frontend expects ISO format datetimes and specific field names defined in Pydantic models (`api/api_server.py`).
 
+`landing_performance` is the **minimum** across all landings in the duty, not
+the final one — on a multi-sector day the first landing is often the worst,
+because the circadian rise through the morning outpaces the accumulating
+sector workload penalty. Tests that assume "more sectors ⇒ lower
+landing_performance" will fail for this reason, and correctly so.
+
 ## Common Pitfalls
 
 1. **Sleep overlap**: Every sleep generation path MUST call `_validate_sleep_no_overlap()` to prevent duty-sleep collisions

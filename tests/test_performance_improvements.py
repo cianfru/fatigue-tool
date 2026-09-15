@@ -136,3 +136,67 @@ class TestPerformanceBounds:
 
     def test_rested_daytime_duty_has_no_pinch_events(self, day_duty_timeline):
         assert day_duty_timeline.pinch_events == []
+
+
+class TestSectorWorkload:
+    """
+    Sector count drove a workload penalty that back-to-back pairings escaped:
+    the counter only advanced when a segment departed strictly after the
+    previous one arrived, so a turnaround with no ground time stayed on
+    sector 1 for the whole duty.
+    """
+
+    @staticmethod
+    def _duty(num_sectors, ground_minutes):
+        report = TZ.localize(datetime(2026, 6, 10, 6, 0)).astimezone(pytz.utc)
+        segments = []
+        cursor = report + timedelta(hours=1)
+        for i in range(num_sectors):
+            arrive = cursor + timedelta(hours=2)
+            segments.append(
+                FlightSegment(f'Q{i + 1}', DOH, DXB, cursor, arrive))
+            cursor = arrive + timedelta(minutes=ground_minutes)
+        return Duty(
+            duty_id=f'S{num_sectors}_G{ground_minutes}',
+            date=datetime(2026, 6, 10),
+            report_time_utc=report,
+            release_time_utc=segments[-1].scheduled_arrival_utc + timedelta(minutes=30),
+            segments=segments,
+            home_base_timezone='Asia/Qatar',
+        )
+
+    def _landing(self, duty):
+        return BorbelyFatigueModel().simulate_duty(
+            duty, [], initial_s=0.2).landing_performance
+
+    def test_back_to_back_sectors_still_carry_the_sector_penalty(self):
+        """
+        Same four sectors, same total duration, differing only in whether the
+        turnarounds have ground time. Zero-ground-time pairings must not score
+        better than spaced ones by dodging the penalty.
+        """
+        spaced = self._landing(self._duty(4, ground_minutes=45))
+        back_to_back = self._landing(self._duty(4, ground_minutes=0))
+
+        assert back_to_back <= spaced + 0.5, (
+            f"zero-turnaround sectors scored {back_to_back:.1f} vs "
+            f"{spaced:.1f} for spaced sectors, so the penalty was skipped"
+        )
+
+    def test_sector_multiplier_escalates(self):
+        """
+        The penalty itself, isolated from circadian confounds. Landing
+        performance cannot carry this: it is the minimum across all landings,
+        and on a morning duty the first landing is the worst because the
+        circadian rise outpaces the accumulating sector penalty.
+        """
+        from core.workload import WorkloadModel
+        from models.data_models import FlightPhase
+
+        workload = WorkloadModel()
+        multipliers = [
+            workload.get_combined_multiplier(FlightPhase.LANDING, sector)
+            for sector in (1, 2, 3, 4)
+        ]
+        assert multipliers == sorted(multipliers)
+        assert multipliers[-1] > multipliers[0]

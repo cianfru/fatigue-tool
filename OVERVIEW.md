@@ -163,7 +163,7 @@ Each duty consists of one or more flight segments with departure/arrival airport
 For each duty in the roster, Aerowake produces:
 
 - **Performance timeline** at 30-minute resolution, decomposed into Process S, Process C, sleep inertia, and time-on-task contributions
-- **Landing performance** --- the predicted cognitive performance score at touchdown, the single most safety-critical metric
+- **Landing performance** --- the single most safety-critical metric. On a multi-sector duty this is the *worst* of the duty's landings, not the final one, so a punishing first sector is not masked by an easier last one
 - **Minimum performance** --- the lowest score reached during the entire duty
 - **Risk classification** with mapped EASA regulatory reference and recommended action
 - **WOCL encroachment** --- hours of duty falling within the Window of Circadian Low
