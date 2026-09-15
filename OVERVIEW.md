@@ -74,6 +74,19 @@ A fatigue model is only as good as its sleep inputs. Since Aerowake analyses ros
 | **WOCL Anchor** | Duty encroaching WOCL + duration > 6 hours | ~4.5 hours anchor sleep | Preserves circadian alignment during disrupted schedules (Gander et al., 2013) |
 | **Recovery** | Post-duty rest period | Extended sleep opportunity | Elevated homeostatic drive accelerates debt repayment |
 
+### The 24-Hour Sleep Budget
+
+Sleep is predicted as a *total for the rest period*, which is then distributed into blocks that sum to that total --- the architecture Darwent, Dawson & Roach (2012) validated at 85% epoch agreement against actigraphy. A daytime nap is therefore drawn **from** the budget, never added on top of it.
+
+This distinction matters more than it sounds. Two different daytime sleeps can follow a morning arrival, and they are not the same size:
+
+- **Primary daytime sleep** --- the rest period is too short for a following night, so this block is all the pilot gets. They sleep against circadian opposition until it terminates them, which Akerstedt & Waterhouse (2009) place at 4--6 hours with an inability to return to sleep.
+- **Supplementary nap** --- a night sleep still fits, so the daytime block is a top-up rather than the main sleep. It is bounded by observed napping behaviour (roughly a third of shift workers nap on a morning-shift day, for 30--90 minutes when they do) and by the deficit itself: a pilot cannot recover more sleep than they are short of.
+
+Naps are placed in the early-afternoon sleep-propensity window and never past the point where the wake-maintenance zone (Lavie, 1986; Strogatz, 1986) closes it.
+
+The model is calibrated against actigraphy rather than tuned by eye. Flynn-Evans et al. (2018) measured 44 short-haul pilots across five consecutive early shifts at **5.70 ± 0.73 hours per 24 hours**, against a 6.78-hour baseline; Aerowake predicts 5.30 hours for the same pattern, at the conservative end of that band. Roach et al. (2012) and Ingre et al. (2008) corroborate the gradient: roughly 15 minutes of sleep lost per hour that the report time advances before 09:00.
+
 ### Sleep Quality Modelling
 
 Raw sleep duration is adjusted by a **quality multiplier** that accounts for sleep environment and timing. The base efficiency values are anchored to polysomnography data from Signal et al. (2013):
@@ -280,6 +293,13 @@ This overview introduces Aerowake's capabilities and the scientific framework on
 | Sleep quality | Signal, T.L. et al. (2013). Sleep duration and quality in healthy volunteers. *Sleep*, 36(1), 109--118 |
 | Circadian adaptation | Waterhouse, J. et al. (2007). Jet lag: trends and coping strategies. *Lancet*, 369, 1117--1129 |
 | Sleep inertia | Tassi, P. & Muzet, A. (2000). Sleep inertia. *Sleep Medicine Reviews*, 4(4), 341--353 |
+| Sleep estimation architecture | Darwent, D., Dawson, D. & Roach, G.D. (2012). Prediction of probabilistic sleep distributions following travel across multiple time zones. *Accident Analysis & Prevention*, 45S, 22--26 |
+| Early-start sleep loss | Roach, G.D., Sargent, C., Darwent, D. & Dawson, D. (2012). Duty periods with early start times restrict the amount of sleep obtained by short-haul airline pilots. *Accident Analysis & Prevention*, 45S, 22--26 |
+| Early-start calibration | Flynn-Evans, E.E. et al. (2018). Sleep and neurobehavioral performance vary by work start time during non-traditional day shifts. *Sleep Health* |
+| Start-time gradient | Ingre, M. et al. (2008). Sleep length as a function of morning shift-start time in irregular shift schedules. *Chronobiology International*, 25, 349--358 |
+| Nap prevalence | Torsvall, L. & Akerstedt, T. (1985). Sleepiness and irregular work hours. *Sleep*, 8(2), 105--109 |
+| Daytime sleep limits | Akerstedt, T. & Gillberg, M. (1981). The circadian variation of experimentally displaced sleep. *Sleep*, 4(2), 159--169 |
+| Wake-maintenance zone | Lavie, P. (1986). Ultrashort sleep-waking schedule III: "Gates" and "forbidden zones" for sleep. *EEG & Clinical Neurophysiology*, 63, 414--425 |
 | Time-on-task | Folkard, S. & Akerstedt, T. (1999). Trends in the risk of accidents and injuries. *Journal of Biological Rhythms*, 14(6), 577--587 |
 | EASA evidence base | Gander, P.H. et al. (2013). Moebus Report: Scientific and medical evaluation of FTL. EASA |
 | Aviation fatigue | Bourgeois-Bougrine, S. et al. (2003). Perceived fatigue for short- and long-haul flights. *Aviation, Space, and Environmental Medicine*, 74(11), 1154--1162 |

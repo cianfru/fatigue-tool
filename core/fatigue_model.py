@@ -764,11 +764,17 @@ class BorbelyFatigueModel:
             #   Kitamura et al. (2016) Sci Rep 6:35812
             #   Banks et al. (2010) Sleep 33(8):1013-1026
             if previous_duty:
-                days_since_last = max(1, (duty.date - previous_duty.date).days)
                 gap_start = previous_duty.release_time_utc
             else:
-                days_since_last = 1
                 gap_start = duty.report_time_utc - timedelta(days=1)
+
+            # Elapsed time, not the difference of calendar dates. A break
+            # ending at an 04:00 report spans 5.8 days, and charging it a
+            # 6-day need against 5.8 days of sleep opportunity left the ledger
+            # rising across days off.
+            days_since_last = (
+                (duty.report_time_utc - gap_start).total_seconds() / 86400
+            )
 
             # Spans the whole gap: the 48 h `relevant_sleep` window would drop
             # sleep taken early in a multi-day rest period while still charging

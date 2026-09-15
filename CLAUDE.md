@@ -139,6 +139,30 @@ simulation it can never reach the prediction.
 - Deficit adds to the ledger; a met need repays it by exponential decay.
   Decay is the *only* repayment mechanism — do not also credit surplus hours.
 
+### Sleep Budget and Daytime Naps
+A nap is drawn **from** the 24h sleep budget, never added on top of it
+(Darwent, Dawson & Roach 2012 — predict the total for the rest period, then
+distribute it into blocks summing to that total). Two daytime sleeps exist and
+they are not the same size, in `generate_inter_duty_sleep()`:
+
+| Case | Condition | Size |
+|---|---|---|
+| Primary daytime sleep | Morning arrival, **no** room for a following night | ≤4h, circadian-truncated (Åkerstedt & Wright 2009) |
+| Supplementary nap | Morning arrival, night sleep still fits | `nap_params.expected_nap_hours`, bounded by the deficit |
+
+`NapParameters.expected_nap_hours` = prevalence × mean duration (~0.30h).
+Set `use_expected_value=False` to model the pilot who *does* nap (~0.75h) —
+more conservative, for an individual advocacy case.
+
+**Calibration targets — check these before changing sleep generation:**
+- Consecutive 04:00 starts: **5.70 ± 0.73 h/24h** (Flynn-Evans et al. 2018,
+  44 short-haul pilots, actigraphy). Model gives 5.30h.
+- Normal day duties: ~7.5-8 h/24h. Model gives 8.00h.
+
+`tests/test_nap_behaviour.py` pins both. Conflating the two daytime cases is
+what previously gave a 3.5h nap on top of a full night and put consecutive
+early starts at 8.5 h/24h.
+
 ### Configuration Presets
 Four presets in `core/parameters.py` via `ModelConfig`:
 - `default_easa_config()` - Balanced (recommended)

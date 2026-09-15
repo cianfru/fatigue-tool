@@ -180,6 +180,79 @@ class SleepQualityParameters:
 
 
 @dataclass
+class NapParameters:
+    """
+    Daytime recovery nap behaviour after a morning-arrival duty.
+
+    A nap is drawn FROM the 24 h sleep budget, never added on top of it. That
+    is the architecture Darwent, Dawson & Roach (2012) Accid Anal Prev 45S:22-26
+    validated at 85 % epoch agreement against actigraphy (n=225): predict the
+    total sleep for the rest period first, then distribute it into blocks whose
+    sum equals that total. Treating a nap as a bonus block is what let this
+    model report 8.5 h/24 h on consecutive 04:00 starts, against a measured
+    5.7 h.
+
+    Calibration target — Flynn-Evans et al. (2018) Sleep Health, 44 short-haul
+    pilots on actigraphy: five consecutive early shifts yielded
+    5.70 +/- 0.73 h per 24 h, versus a 6.78 +/- 0.86 h baseline.
+    Corroborated by Roach et al. (2012), 5.4 h before an 04:00-05:00 report,
+    and Ingre et al. (2008) Chronobiol Int 25:349-358, ~0.7 h of sleep lost per
+    hour of start-time advance between 04:30 and 09:00.
+    """
+
+    # Fraction of the population that actually naps on a morning-shift day.
+    # Torsvall & Akerstedt (1985) Sleep 8:105-109, n=282 rotating shift
+    # workers: 18 % nap on morning shifts only plus 15 % on both morning and
+    # night shifts = ~33 %.
+    #
+    # CAVEAT: this is extrapolated from shift work. No pilot-specific nap
+    # prevalence is published — Roach (2012), Flynn-Evans (2018) and
+    # Arsintescu (2022) all report total sleep without nap incidence. The
+    # defensible range is 0.30-0.50; 0.40 is its midpoint, chosen over the
+    # bare shift-work 0.33 because pilots on consecutive early starts carry
+    # more debt than the mixed-roster shift workers Torsvall sampled.
+    nap_probability: float = 0.40
+
+    # Mean duration of a nap when one is actually taken. The nap-intervention
+    # literature works in 10-90 min units (Milner & Cote 2009 J Sleep Res
+    # 18:272-281), with 30 min the point where sleep inertia becomes the
+    # design concern. No aviation actigraphy figure for post-early-duty nap
+    # length exists; 45 min is the midpoint of the usable range.
+    nap_mean_duration_hours: float = 0.75
+
+    # Hard ceiling on a single daytime nap (90 min ~ one full sleep cycle).
+    nap_max_duration_hours: float = 1.5
+
+    # Below this the block is not worth modelling and no nap is emitted.
+    nap_min_viable_hours: float = 0.25
+
+    # Usable afternoon window in local time at the sleep location.
+    # Akerstedt & Gillberg (1981) Sleep 4:159-169 found ad-lib sleep duration
+    # minima after 07:00 and 11:00 bedtimes, 11:00 being the point of maximum
+    # propensity to WAKE. The secondary afternoon sleep-propensity peak sits
+    # near 14:00 and shifts earlier when sleep is advanced (Phillips et al.
+    # arousal-dynamics model), so a pilot on a ~21:00 bedtime has a narrow
+    # early-afternoon window. After ~17:00 the wake-maintenance zone
+    # (Lavie 1986; Strogatz 1986) closes it: 2-3 h before habitual bedtime
+    # sleep is actively resisted.
+    nap_window_start_hour: float = 13.0
+    nap_window_end_hour: float = 16.0
+
+    # Expected contribution of napping to the 24 h budget, used when sleep is
+    # estimated prospectively for a population rather than an individual.
+    # Set use_expected_value False to model the pilot who does nap, which is
+    # the more conservative assumption for an individual advocacy case.
+    use_expected_value: bool = True
+
+    @property
+    def expected_nap_hours(self) -> float:
+        """Population-average nap contribution per morning-arrival day."""
+        if not self.use_expected_value:
+            return self.nap_mean_duration_hours
+        return self.nap_probability * self.nap_mean_duration_hours
+
+
+@dataclass
 class AdaptationRates:
     """
     Circadian adaptation rates for timezone shifts
@@ -233,6 +306,7 @@ class ModelConfig:
     risk_thresholds: RiskThresholds
     adaptation_rates: AdaptationRates
     sleep_quality_params: SleepQualityParameters
+    nap_params: NapParameters = field(default_factory=NapParameters)
     augmented_fdp_params: 'Any' = None  # AugmentedFDPParameters (from core.extended_operations)
     ulr_params: 'Any' = None            # ULRParameters (from core.extended_operations)
 
