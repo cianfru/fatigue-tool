@@ -109,6 +109,39 @@ class BorbelyParameters:
     baseline_sleep_need_hours: float = 8.0
     sleep_debt_decay_rate: float = 0.35
 
+    # Daily need expressed in EFFECTIVE (restorative) hours, for the debt
+    # ledger. Van Dongen's 8 h baseline is time in bed; at the ~93 % efficiency
+    # a healthy night at home achieves (Signal et al. 2013) that is ~7.4 h of
+    # actual restorative sleep. Comparing effective hours against the 8 h
+    # time-in-bed figure would charge every pilot ~0.6 h of debt per night even
+    # on a perfect schedule, so the ledger uses this matched baseline instead.
+    baseline_effective_sleep_need_hours: float = 7.4
+
+    # Chronic sleep debt → Process S carry-over.
+    # Van Dongen et al. (2003) Sleep 26(2):117-126 showed that chronic partial
+    # restriction produces a cumulative performance deficit that a single
+    # adequate sleep does not reverse: after 14 nights at 6 h, subjects were
+    # impaired comparably to 2 nights of total deprivation despite sleeping
+    # normally the preceding night. Without this term the model treats every
+    # duty as independent, so consecutive early starts never compound.
+    # Calibration: 0.008 / h of debt, so the ~20 h debt accrued over a week of
+    # 5-6 h nights raises S at wake by ~0.16 — roughly the difference between
+    # an 8 h and a 5 h night — capped so debt alone cannot saturate the
+    # homeostat.
+    sleep_debt_to_s_coefficient: float = 0.008
+    sleep_debt_s_offset_cap: float = 0.16
+
+    # Workload → performance sensitivity.
+    # Workload does not alter homeostatic sleep pressure (S is a function of
+    # time awake and time asleep only — Borbély 1982). High-demand phases
+    # instead consume additional cognitive capacity, so the workload
+    # multiplier scales the *performance* output. A multiplier of 1.0 leaves
+    # performance unchanged; 1.5 (landing at high sector count) costs
+    # 0.5 × 0.10 = 5 % of remaining alertness.
+    # Reference: Wickens (2008) Hum Factors 50(3):449-455 — multiple-resource
+    # workload reduces available capacity without changing sleep homeostasis.
+    workload_performance_sensitivity: float = 0.10
+
     # Pinch event detection thresholds.
     # A "pinch" occurs when high sleep pressure coincides with circadian low,
     # creating a dangerous fatigue state during critical flight phases.

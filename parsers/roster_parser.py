@@ -689,7 +689,12 @@ class CSVRosterParser:
         
         std_utc = dep_tz.localize(datetime.combine(date, std_time)).astimezone(pytz.utc)
         sta_utc = arr_tz.localize(datetime.combine(date, sta_time)).astimezone(pytz.utc)
-        
+
+        # A flight cannot arrive before it departs: the STA belongs to the next
+        # calendar day at the arrival station.
+        if sta_utc <= std_utc:
+            sta_utc += timedelta(days=1)
+
         return FlightSegment(
             flight_number=row['Flight'],
             departure_airport=dep,
@@ -703,11 +708,25 @@ class CSVRosterParser:
         report_time = pd.to_datetime(report, format='%H:%M').time()
         release_time = pd.to_datetime(release, format='%H:%M').time()
         
-        home_tz = pytz.timezone(self.home_timezone)
-        
-        report_utc = home_tz.localize(datetime.combine(date_obj, report_time)).astimezone(pytz.utc)
-        release_utc = home_tz.localize(datetime.combine(date_obj, release_time)).astimezone(pytz.utc)
-        
+        # Report and release times on a roster are local to the station the crew
+        # signs on/off at, which is only the home base for duties that start and
+        # end there.
+        report_tz = pytz.timezone(segments[0].departure_airport.timezone)
+        release_tz = pytz.timezone(segments[-1].arrival_airport.timezone)
+
+        report_utc = report_tz.localize(datetime.combine(date_obj, report_time)).astimezone(pytz.utc)
+        release_utc = release_tz.localize(datetime.combine(date_obj, release_time)).astimezone(pytz.utc)
+
+        # Report precedes the first departure; a later value means the sign-on
+        # belongs to the previous calendar day.
+        if report_utc > segments[0].scheduled_departure_utc:
+            report_utc -= timedelta(days=1)
+
+        # Release follows the last arrival. Multi-day duties may need more than
+        # one rollover, so advance until the ordering holds.
+        while release_utc < segments[-1].scheduled_arrival_utc:
+            release_utc += timedelta(days=1)
+
         duty_id = f"D_{date_obj.strftime('%Y%m%d')}_{segments[0].flight_number}"
         
         return Duty(

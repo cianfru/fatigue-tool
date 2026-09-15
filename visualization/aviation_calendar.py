@@ -13,6 +13,8 @@ Features:
 - Dark/Light theme support
 """
 
+import calendar as _calendar
+
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.gridspec import GridSpec
@@ -89,7 +91,7 @@ class AviationCalendar:
         calendar_start = month_start - timedelta(days=days_to_monday)
         
         # Calculate weeks needed
-        days_in_month = (month_start.replace(month=month_start.month % 12 + 1, day=1) - timedelta(days=1)).day
+        days_in_month = _calendar.monthrange(month_start.year, month_start.month)[1]
         total_days = days_in_month + days_to_monday
         num_weeks = (total_days + 6) // 7
         
@@ -116,9 +118,16 @@ class AviationCalendar:
         # BUILD DUTY MAP (by date)
         # ====================================================================
         
+        # Calendar cells are days as the pilot experiences them, so duties are
+        # placed by home-base local date rather than by UTC date.
+        home_tz = pytz.timezone(roster.home_base_timezone)
+
+        def _local_date(dt_utc):
+            return dt_utc.astimezone(home_tz).date()
+
         # Map each DATE to list of duties that occur on that date
         duty_by_date = {}
-        
+
         for duty_timeline in duties:
             # Find corresponding duty object
             duty = None
@@ -131,8 +140,8 @@ class AviationCalendar:
                 continue
             
             # Find all dates this duty touches
-            report_date = duty.report_time_utc.date()
-            release_date = duty.release_time_utc.date()
+            report_date = _local_date(duty.report_time_utc)
+            release_date = _local_date(duty.release_time_utc)
             
             current_date = report_date
             while current_date <= release_date:
@@ -214,11 +223,11 @@ class AviationCalendar:
                     for duty, duty_timeline in duties_today:
                         
                         # Check if this is the REPORT date (start of duty)
-                        is_start = duty.report_time_utc.date() == current_date.date()
-                        is_end = duty.release_time_utc.date() == current_date.date()
-                        
+                        is_start = _local_date(duty.report_time_utc) == current_date.date()
+                        is_end = _local_date(duty.release_time_utc) == current_date.date()
+
                         # Get risk color (from landing performance)
-                        if duty_timeline.landing_performance:
+                        if duty_timeline.landing_performance is not None:
                             perf = duty_timeline.landing_performance
                             if perf >= 75:
                                 risk = 'low'
@@ -232,6 +241,7 @@ class AviationCalendar:
                                 risk = 'extreme'
                             color = self.risk_colors[risk]
                         else:
+                            risk = 'duty'
                             color = self.risk_colors['duty']
                         
                         # ====================================================

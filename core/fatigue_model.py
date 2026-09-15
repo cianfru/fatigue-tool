@@ -12,7 +12,7 @@ Scientific Foundation:
     Borbély & Achermann (1999), Jewett & Kronauer (1999), Van Dongen et al. (2003)
 """
 
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, date
 from typing import List, Tuple, Optional, Dict, Any
 import math
 import pytz
@@ -206,7 +206,8 @@ class BorbelyFatigueModel:
         return base_alertness
     
     def integrate_performance(
-        self, c: float, s: float, w: float, hours_on_duty: float = 0.0
+        self, c: float, s: float, w: float, hours_on_duty: float = 0.0,
+        workload_multiplier: float = 1.0
     ) -> float:
         """
         Integrate processes into performance (0-100 scale)
@@ -216,6 +217,7 @@ class BorbelyFatigueModel:
           C — circadian rhythm               (Dijk & Czeisler 1995)
           W — sleep inertia                  (Tassi & Muzet 2000)
           T — time-on-task linear decrement  (Folkard & Åkerstedt 1999)
+          L — flight-phase workload          (Wickens 2008)
 
         Weights (50/50 S/C) provide balanced operational model.
         Pilot resilience factor accounts for professional training effects.
@@ -238,6 +240,14 @@ class BorbelyFatigueModel:
         # alertness across 12-h shifts, independent of S and C.
         tot_penalty = self.params.time_on_task_rate * max(0.0, hours_on_duty)
         alertness_final = max(0.0, alertness_with_inertia - tot_penalty)
+
+        # Flight-phase workload consumes spare cognitive capacity. Demand above
+        # baseline (multiplier > 1) reduces effective alertness; low-demand
+        # phases such as deadheading relieve it slightly.
+        workload_penalty = (
+            (workload_multiplier - 1.0) * self.params.workload_performance_sensitivity
+        )
+        alertness_final = max(0.0, min(1.0, alertness_final * (1.0 - workload_penalty)))
 
         # Performance floor of 20 (severe impairment, ~0.05% BAC equivalent)
         MIN_PERFORMANCE_FLOOR = 20.0
@@ -288,7 +298,8 @@ class BorbelyFatigueModel:
         circadian_phase_shift: float = 0.0,
         initial_s: float = 0.3,
         resolution_minutes: int = 5,
-        cached_s: Optional[float] = None
+        cached_s: Optional[float] = None,
+        cumulative_sleep_debt: float = 0.0
     ) -> DutyTimeline:
         """Simulate single duty with high-resolution timeline"""
         
@@ -319,6 +330,15 @@ class BorbelyFatigueModel:
         else:
             s_at_wake = initial_s
             wake_time = duty.report_time_utc - timedelta(hours=8)
+
+        # Chronic sleep debt raises the homeostatic floor a single good night
+        # cannot clear (Van Dongen et al. 2003). Without this the model treats
+        # each duty independently and consecutive early starts never compound.
+        debt_offset = min(
+            self.params.sleep_debt_s_offset_cap,
+            max(0.0, cumulative_sleep_debt) * self.params.sleep_debt_to_s_coefficient
+        )
+        s_at_wake = min(self.params.S_max, s_at_wake + debt_offset)
         
         def get_current_sector(current_time: datetime) -> int:
             sector = 1
@@ -426,8 +446,10 @@ class BorbelyFatigueModel:
                     workload_multiplier = 0.3  # Passive travel fatigue only
                 else:
                     workload_multiplier = self.workload_model.get_combined_multiplier(phase, current_sector)
-                effective_step_duration = step_duration_hours * workload_multiplier
-                effective_wake_hours += effective_step_duration
+
+                # Homeostatic pressure tracks time awake, not task demand
+                # (Borbély 1982). Workload is applied to performance below.
+                effective_wake_hours += step_duration_hours
 
                 s_current = self.params.S_max - (self.params.S_max - s_at_wake) * \
                             math.exp(-effective_wake_hours / self.params.tau_i)
@@ -443,7 +465,10 @@ class BorbelyFatigueModel:
                 w = self.compute_sleep_inertia(time_since_wake)
 
                 tot_penalty = self.params.time_on_task_rate * max(0.0, hours_on_duty)
-                performance = self.integrate_performance(c, s_current, w, hours_on_duty)
+                performance = self.integrate_performance(
+                    c, s_current, w, hours_on_duty,
+                    workload_multiplier=workload_multiplier
+                )
 
                 # Track return-to-deck performance (first point after rest)
                 if last_rest_end and return_to_deck_perf is None:
@@ -720,14 +745,66 @@ class BorbelyFatigueModel:
             cached_s_value = None
             if previous_timeline and previous_timeline.final_process_s > 0:
                 cached_s_value = previous_timeline.final_process_s
-            
+
+            # ── Cumulative sleep debt ─────────────────────────────────────
+            # Settled BEFORE the duty is simulated, so debt carried into this
+            # duty raises its starting homeostatic pressure rather than being
+            # reported as a statistic that never reaches the model.
+            #
+            #  1. Sleep across the entire inter-duty gap is compared against
+            #     the need for that gap (8 h × days).
+            #  2. A shortfall is added to the ledger.
+            #  3. A met need repays debt by exponential decay. Repayment and
+            #     decay are the same mechanism, so surplus hours are not also
+            #     credited separately — that double-counted recovery.
+            # References:
+            #   Van Dongen et al. (2003) Sleep 26(2):117-126
+            #   Belenky et al. (2003) J Sleep Res 12:1-12
+            #   Kitamura et al. (2016) Sci Rep 6:35812
+            #   Banks et al. (2010) Sleep 33(8):1013-1026
+            if previous_duty:
+                days_since_last = max(1, (duty.date - previous_duty.date).days)
+                gap_start = previous_duty.release_time_utc
+            else:
+                days_since_last = 1
+                gap_start = duty.report_time_utc - timedelta(days=1)
+
+            # Spans the whole gap: the 48 h `relevant_sleep` window would drop
+            # sleep taken early in a multi-day rest period while still charging
+            # the full scaled need, manufacturing debt across days off.
+            # Effective (quality-weighted) hours are the right currency for the
+            # ledger: they already discount fragmentation, circadian
+            # misalignment and poor environments, which is precisely what makes
+            # a 5 h night plus an afternoon nap less restorative than a
+            # consolidated 8 h night of the same total length.
+            period_sleep = sum(
+                s.effective_sleep_hours for s in all_sleep
+                if gap_start <= s.start_utc and s.end_utc <= duty.report_time_utc
+            )
+
+            period_need = (
+                self.params.baseline_effective_sleep_need_hours * days_since_last
+            )
+            sleep_balance = period_sleep - period_need
+
+            if sleep_balance < 0:
+                cumulative_sleep_debt += abs(sleep_balance)
+            elif cumulative_sleep_debt > 0:
+                # Recovery is incomplete by design: Banks et al. (2010) found a
+                # single 10 h opportunity did not restore baseline after chronic
+                # restriction, so debt decays over days rather than clearing.
+                cumulative_sleep_debt *= math.exp(
+                    -self.params.sleep_debt_decay_rate * days_since_last
+                )
+
             timeline_obj = self.simulate_duty(
-                duty, relevant_sleep, phase_shift, 
+                duty, relevant_sleep, phase_shift,
                 initial_s=current_s,
-                cached_s=cached_s_value
+                cached_s=cached_s_value,
+                cumulative_sleep_debt=cumulative_sleep_debt
             )
             previous_timeline = timeline_obj
-            
+
             # Calculate EASA FDP limits (augmented-crew-aware)
             fdp_limits = self.validator.calculate_fdp_limits(
                 duty,
@@ -745,73 +822,8 @@ class BorbelyFatigueModel:
                 ulr_result = ulr_validator.validate_ulr_duty(duty, roster, i)
                 timeline_obj.ulr_compliance = ulr_result
             
-            # Track cumulative sleep debt
-            # ── Three-step model ──────────────────────────────────────
-            #  1. Exponential recovery of existing debt (time-based)
-            #  2. Compute sleep balance for the period using effective sleep
-            #     hours with 1.15x recovery credit multiplier vs scaled daily
-            #     need. Effective hours drive both Process S recovery AND debt
-            #     reduction, creating consistency. Recovery credit accounts for
-            #     biological efficiency of consolidated, quality sleep.
-            #  3. Deficit adds to debt; surplus reduces debt 1:1.
-            # References:
-            #   Van Dongen et al. (2003) Sleep 26(2):117-126
-            #   Belenky et al. (2003) J Sleep Res 12:1-12
-            #   Kitamura et al. (2016) Sci Rep 6:35812
-            #   Banks & Dinges (2007) Prog Brain Res 185:41-53
-            if previous_duty:
-                days_since_last = max(1, (duty.date - previous_duty.date).days)
-                cumulative_sleep_debt *= math.exp(
-                    -self.params.sleep_debt_decay_rate * days_since_last
-                )
-            else:
-                days_since_last = 1
-
-            # Use RAW (duration) sleep hours for debt accounting.
-            #
-            # Previous code used effective_sleep_hours (= duration × quality_factor),
-            # which double-penalised sleep: quality_factor reduced the hours
-            # counted toward the 8 h baseline, AND the recovery-inefficiency
-            # divisor (1.30) further reduced surplus credit.  Quality_factor
-            # already feeds into Process S recovery calculations, so applying
-            # it again here overstated cumulative debt.
-            #
-            # Using duration_hours means the debt ledger tracks *actual time
-            # in bed*.  Recovery inefficiency (÷1.30) is the sole penalty on
-            # the repayment side, consistent with Banks et al. (2010, 2023).
-            period_sleep_raw = sum(
-                s.duration_hours for s in relevant_sleep
-                if s.start_utc >= (
-                    previous_duty.release_time_utc
-                    if previous_duty
-                    else duty.report_time_utc - timedelta(days=1)
-                )
-            )
-            period_sleep = period_sleep_raw
-
-            # Scale need by gap length so multi-day rest periods
-            # are evaluated fairly (8 h × N days, not a flat 8 h).
-            period_need = (
-                self.params.baseline_sleep_need_hours * days_since_last
-            )
-            sleep_balance = period_sleep - period_need
-
-            if sleep_balance < 0:
-                # Deficit: add shortfall to cumulative debt
-                cumulative_sleep_debt += abs(sleep_balance)
-            elif sleep_balance > 0 and cumulative_sleep_debt > 0:
-                # Surplus: actively reduce existing debt with recovery inefficiency.
-                # Banks et al. (2010, 2023) show recovery is significantly less
-                # efficient than 1:1 — 1 h of debt requires ~1.3 h of recovery
-                # sleep. This aligns with the finding that one night of 10 h TIB
-                # was insufficient to restore baseline after chronic restriction.
-                debt_reduction = sleep_balance / 1.30
-                cumulative_sleep_debt = max(
-                    0.0, cumulative_sleep_debt - debt_reduction
-                )
-
             timeline_obj.cumulative_sleep_debt = cumulative_sleep_debt
-            
+
             # Attach sleep strategy data
             if duty.duty_id in sleep_strategies:
                 strategy_data = sleep_strategies[duty.duty_id]
@@ -940,7 +952,18 @@ class BorbelyFatigueModel:
                 # Determine where the pilot sleeps (previous duty arrival)
                 prev_arrival = previous_duty.segments[-1].arrival_airport if previous_duty.segments else None
                 arrival_code = prev_arrival.code if prev_arrival else None
-                is_at_home = (arrival_code == roster.pilot_base)
+
+                # pilot_base is optional and frequently absent (it is only
+                # populated by the PDF header parser). Falling back to a code
+                # comparison against None silently marked every rest day as a
+                # hotel stay, costing ~1 h of effective sleep per night off, so
+                # fall back to the timezone when the base code is unknown.
+                if roster.pilot_base and arrival_code:
+                    is_at_home = arrival_code == roster.pilot_base
+                elif prev_arrival:
+                    is_at_home = prev_arrival.timezone == roster.home_base_timezone
+                else:
+                    is_at_home = True
 
                 if is_at_home:
                     rest_tz = home_tz

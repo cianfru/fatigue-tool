@@ -979,10 +979,13 @@ async def get_duty_detail(analysis_id: str, duty_id: str):
         },
         "pinch_events": [
             {
-                "timestamp": pe.timestamp_utc.isoformat(),
-                "performance": pe.performance_value,
+                "timestamp": pe.time_utc.isoformat(),
+                "timestamp_local": pe.time_local.isoformat(),
+                "performance": pe.performance,
                 "phase": pe.flight_phase.value if pe.flight_phase else None,
-                "cause": pe.cause
+                "circadian": pe.circadian,
+                "sleep_pressure": pe.sleep_pressure,
+                "severity": pe.severity,
             }
             for pe in duty_timeline.pinch_events
         ]
