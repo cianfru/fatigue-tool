@@ -7,6 +7,10 @@ pandas>=2.0.0
 # PDF parsing (pdfplumber only - no Java required)
 pdfplumber>=0.9.0
 openpyxl>=3.1.0
+# pdfminer reaches cryptography, whose Rust bindings abort the interpreter
+# rather than raise when the cffi backend is absent. Pinned explicitly so a
+# missing transitive dependency cannot take down PDF roster parsing.
+cffi>=1.15.0
 
 # Visualization (for chronogram & calendar endpoints)
 plotly>=5.17.0

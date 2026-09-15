@@ -97,11 +97,36 @@ The `UnifiedSleepCalculator.estimate_sleep_blocks()` routes to one of 5 strategi
 | Normal | Default | 23:00-07:00 home bed |
 
 ### Performance Calculation
-Per 15-minute interval:
+Per simulation step (default 5 minutes), in `integrate_performance()`:
 ```
-Performance = 20 + 80 * [(1-S) * (1-C) * (1-time_on_task) * workload_factor]
+alertness   = (1 - S) * 0.50 + ((C + 1) / 2) * 0.50   # additive, 50/50 weighted
+alertness  *= (1 - W)                                  # sleep inertia
+alertness  -= time_on_task_rate * hours_on_duty        # linear decrement
+alertness  *= 1 - (workload_multiplier - 1) * workload_performance_sensitivity
+Performance = 20 + 80 * alertness
 ```
+S and C are combined additively, not multiplicatively — a weighted average with
+a small resilience boost in the S 0.15-0.30 band. Workload scales the
+performance output; it must never be folded into the time input of Process S,
+which is a function of time awake and asleep alone (Borbely 1982).
+
 Result on 0-100 scale with 5 risk levels: Low (75-100), Moderate (65-75), High (55-65), Critical (45-55), Extreme (0-45).
+
+### Cumulative Sleep Debt
+Settled in `simulate_roster()` **before** each duty is simulated, then passed
+into `simulate_duty(cumulative_sleep_debt=...)` where it raises `s_at_wake` by
+`debt * sleep_debt_to_s_coefficient`, capped at `sleep_debt_s_offset_cap`. This
+is what makes consecutive early starts compound; if debt is computed after the
+simulation it can never reach the prediction.
+
+- The ledger spans the **whole inter-duty gap**, not the 48h `relevant_sleep`
+  window used for Process S — otherwise multi-day breaks charge a full scaled
+  need against partial sleep and manufacture debt.
+- It compares **effective** (quality-weighted) hours against
+  `baseline_effective_sleep_need_hours` (7.4h), not raw hours against 8.0h.
+  Effective hours already encode fragmentation and circadian misalignment.
+- Deficit adds to the ledger; a met need repays it by exponential decay.
+  Decay is the *only* repayment mechanism — do not also credit surplus hours.
 
 ### Configuration Presets
 Four presets in `core/parameters.py` via `ModelConfig`:
@@ -163,9 +188,11 @@ Frontend expects ISO format datetimes and specific field names defined in Pydant
 1. **Sleep overlap**: Every sleep generation path MUST call `_validate_sleep_no_overlap()` to prevent duty-sleep collisions
 2. **Confidence scores**: If you constrain sleep duration, reduce `confidence_score` to 0.60-0.70
 3. **Overnight duties**: Multi-day duties require `timedelta(days=1)` shifts for report times
-4. **Post-duty sleep environment**: Layover = any non-home-base arrival (`'hotel'`), home base = `'home'` - generate sleep in the actual arrival timezone, not home timezone
-5. **Breaking API contract**: Do not rename fields or change datetime format without updating frontend expectations
+4. **Post-duty sleep environment**: Layover = any non-home-base arrival (`'hotel'`), home base = `'home'` - generate sleep in the actual arrival timezone, not home timezone. `roster.pilot_base` is optional and usually unset, so never detect home base by comparing against it alone; fall back to the timezone.
+5. **Breaking API contract**: Do not rename fields or change datetime format without updating frontend expectations. Serializers must match the dataclass — `PinchEvent` exposes `time_utc`/`performance`, not `timestamp_utc`/`performance_value`.
 6. **Import paths**: After recent refactoring, imports use module paths (e.g., `from core.fatigue_model import BorbelyFatigueModel`, `from models.data_models import Duty`)
+7. **pytz timezone attachment**: Never use `datetime.replace(tzinfo=pytz_zone)` — it attaches the zone's Local Mean Time offset (`+03:26` for `Asia/Qatar`, not `+03:00`). Use `tz.localize(naive)` for local wall times and `dt.astimezone(tz)` for instants.
+8. **Parser time reconstruction**: Report/release and STD/STA are station-local clock times with no date. Always guard the ordering — arrival before departure, or release before report, means the value rolls to the next day.
 
 ## Regulatory Context (EASA FTL)
 

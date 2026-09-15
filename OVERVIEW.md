@@ -44,14 +44,19 @@ Aerowake also incorporates a linear **time-on-task** fatigue component (Folkard 
 
 ### Integration into a Performance Score
 
-The four processes combine into a single performance score on a 0--100 scale:
+The processes combine into a single performance score on a 0--100 scale:
 
 ```
-alertness = (1 - S) * 0.50 + C * 0.50
-performance = 20 + 80 * alertness * (1 - W) * (1 - time_on_task_effect)
+alertness   = (1 - S) * 0.50 + ((C + 1) / 2) * 0.50
+alertness  *= (1 - W)                                  # sleep inertia
+alertness  -= time_on_task_rate * hours_on_duty        # linear decrement
+alertness  *= 1 - (workload - 1) * workload_sensitivity # flight-phase demand
+performance = 20 + 80 * alertness
 ```
 
 The score floor of 20 prevents mathematically impossible zero-performance predictions. A score of 100 represents a fully rested pilot at circadian peak. The 50/50 weighting between homeostatic and circadian components is an operational adaptation; the research configuration provides pure additive Borbely parameters for academic comparison.
+
+Workload scales the performance *output* rather than the homeostatic input. Process S remains a function of time awake and time asleep alone, as in Borbely (1982) --- a demanding approach consumes spare cognitive capacity in the moment, it does not make the pilot's sleep pressure accumulate faster.
 
 > **Detailed mathematics** --- including the full differential equations, parameter derivations, sensitivity analysis, and validation against published laboratory data --- will be covered in a dedicated **Science & Mathematics** module.
 
@@ -95,14 +100,20 @@ The product of these factors converts raw sleep hours into **effective sleep hou
 
 ## Cumulative Sleep Debt
 
-Aerowake tracks **cumulative sleep debt** across the entire roster. Debt accumulates whenever a sleep episode falls below the baseline need (8.0 hours for the default configuration) and recovers exponentially:
+Aerowake tracks **cumulative sleep debt** across the entire roster, measured in *effective* (quality-weighted) sleep hours against a restorative baseline of 7.4 hours per day. Effective hours are used because they already account for fragmentation, poor environments and circadian misalignment --- a five-hour night plus an afternoon nap is not the same as a consolidated eight-hour night, even though the raw totals are close.
 
-- Debt recovery follows: debt(t) = debt_0 * exp(-0.50 * days)
-- Half-life of approximately 1.4 days
+Debt accumulates whenever the sleep obtained across an inter-duty gap falls short of the need for that gap. When the need is met, debt repays by exponential decay:
 
-This means roughly 50% of accumulated debt clears after 1.4 days of adequate sleep, but full recovery from severe debt requires multiple consecutive rest days. The decay rate is calibrated to Van Dongen et al. (2003) and Belenky et al. (2003), who showed that three consecutive 8-hour sleep opportunities recovered approximately 78% of accumulated debt from chronic restriction.
+- Debt recovery follows: debt(t) = debt_0 * exp(-0.35 * days)
+- Half-life of approximately 2.0 days
 
-Sleep debt feeds back into the model: higher debt elevates the starting value of Process S for the next duty, producing compounding fatigue across consecutive early starts, night flights, or short-rest turnarounds.
+Recovery is deliberately incomplete. Banks et al. (2010) found that a single ten-hour sleep opportunity did not restore baseline performance after chronic restriction, and Kitamura et al. (2016) found that an hour of debt requires roughly four days of optimal sleep to clear. Decay is the sole repayment mechanism --- crediting surplus hours separately, as an earlier version did, recovered debt about twice as fast as the evidence supports.
+
+### Why this matters for roster prediction
+
+Sleep debt is settled **before** each duty is simulated and raises the starting value of Process S for that duty. This is the mechanism that makes consecutive early starts, night flights and short-rest turnarounds compound rather than being scored as independent events. A pilot carrying a week of truncated nights starts each duty further up the homeostatic curve than a rested pilot flying the identical schedule --- which is precisely the effect Van Dongen et al. (2003) documented, where fourteen nights at six hours produced impairment comparable to two nights of total sleep deprivation despite normal sleep the preceding night.
+
+The contribution is capped, so debt alone cannot saturate the homeostat and drive predictions to the performance floor.
 
 ---
 
@@ -216,9 +227,9 @@ Aerowake is structured in three layers:
                        DutyTimeline, MonthlyAnalysis, PinchEvent
 ```
 
-The engine layer (`core_model.py`) contains the complete fatigue model, sleep estimation system, and regulatory validation logic. The data layer (`data_models.py`) defines typed structures for all domain objects. The presentation layer provides a REST API (`api_server.py`) with endpoints for roster upload, analysis retrieval, and visualization generation.
+The engine layer (`core/`) contains the fatigue model (`fatigue_model.py`), the sleep estimation system (`sleep_calculator.py`, `sleep_strategies.py`, `sleep_quality.py`), regulatory validation (`compliance.py`), the workload model (`workload.py`) and all tunable parameters with their citations (`parameters.py`). The data layer (`models/data_models.py`) defines typed structures for all domain objects. The presentation layer provides a REST API (`api/api_server.py`) with endpoints for roster upload, analysis retrieval, and visualization generation.
 
-Parser modules (`roster_parser.py`, `qatar_crewlink_parser.py`) handle the conversion of airline-specific roster formats into the standardized Duty/Roster structures that the engine consumes.
+Parser modules (`parsers/roster_parser.py`, `parsers/qatar_crewlink_parser.py`) handle the conversion of airline-specific roster formats into the standardized Duty/Roster structures that the engine consumes.
 
 ---
 
@@ -263,6 +274,9 @@ This overview introduces Aerowake's capabilities and the scientific framework on
 | Time constants | Jewett, M.E. & Kronauer, R.E. (1999). Interactive mathematical models of subjective alertness and cognitive throughput. *American Journal of Physiology*, 277, R493--R514 |
 | Sleep debt | Van Dongen, H.P.A. et al. (2003). The cumulative cost of additional wakefulness. *Sleep*, 26(2), 117--126 |
 | Debt recovery | Belenky, G. et al. (2003). Patterns of performance degradation and restoration during sleep restriction and subsequent recovery. *Journal of Sleep Research*, 12, 1--12 |
+| Incomplete recovery | Banks, S. et al. (2010). Neurobehavioral dynamics following chronic sleep restriction. *Sleep*, 33(8), 1013--1026 |
+| Recovery timescale | Kitamura, S. et al. (2016). Estimating individual optimal sleep duration and potential sleep debt. *Scientific Reports*, 6, 35812 |
+| Workload capacity | Wickens, C.D. (2008). Multiple resources and mental workload. *Human Factors*, 50(3), 449--455 |
 | Sleep quality | Signal, T.L. et al. (2013). Sleep duration and quality in healthy volunteers. *Sleep*, 36(1), 109--118 |
 | Circadian adaptation | Waterhouse, J. et al. (2007). Jet lag: trends and coping strategies. *Lancet*, 369, 1117--1129 |
 | Sleep inertia | Tassi, P. & Muzet, A. (2000). Sleep inertia. *Sleep Medicine Reviews*, 4(4), 341--353 |

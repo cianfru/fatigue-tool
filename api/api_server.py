@@ -21,7 +21,9 @@ from typing import Optional, List
 import tempfile
 import os
 import logging
-from datetime import datetime
+from collections import OrderedDict
+from collections.abc import MutableMapping
+from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -41,20 +43,31 @@ app = FastAPI(
     version="4.2.0"
 )
 
-# CORS - Allow Lovable frontend to connect
+# CORS. The previous config paired a literal "*" with allow_credentials=True,
+# which makes Starlette echo back whatever Origin it is sent — any site could
+# call the API with the caller's cookies attached. Origins are now explicit and
+# overridable per deployment via ALLOWED_ORIGINS (comma-separated). The
+# wildcard entries also never matched: allow_origins compares exact strings, so
+# subdomain patterns belong in allow_origin_regex.
+_DEFAULT_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "https://fatigue-insight-hub.lovable.app",
+]
+_configured_origins = os.environ.get("ALLOWED_ORIGINS", "").strip()
+ALLOWED_ORIGINS = (
+    [o.strip() for o in _configured_origins.split(",") if o.strip()]
+    if _configured_origins
+    else _DEFAULT_ORIGINS
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:8080",
-        "https://*.lovable.app",
-        "https://*.lovable.dev",
-        "https://fatigue-insight-hub.lovable.app",
-        "*"  # For development - restrict in production!
-    ],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"https://[a-zA-Z0-9-]+\.lovable\.(app|dev)",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -363,7 +376,56 @@ class AnalysisResponse(BaseModel):
 # IN-MEMORY STORAGE (Replace with database in production)
 # ============================================================================
 
-analysis_store = {}  # analysis_id -> (MonthlyAnalysis, Roster)
+ANALYSIS_STORE_MAX_ENTRIES = int(os.environ.get("ANALYSIS_STORE_MAX_ENTRIES", "256"))
+ANALYSIS_STORE_TTL_SECONDS = int(os.environ.get("ANALYSIS_STORE_TTL_SECONDS", str(6 * 3600)))
+
+
+class AnalysisStore(MutableMapping):
+    """
+    Bounded in-memory store for completed analyses.
+
+    A plain dict grew without limit for the life of the process — each entry
+    holds a full roster and its per-15-minute timelines, so a long-running
+    deployment leaked until it was restarted. Entries expire after a TTL and
+    the oldest are dropped once the cap is reached.
+    """
+
+    def __init__(self, max_entries: int, ttl_seconds: int):
+        self._max_entries = max_entries
+        self._ttl = timedelta(seconds=ttl_seconds)
+        self._data: "OrderedDict[str, tuple]" = OrderedDict()
+
+    def _purge_expired(self) -> None:
+        cutoff = datetime.now() - self._ttl
+        for key in [k for k, (ts, _) in self._data.items() if ts < cutoff]:
+            del self._data[key]
+
+    def __setitem__(self, key, value):
+        self._purge_expired()
+        self._data[key] = (datetime.now(), value)
+        self._data.move_to_end(key)
+        while len(self._data) > self._max_entries:
+            self._data.popitem(last=False)
+
+    def __getitem__(self, key):
+        self._purge_expired()
+        timestamp, value = self._data[key]
+        self._data.move_to_end(key)
+        return value
+
+    def __delitem__(self, key):
+        del self._data[key]
+
+    def __iter__(self):
+        self._purge_expired()
+        return iter(self._data)
+
+    def __len__(self):
+        self._purge_expired()
+        return len(self._data)
+
+
+analysis_store = AnalysisStore(ANALYSIS_STORE_MAX_ENTRIES, ANALYSIS_STORE_TTL_SECONDS)
 
 
 # ============================================================================

@@ -113,6 +113,22 @@ class EASAComplianceValidator:
                 if hasattr(getattr(duty, 'crew_composition', None), 'value') else 'standard',
         }
     
+    @staticmethod
+    def _localize(tz, naive: datetime) -> datetime:
+        """
+        Attach a timezone to a naive local time, tolerating DST transitions.
+
+        A WOCL boundary can land in the hour a spring-forward skips or the hour
+        an autumn fallback repeats; pytz raises on both unless told which side
+        to take, so resolve to standard time rather than failing the analysis.
+        """
+        try:
+            return tz.localize(naive, is_dst=None)
+        except pytz.exceptions.AmbiguousTimeError:
+            return tz.localize(naive, is_dst=False)
+        except pytz.exceptions.NonExistentTimeError:
+            return tz.localize(naive + timedelta(hours=1), is_dst=True)
+
     def calculate_wocl_encroachment(
         self,
         duty_start: datetime,
@@ -129,14 +145,22 @@ class EASAComplianceValidator:
         end_day = duty_end_local.date()
         
         while current_day <= end_day:
-            wocl_start = datetime.combine(
-                current_day, time(self.framework.wocl_start_hour, 0, 0)
-            ).replace(tzinfo=tz)
-            
-            wocl_end = datetime.combine(
-                current_day, time(self.framework.wocl_end_hour, self.framework.wocl_end_minute, 59)
-            ).replace(tzinfo=tz)
-            
+            # localize(), not replace(tzinfo=...): attaching a pytz zone
+            # directly yields its Local Mean Time offset (e.g. +03:26 for
+            # Asia/Qatar instead of +03:00), skewing every WOCL boundary.
+            wocl_start = self._localize(
+                tz, datetime.combine(
+                    current_day, time(self.framework.wocl_start_hour, 0, 0)
+                )
+            )
+
+            wocl_end = self._localize(
+                tz, datetime.combine(
+                    current_day,
+                    time(self.framework.wocl_end_hour, self.framework.wocl_end_minute, 59)
+                )
+            )
+
             overlap_start = max(duty_start_local, wocl_start)
             overlap_end = min(duty_end_local, wocl_end)
             

@@ -102,9 +102,12 @@ class BorbelyFatigueModel:
         current_tz = pytz.timezone(current_tz_str)
         home_tz = pytz.timezone(home_base_tz_str)
         
-        naive_time = current_utc.replace(tzinfo=None)
-        home_offset = home_tz.localize(naive_time).utcoffset().total_seconds() / 3600
-        current_offset = current_tz.localize(naive_time).utcoffset().total_seconds() / 3600
+        # Convert the instant into each zone rather than reinterpreting the UTC
+        # wall clock as a local time: localize() on a naive UTC value picks the
+        # wrong offset whenever the corresponding local time is ambiguous or
+        # skipped by a DST transition.
+        home_offset = current_utc.astimezone(home_tz).utcoffset().total_seconds() / 3600
+        current_offset = current_utc.astimezone(current_tz).utcoffset().total_seconds() / 3600
         
         target_shift = current_offset - home_offset
         diff = target_shift - last_state.current_phase_shift_hours
@@ -589,66 +592,65 @@ class BorbelyFatigueModel:
     
     def _detect_pinch_events(self, timeline: List[PerformancePoint]) -> List[PinchEvent]:
         """
-        Detect high-risk moments (high sleep pressure + low circadian during critical phases)
-        
-        A "pinch" is a scientifically-defined convergence of:
-        1. Critical flight phase (takeoff, approach, landing)
-        2. High homeostatic sleep pressure (S > 0.75 = ~12+ hours awake or sleep-deprived)
-        3. Low circadian alertness (C < 0.35 = deep in WOCL, 02:00-06:00)
-        
-        These thresholds are based on:
-        - Dawson & Reid (1997): Performance impairment equivalent to 0.05% BAC
+        Detect high-risk moments: high sleep pressure meeting a circadian trough.
+
+        A "pinch" is a convergence of:
+        1. High homeostatic sleep pressure (S above the configured threshold)
+        2. Low circadian alertness (C below the configured threshold, i.e.
+           deep in the WOCL)
+
+        Thresholds are based on:
+        - Dawson & Reid (1997): impairment equivalent to 0.05 % BAC
         - EASA AMC1 ORO.FTL.105(10): WOCL 02:00-05:59
-        - Van Dongen et al. (2003): Cumulative effects of sleep restriction
-        
-        We also require BOTH conditions to be significantly exceeded to avoid
-        false positives from normal night operations with adequate rest.
-        
-        Only one pinch event is flagged per critical phase of flight.
+        - Van Dongen et al. (2003): cumulative effects of sleep restriction
+
+        Detection covers every phase the pilot is on the flight deck for, not
+        only takeoff/approach/landing. A pinch during cruise is what should
+        drive a controlled-rest decision on a long sector, and suppressing it
+        hid the very window where the crew could still act on it. Points spent
+        in a crew rest facility are excluded — the pilot is not on duty at the
+        controls and carries no performance relevance there.
+
+        One event is reported per contiguous run within a flight phase, taking
+        the worst point of that run.
         """
-        pinch_events = []
+        pinch_events: List[PinchEvent] = []
 
         # Thresholds are configurable per airline/preset via parameters.py
-        CIRCADIAN_THRESHOLD = self.params.pinch_circadian_threshold
-        SLEEP_PRESSURE_THRESHOLD = self.params.pinch_sleep_pressure_threshold
-        
-        current_critical_phase = None
-        current_phase_worst_point = None
-        
+        circadian_threshold = self.params.pinch_circadian_threshold
+        sleep_pressure_threshold = self.params.pinch_sleep_pressure_threshold
+
+        run_phase = None
+        run_worst: Optional[PinchEvent] = None
+
+        def close_run():
+            nonlocal run_phase, run_worst
+            if run_worst is not None:
+                pinch_events.append(run_worst)
+            run_phase = None
+            run_worst = None
+
         for point in timeline:
-            if point.is_critical_phase:
-                # Check if conditions are met for a pinch event
-                if point.circadian_component < CIRCADIAN_THRESHOLD and point.homeostatic_component > SLEEP_PRESSURE_THRESHOLD:
-                    # If this is a new critical phase, start tracking it
-                    if current_critical_phase != point.current_flight_phase:
-                        # Save the previous phase's worst point if any
-                        if current_phase_worst_point is not None:
-                            pinch_events.append(current_phase_worst_point)
-                        
-                        # Start tracking this new phase
-                        current_critical_phase = point.current_flight_phase
-                        current_phase_worst_point = self._create_pinch_event(point)
-                    else:
-                        # Same phase - update if this point is worse
-                        if current_phase_worst_point and point.raw_performance < current_phase_worst_point.performance:
-                            current_phase_worst_point = self._create_pinch_event(point)
-                else:
-                    # Conditions not met, but we might be exiting a critical phase
-                    if current_phase_worst_point is not None:
-                        pinch_events.append(current_phase_worst_point)
-                        current_phase_worst_point = None
-                        current_critical_phase = None
-            else:
-                # Not in critical phase - save any pending pinch event
-                if current_phase_worst_point is not None:
-                    pinch_events.append(current_phase_worst_point)
-                    current_phase_worst_point = None
-                    current_critical_phase = None
-        
-        # Don't forget the last one if we ended during a critical phase
-        if current_phase_worst_point is not None:
-            pinch_events.append(current_phase_worst_point)
-        
+            in_rest = getattr(point, 'is_in_rest', False)
+            is_pinch = (
+                not in_rest
+                and point.circadian_component < circadian_threshold
+                and point.homeostatic_component > sleep_pressure_threshold
+            )
+
+            if not is_pinch:
+                close_run()
+                continue
+
+            if run_phase != point.current_flight_phase:
+                close_run()
+                run_phase = point.current_flight_phase
+                run_worst = self._create_pinch_event(point)
+            elif point.raw_performance < run_worst.performance:
+                run_worst = self._create_pinch_event(point)
+
+        close_run()
+
         return pinch_events
     
     def _create_pinch_event(self, point: PerformancePoint) -> PinchEvent:

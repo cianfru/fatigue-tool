@@ -117,11 +117,18 @@ class Airport:
         """
         tz1 = pytz.timezone(self.timezone)
         tz2 = pytz.timezone(other.timezone)
-        
-        offset1 = tz1.utcoffset(reference_time).total_seconds() / 3600
-        offset2 = tz2.utcoffset(reference_time).total_seconds() / 3600
-        
-        return offset2 - offset1
+
+        # Every datetime in this model is UTC-aware, and pytz.utcoffset()
+        # rejects aware input. Convert the instant into each zone instead, which
+        # also picks the correct side of a DST transition.
+        if reference_time.tzinfo is not None:
+            offset1 = reference_time.astimezone(tz1).utcoffset()
+            offset2 = reference_time.astimezone(tz2).utcoffset()
+        else:
+            offset1 = tz1.utcoffset(reference_time)
+            offset2 = tz2.utcoffset(reference_time)
+
+        return (offset2 - offset1).total_seconds() / 3600
 
 
 @dataclass
