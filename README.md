@@ -8,41 +8,43 @@
 pip install -r requirements.txt
 ```
 
-### Step 2: Run the Simple Example
-
-Test that everything works:
+### Step 2: Verify the Install
 
 ```bash
-python simple_example.py
+pytest tests/ -q
 ```
 
-You should see output showing:
-- ✅ Analysis complete
-- Performance metrics (landing performance, sleep debt, etc.)
-- Risk assessment (with risk level and recommended actions)
-- Pinch events (if any)
+All tests should pass. This exercises the fatigue model, sleep strategies,
+roster parsing, and the visualizations.
 
 ### Step 3: Choose Your Interface
 
-You have 3 ways to use the tool:
-
-#### Option A: Command Line (Quick Single Analysis)
+#### Option A: REST API (used by the web frontend)
 ```bash
-python analyze_duty.py
+uvicorn api.api_server:app --reload --port 8000
 ```
-Interactive command-line interface - best for quick single-duty analysis.
+Interactive OpenAPI docs at `http://localhost:8000/docs`. Upload a roster to
+`POST /api/analyze`.
 
-#### Option B: Web Interface (Full Featured)
-```bash
-streamlit run fatigue_app.py
-```
-Full-featured web app - best for roster analysis, visualizations, and reports.
-
-#### Option C: Python API (Custom Integration)
+#### Option B: Python API (custom integration)
 ```python
-from core_model import BorbelyFatigueModel
-from config import ModelConfig
-# ... your code here
+from core import BorbelyFatigueModel, ModelConfig
+from models.data_models import Duty, FlightSegment, Airport, Roster
+
+model = BorbelyFatigueModel(ModelConfig.default_easa_config())
+analysis = model.simulate_roster(roster)
+
+for timeline in analysis.duty_timelines:
+    print(timeline.duty_id, timeline.landing_performance)
+```
+
+#### Option C: Visualizations
+```python
+from visualization.chronogram import FatigueChronogram
+from visualization.aviation_calendar import AviationCalendar
+
+FatigueChronogram().plot_monthly_chronogram(analysis, save_path='timeline.png')
+AviationCalendar().plot_monthly_roster(analysis, save_path='calendar.png')
 ```
 
 ---
@@ -78,7 +80,7 @@ The tool uses EASA regulatory references:
 
 ## 🔧 Configuration Options
 
-The tool has 4 preset configurations in `config.py`:
+The tool has 4 preset configurations in `core/parameters.py`:
 
 ### 1. Default EASA Config (Recommended)
 ```python
@@ -115,20 +117,26 @@ config = ModelConfig.research_config()
 ## 📂 File Structure
 
 ```
-fatigue_tool/
-├── config.py              # Model parameters & thresholds
-├── data_models.py         # Data structures (Roster, Duty, etc.)
-├── easa_utils.py          # Compliance validation & risk scoring
-├── core_model.py          # Biomathematical fatigue engine
-├── roster_parser.py       # PDF/CSV roster parsing
-├── visualization.py       # Charts and graphs
-├── fatigue_app.py         # Streamlit web interface
-│
-├── simple_example.py      # Basic test (START HERE)
-├── analyze_duty.py        # Command-line interface
+fatigue-tool/
+├── core/                  # Fatigue model engine
+│   ├── fatigue_model.py       # BorbelyFatigueModel (main engine)
+│   ├── sleep_calculator.py    # Sleep strategy dispatch
+│   ├── sleep_strategies.py    # Individual strategy implementations
+│   ├── sleep_quality.py       # Sleep quality factors
+│   ├── extended_operations.py # Augmented crew / ULR
+│   ├── compliance.py          # EASA compliance validation
+│   ├── workload.py            # Flight phase workload multipliers
+│   └── parameters.py          # All parameters & thresholds
+├── models/data_models.py  # Data structures (Roster, Duty, etc.)
+├── parsers/               # PDF/CSV/CrewLink roster parsing
+├── visualization/         # Chronogram & aviation calendar
+├── api/api_server.py      # FastAPI REST backend
+├── tests/                 # pytest suite
 ├── requirements.txt       # Python dependencies
-└── README.md             # This file
+└── README.md              # This file
 ```
+
+See `OVERVIEW.md` for the scientific basis and `CLAUDE.md` for architecture notes.
 
 ---
 
@@ -137,20 +145,19 @@ fatigue_tool/
 ### 1. Analyze Your Monthly Roster
 
 ```bash
-streamlit run fatigue_app.py
+uvicorn api.api_server:app --reload --port 8000
 ```
-1. Upload your roster (PDF or CSV)
+1. Upload your roster (PDF or CSV) to `POST /api/analyze`
 2. Set your home base and pilot ID
-3. View monthly heatmap showing high-risk days
-4. Export SMS reports for specific duties
+3. Retrieve the monthly summary and per-duty timelines
+4. Render the chronogram or calendar for high-risk days
 
 ### 2. Compare Two Roster Options
 
 ```python
-from core_model import BorbelyFatigueModel
-from config import ModelConfig
+from core import BorbelyFatigueModel, ModelConfig
 
-model = BorbelyFatigueModel()
+model = BorbelyFatigueModel(ModelConfig.default_easa_config())
 
 # Analyze roster A
 analysis_a = model.simulate_roster(roster_a)
@@ -178,11 +185,13 @@ for timeline in analysis.duty_timelines:
 
 ### 4. Generate SMS Fatigue Report
 
-The web interface (`fatigue_app.py`) has a built-in report generator that creates:
+The `/api/analyze` response carries everything an SMS submission needs:
 - Summary of duty details
-- Performance metrics with EASA references
+- Performance metrics with EASA references (`summary.risk_assessment`)
 - Risk assessment with recommended actions
-- Supporting evidence (charts, pinch events)
+- Supporting evidence — pinch events, WOCL encroachment, sleep debt
+
+Pair it with the chronogram or calendar image for the visual evidence.
 
 ---
 
@@ -230,17 +239,22 @@ This usually indicates:
 1. Duty starting at WOCL (02:00-06:00 home time)
 2. No prior sleep in the roster
 3. Long duty duration
+4. Accumulated sleep debt carried in from earlier duties
 
 Check your duty timing and add prior rest if realistic.
 
-### Web app won't start
+### API won't start
 ```bash
-# Make sure Streamlit is installed
-pip install streamlit
+# Run from the repository root so the package imports resolve
+cd fatigue-tool
+uvicorn api.api_server:app --reload --port 8000
+```
 
-# Run from the correct directory
-cd fatigue_tool
-streamlit run fatigue_app.py
+### PDF parsing crashes the interpreter
+`pdfminer` reaches `cryptography`, whose Rust bindings abort rather than raise
+when the cffi backend is missing:
+```bash
+pip install cffi
 ```
 
 ---

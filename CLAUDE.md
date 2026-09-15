@@ -13,7 +13,11 @@ fatigue-tool/
 ├── core/                          # Fatigue model engine
 │   ├── __init__.py                # Public API exports
 │   ├── fatigue_model.py           # BorbelyFatigueModel (main engine)
-│   ├── sleep_calculator.py        # UnifiedSleepCalculator (5 strategies)
+│   ├── sleep_calculator.py        # UnifiedSleepCalculator (strategy dispatch)
+│   ├── sleep_strategies.py        # Individual strategy implementations
+│   ├── sleep_quality.py           # 7 multiplicative quality factors
+│   ├── strategy_references.py     # Citations backing each strategy
+│   ├── extended_operations.py     # Augmented crew / ULR rest planning
 │   ├── compliance.py              # EASAComplianceValidator
 │   ├── workload.py                # WorkloadModel (flight phase multipliers)
 │   └── parameters.py              # All configuration dataclasses
@@ -32,11 +36,18 @@ fatigue-tool/
 │   └── aviation_calendar.py       # Monthly heatmap
 ├── scripts/                       # Utility scripts
 │   └── analyze_sleep_debt.py
-├── tests/                         # Print-based test suite
-│   ├── test_sleep_strategies.py
-│   ├── test_sleep_efficiency.py
-│   ├── test_comprehensive_improvements.py
-│   └── test_performance_improvements.py
+├── tests/                         # pytest suite
+│   ├── test_sleep_strategies.py       # Strategy dispatch and block validity
+│   ├── test_sleep_regressions.py      # Sleep generation regressions
+│   ├── test_sleep_debt_feedback.py    # Debt accumulation, repayment, S feedback
+│   ├── test_sleep_efficiency.py       # Quality factors and environment ordering
+│   ├── test_timezone_and_pinch.py     # WOCL/DST correctness, pinch detection
+│   ├── test_csv_overnight_parsing.py  # Overnight time reconstruction
+│   ├── test_extended_operations.py    # Augmented crew and ULR
+│   ├── test_comprehensive_improvements.py  # Sleep/performance monotonicity
+│   ├── test_performance_improvements.py    # Timeline structure invariants
+│   ├── test_visualizations.py         # Chronogram and calendar smoke tests
+│   └── test_pdf_parsing.py            # Qatar CrewLink PDF parsing
 ├── requirements.txt               # Python dependencies
 ├── Procfile                       # Railway deployment (uvicorn)
 ├── railway.json                   # Railway CI/CD config
@@ -64,14 +75,14 @@ uvicorn api.api_server:app --reload --host 0.0.0.0 --port 8000
 OpenAPI docs available at `http://localhost:8000/docs`
 
 ### Run tests
-Tests use **print-based validation** (not pytest). Run each directly:
+The suite is **pytest**. Run it from the repository root:
 ```bash
-python tests/test_sleep_strategies.py
-python tests/test_sleep_efficiency.py
-python tests/test_comprehensive_improvements.py
-python tests/test_performance_improvements.py
+pytest tests/ -q
 ```
-Expected output: `✅ TEST PASSED` or `❌ TEST FAILED`
+Several files previously printed a narrative report and asserted nothing, so
+they passed no matter what the model produced. Every test now asserts. When
+adding tests, assert on model output — do not print a comparison and eyeball it,
+and do not re-implement a model formula in the test to check against itself.
 
 ### Install dependencies
 ```bash
@@ -161,18 +172,27 @@ Seven multiplicative factors applied to raw sleep duration in `SleepBlock.effect
 7. Sleep inertia (within 30 min of wake)
 
 ### Testing Conventions
+- pytest, with fixtures for shared rosters and model instances
 - Tests manually construct `Duty` objects with UTC datetimes
-- No pytest, no fixtures, no test discovery - each file runs standalone
-- Direct assertions on model outputs with explicit pass/fail printing
+- Assert on model output, and give the assertion a message that reports the
+  offending values — a bare `assert x > y` on a numeric model is hard to triage
 - Test pattern:
   ```python
-  from models.data_models import Duty, FlightSegment, Airport
-  duty = Duty(duty_id='D001', segments=[segment], ...)
-  model = BorbelyFatigueModel()
-  timeline = model.simulate_duty(duty)
-  assert timeline.landing_performance > 55
-  print("✅ TEST PASSED")
+  @pytest.fixture(scope='module')
+  def timeline():
+      duty = Duty(duty_id='D001', segments=[segment], ...)
+      return BorbelyFatigueModel().simulate_duty(duty, [])
+
+  def test_rested_day_duty_is_not_high_risk(timeline):
+      assert timeline.landing_performance > 55, (
+          f"scored {timeline.landing_performance:.1f}"
+      )
   ```
+- Prefer pinning *relationships* (more sleep never scores worse, home beats
+  hotel, S rises while awake) over absolute numbers. Absolute thresholds from a
+  tuning session are not a specification and freeze incidental output.
+- Never re-implement a model formula inside a test to compare against the
+  model — that passes even when the formula is wrong.
 
 ### API Response Contract
 All `/api/analyze` responses include:

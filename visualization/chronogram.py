@@ -146,7 +146,10 @@ class FatigueChronogram:
                     pytz.timezone(duty.home_base_timezone)
                 )
                 
-                day_idx = point_date.day - 1  # 0-indexed
+                # Offset from the first of the month, not day-of-month: a duty
+                # running past midnight into the next month would otherwise
+                # wrap onto row 0 and overwrite the first day of the grid.
+                day_idx = (point_date.date() - month_start.date()).days
                 if day_idx < 0 or day_idx >= days_in_month:
                     continue
                 
@@ -331,13 +334,12 @@ class FatigueChronogram:
         plt.tight_layout()
         
         if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor=self.bg_color)
+            fig.savefig(save_path, dpi=150, bbox_inches='tight', facecolor=self.bg_color)
             print(f"✓ Chronogram saved: {save_path}")
-        else:
-            plt.show()
-        
-        plt.close()
-        
+
+        # The figure is returned for the caller to render or embed, so it must
+        # not be closed here — plt.close() left callers holding a dead figure.
+        # Closing is the caller's responsibility once they are done with it.
         return fig
     
     def _detect_patterns(self, monthly_analysis: MonthlyAnalysis) -> List[dict]:
